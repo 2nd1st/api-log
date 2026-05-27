@@ -1,0 +1,55 @@
+# Demo stack: api-log in front of a real LLM gateway (sub2api).
+#
+# This is the deployment shape the README pitches. To use it:
+#   1. Clone sub2api alongside this repo:
+#        cd ../  && git clone https://github.com/Wei-Shaw/sub2api.git
+#   2. Provide sub2api's config (its own README; not our scope).
+#   3. docker compose -f deploy/demo/docker-compose.yml up
+#   4. Point your clients (CC, Codex, Cursor, etc.) at
+#        http://localhost:7861  (proxy)
+#      instead of where you used to point them at sub2api directly.
+#   5. Query the read API at http://localhost:7862 with the
+#      auto-generated bearer at api-log-data/admin_token.
+#
+# Notes on the placeholder sub2api service: this compose is a SKELETON.
+# sub2api itself is a separate project; pick its image/Dockerfile per
+# its README. We declare the service shape; you fill in the build
+# context or image tag.
+
+services:
+  sub2api:
+    # Replace this build context with whatever sub2api's README
+    # specifies; if a published image exists, use `image:` instead.
+    build:
+      context: ../../../sub2api    # adjust to your sub2api checkout
+    container_name: sub2api
+    networks: [llm]
+    expose: ["7860"]                # internal-only; clients reach
+                                    # this via api-log on :7861.
+    # sub2api's own configuration goes here — keys, models, etc.
+    # See sub2api's README at https://github.com/Wei-Shaw/sub2api
+
+  api-log:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: api-log
+    networks: [llm]
+    depends_on:
+      - sub2api
+    ports:
+      - "7861:7861"
+      - "7862:7862"
+    environment:
+      APILOG_PROXY_LISTEN: ":7861"
+      APILOG_PROXY_UPSTREAM: "http://sub2api:7860"
+      APILOG_API_LISTEN: ":7862"
+      APILOG_STORAGE_DATA_DIR: "/data"
+      APILOG_LOGGING_LEVEL: "info"
+    volumes:
+      - ./api-log-data:/data        # bind-mount so the operator can
+                                    # poke at JSONL with host jq.
+
+networks:
+  llm:
+    driver: bridge

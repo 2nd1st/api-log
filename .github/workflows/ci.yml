@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 jobs:
@@ -38,3 +39,47 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go build -o /tmp/api-log ./cmd/api-log
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run integration test (dev-stack)
+        run: bash tests/integration/run.sh
+
+  # Build + push the api-log image on a version tag. The image is the
+  # same Dockerfile the dev-stack and demo composes build from; tags map
+  # 1:1 with git tags.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [test, lint, build, integration]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}

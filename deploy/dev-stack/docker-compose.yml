@@ -1,0 +1,54 @@
+# Local dev stack for api-log: api-log built from source + a Go mock
+# upstream that speaks the three protocols api-log understands.
+#
+# Use:
+#   docker compose -f deploy/dev-stack/docker-compose.yml up --build
+#   # then send traffic to localhost:7861 with admin token from data/admin_token
+#   # and query the read API at localhost:7862.
+
+services:
+  mockup:
+    build:
+      context: ../..
+      dockerfile: tools/mockup/Dockerfile
+    container_name: api-log-mockup
+    networks: [stack]
+    expose: ["8888"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mockup", "-help"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 1s
+
+  api-log:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: api-log
+    networks: [stack]
+    depends_on:
+      - mockup
+    ports:
+      - "7861:7861"  # proxy listener (clients connect here)
+      - "7862:7862"  # read API
+    environment:
+      APILOG_PROXY_LISTEN: ":7861"
+      APILOG_PROXY_UPSTREAM: "http://mockup:8888"
+      APILOG_API_LISTEN: ":7862"
+      APILOG_STORAGE_DATA_DIR: "/data"
+      APILOG_LOGGING_LEVEL: "info"
+      APILOG_TIMEOUTS_STREAM_IDLE_SECONDS: "600"
+    volumes:
+      # Bind mount (not a named volume) so the integration test can read
+      # the auto-generated admin_token from outside the container.
+      # Distroless has no shell / no `cat`, so `docker exec ... cat` is
+      # not an option. The Dockerfile's USER nonroot:nonroot (UID 65532)
+      # writes here; chmod 777 on the host side keeps that working
+      # regardless of which host UID runs the test.
+
+      - ./data:/data
+
+networks:
+  stack:
+    driver: bridge

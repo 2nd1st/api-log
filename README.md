@@ -133,6 +133,8 @@ services:
 
 Then update clients' `base_url` from `:7860` to `:7861`. That's the install.
 
+A ready-to-edit version lives at [`deploy/demo/docker-compose.yml`](./deploy/demo/docker-compose.yml). Its skeleton expects `sub2api` cloned as a sibling directory (`../sub2api`); replace that build context with whatever upstream you front. The local dev stack at [`deploy/dev-stack/docker-compose.yml`](./deploy/dev-stack/docker-compose.yml) wires api-log to a mock LLM gateway (`tools/mockup`) and is what the integration test in [`tests/integration/run.sh`](./tests/integration/run.sh) drives.
+
 For bare-metal: change one port number in your gateway config, run a single binary. Same outcome.
 
 **Plain HTTP between containers on the same host is the primary supported topology.** If you need TLS or cross-host routing, terminate it with whatever reverse proxy you already run; api-log itself listens HTTP only.

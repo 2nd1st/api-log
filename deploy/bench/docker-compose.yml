@@ -1,0 +1,36 @@
+# Bench stack: api-log only, pointed at a real upstream supplied via env.
+#
+# Use:
+#   APILOG_PROXY_UPSTREAM=http://cpa.homelab.lan \
+#     docker compose -f deploy/bench/docker-compose.yml up -d --build
+#
+# The orchestrator at tests/bench/run.sh wraps this. Data lives in
+# ./data/ (bind mount) so the host script can read /healthz, JSONL,
+# and the admin token without needing a shell inside the distroless
+# container.
+
+services:
+  api-log:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: api-log-bench
+    networks: [bench]
+    ports:
+      - "7861:7861"  # proxy listener (bench client connects here)
+      - "7862:7862"  # read API (orchestrator scrapes /healthz here)
+    environment:
+      APILOG_PROXY_LISTEN: ":7861"
+      APILOG_PROXY_UPSTREAM: "${APILOG_PROXY_UPSTREAM:?set APILOG_PROXY_UPSTREAM to your real upstream URL}"
+      APILOG_API_LISTEN: ":7862"
+      APILOG_STORAGE_DATA_DIR: "/data"
+      APILOG_LOGGING_LEVEL: "info"
+      # Real LLM calls can take a long time before the first byte; keep
+      # the stream-idle watchdog generous for the bench.
+      APILOG_TIMEOUTS_STREAM_IDLE_SECONDS: "120"
+    volumes:
+      - ./data:/data
+
+networks:
+  bench:
+    driver: bridge
