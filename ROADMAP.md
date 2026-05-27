@@ -395,8 +395,44 @@ Sketch of hook points (in order of trace lifecycle):
 | Hook | Can do | Cannot do (philosophy) |
 |---|---|---|
 | `before_forward(req)` | inspect; reject with 4xx; rate-limit; rewrite headers (rare); short-circuit response | block capture itself — if it fires, what would have been the trace still gets a partial line |
+| `mutate_req(req)` ⚠️ | inject system prompt; redact secrets; substitute model names; A/B prompt variants | silently lie about what was sent — see "mutation-recording rule" below |
 | `before_record(trace)` | skip recording (path filter use case); add operator tags | block forwarding |
+| `mutate_resp(resp)` ⚠️ | strip PII from output; rewrite refusals; transform formats | silently lie about what came back — see "mutation-recording rule" below |
 | `after_record(trace)` | push to external sinks; emit alerts; update operator dashboards | retroactively edit recorded JSONL |
+
+**Mutation-recording rule (load-bearing):**
+
+If a plugin runs in `mutate_req` or `mutate_resp` and changes the
+bytes, the JSONL line MUST carry BOTH the original and the mutated
+form (e.g. a `mutations: [{plugin: "secret-redactor", before: <orig>,
+after: <new>}]` block) — otherwise the recorder is lying about what
+actually flowed, which breaks PHILOSOPHY § 6 ("filesystem is truth").
+The default `req.body` / `resp.body` fields stay as **what reached
+the upstream** / **what the upstream returned**; the original is
+preserved in the mutations log.
+
+This costs disk (we keep both versions for any mutated trace) but
+it's the only honest implementation. Alternative — "just record the
+mutated version" — would silently rewrite history and is rejected.
+
+Likely-useful plugin categories (operator notes 2026-05-28):
+
+- **gate**: rate-limit, IP / key blocklists, request-shape validators
+- **filter**: skip recording for high-noise paths (sub2api admin UI),
+  exclude probe/healthcheck traffic
+- **inject**: system prompt prefix, tool whitelist enforcement,
+  default-parameter overrides (e.g. cap `max_tokens`)
+- **redact**: strip PII / secret patterns from request OR response
+  before they hit the recorder OR before they leave api-log
+- **route**: A/B model selection, fallback chains, canary deploy gating
+- **alert**: trigger external notification on patterns
+  (`status >= 500`, "user said X", token-spend threshold)
+- **transform**: format conversion (e.g. inbound Chat → outbound
+  Responses for an upstream that only speaks one shape)
+
+Most of these are user-territory; few will ship in the in-tree plugin
+bundle. The first one we'd actually need is probably **filter**
+(§ 4 path-noise) since the live deployment is already noisy.
 
 Implementation surface (sketch):
 
