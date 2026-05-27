@@ -60,6 +60,7 @@ type opts struct {
 	PerReqTimeout   time.Duration
 	Seed            int64
 	JSONOut         string
+	Chain           bool // if set, chat-nostream requests carry the growing per-worker conversation so session inference can find parents.
 }
 
 func main() {
@@ -77,6 +78,7 @@ func main() {
 		perReqTimeout  = flag.Duration("timeout", 120*time.Second, "per-request timeout")
 		seed           = flag.Int64("seed", 1, "PRNG seed for request body content (deterministic across runs)")
 		jsonOut        = flag.String("json-out", "", "if set, write JSON summary to this file in addition to stdout")
+		chain          = flag.Bool("chain", false, "chained-conversation mode: each chat-nostream request includes the worker's full history so far, so session inference on the recorder side can resolve parent_id back to the previous turn. Non-chat protocols stay single-turn.")
 	)
 	flag.Parse()
 
@@ -102,6 +104,7 @@ func main() {
 		PerReqTimeout:  *perReqTimeout,
 		Seed:           *seed,
 		JSONOut:        *jsonOut,
+		Chain:          *chain,
 	}
 
 	total := o.Conc * o.Count
@@ -137,13 +140,27 @@ func main() {
 			// recorder side, and downstream rate limiters see realistic
 			// per-user distribution rather than a shuffled stream.
 			key := o.Keys[workerID%len(o.Keys)]
+			// Per-worker chat conversation history; only used when
+			// -chain is set. After a successful turn we append BOTH
+			// the user prompt we sent and the assistant reply we got
+			// back — that way the next request's `messages` byte-for-
+			// byte extends this turn's full message log, which is
+			// exactly what the recorder's session inference hashes on.
+			var convo []map[string]string
 			for i := 0; i < o.Count; i++ {
 				proto := o.Protocols[(workerID+i)%len(o.Protocols)]
-				s := runOne(client, &o, proto, workerID, i, rng, key)
+				prompt := fmt.Sprintf("bench worker=%d iter=%d seed=%d say hi", workerID, i, rng.Intn(1_000_000))
+				s, assistant := runOne(client, &o, proto, workerID, i, key, convo, prompt)
 				atomic.AddInt64(&sent, 1)
 				mu.Lock()
 				samples = append(samples, s)
 				mu.Unlock()
+				if o.Chain && proto == "chat-nostream" && s.Status == 200 && assistant != "" {
+					convo = append(convo,
+						map[string]string{"role": "user", "content": prompt},
+						map[string]string{"role": "assistant", "content": assistant},
+					)
+				}
 			}
 		}(w)
 	}
@@ -158,9 +175,12 @@ func main() {
 	}
 }
 
-func runOne(client *http.Client, o *opts, proto string, worker, iter int, rng *rand.Rand, key string) sample {
+// runOne returns the latency sample and (only when in chain mode + Chat
+// non-streaming + 200) the extracted assistant content for the worker
+// to thread into the next turn.
+func runOne(client *http.Client, o *opts, proto string, worker, iter int, key string, convo []map[string]string, prompt string) (sample, string) {
 	s := sample{Proto: proto}
-	method, path, body, stream := buildRequest(o, proto, worker, iter, rng)
+	method, path, body, stream := buildRequest(o, proto, convo, prompt)
 	s.Stream = stream
 	url := o.Upstream + path
 
@@ -169,7 +189,7 @@ func runOne(client *http.Client, o *opts, proto string, worker, iter int, rng *r
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
 		s.Err = "build: " + err.Error()
-		return s
+		return s, ""
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(o.AuthHeader, "Bearer "+key)
@@ -185,13 +205,15 @@ func runOne(client *http.Client, o *opts, proto string, worker, iter int, rng *r
 	if err != nil {
 		s.Err = "do: " + err.Error()
 		s.Latency = time.Since(t0)
-		return s
+		return s, ""
 	}
 	defer resp.Body.Close()
 	s.Status = resp.StatusCode
 
+	var assistant string
 	// For streaming, time-to-first-byte: read one byte, record, then
-	// drain the rest. For non-streaming we just read all.
+	// drain the rest. For non-streaming we read the full body so we
+	// can extract the assistant text when running in chain mode.
 	if stream {
 		buf := make([]byte, 1)
 		n, _ := io.ReadFull(resp.Body, buf)
@@ -202,21 +224,52 @@ func runOne(client *http.Client, o *opts, proto string, worker, iter int, rng *r
 		copied, _ := io.Copy(io.Discard, resp.Body)
 		s.Bytes += copied
 	} else {
-		copied, _ := io.Copy(io.Discard, resp.Body)
-		s.Bytes = copied
+		all, _ := io.ReadAll(resp.Body)
+		s.Bytes = int64(len(all))
+		if o.Chain && proto == "chat-nostream" && s.Status >= 200 && s.Status < 300 {
+			assistant = extractChatAssistant(all)
+		}
 	}
 	s.Latency = time.Since(t0)
-	return s
+	return s, assistant
 }
 
-// buildRequest returns (method, path, body, isStream).
-func buildRequest(o *opts, proto string, worker, iter int, rng *rand.Rand) (string, string, []byte, bool) {
-	prompt := fmt.Sprintf("bench worker=%d iter=%d seed=%d say hi", worker, iter, rng.Intn(1_000_000))
+// extractChatAssistant pulls .choices[0].message.content from an OpenAI
+// Chat non-streaming response body. Returns "" if anything is unparsable
+// or missing — that just means this turn won't be chained.
+func extractChatAssistant(body []byte) string {
+	var doc struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return ""
+	}
+	if len(doc.Choices) == 0 {
+		return ""
+	}
+	return doc.Choices[0].Message.Content
+}
+
+// buildRequest returns (method, path, body, isStream). In chain mode
+// the caller's `convo` is the accumulated transcript so far; we tack
+// the new user turn onto it for the next request.
+func buildRequest(o *opts, proto string, convo []map[string]string, prompt string) (string, string, []byte, bool) {
 	switch proto {
 	case "chat-nostream":
+		var msgs []any
+		if o.Chain {
+			for _, m := range convo {
+				msgs = append(msgs, m)
+			}
+		}
+		msgs = append(msgs, map[string]string{"role": "user", "content": prompt})
 		body, _ := json.Marshal(map[string]any{
-			"model":    o.ChatModel,
-			"messages": []any{map[string]string{"role": "user", "content": prompt}},
+			"model":      o.ChatModel,
+			"messages":   msgs,
 			"max_tokens": o.MaxTokens,
 		})
 		return "POST", "/v1/chat/completions", body, false
