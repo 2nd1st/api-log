@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/leoyun/api-log/internal/ids"
+	"github.com/leoyun/api-log/internal/session"
+	"github.com/leoyun/api-log/internal/store/sqlite"
 	"github.com/leoyun/api-log/internal/trace"
 )
 
@@ -45,6 +47,7 @@ type Writer struct {
 	dataDir string
 	clock   func() time.Time
 	in      chan Record
+	store   *sqlite.Store // optional; nil = JSONL-only mode (used in tests / M2 mode)
 
 	// gzip workers run in the background when files rotate. We wait for
 	// them on Close so a shutdown doesn't leave a half-gzipped file behind.
@@ -63,16 +66,20 @@ type Writer struct {
 // Will be lifted into a shared Counters package in M4.
 type Stats struct {
 	DropWriterFull int64 // TrySend dropped because channel was full
-	DropJSONLFail  int64 // append failed (disk full, EIO, etc.)
-	Appended       int64 // successful appends
+	DropJSONLFail  int64 // JSONL append failed (disk full, EIO, etc.)
+	DropSQLiteFail int64 // SQLite upsert failed (busy timeout, schema err, …)
+	Appended       int64 // successful JSONL appends
+	Indexed        int64 // successful SQLite upserts (≤ Appended)
 }
 
 // New creates a Writer with the given chan capacity. Call Start to
-// launch its goroutine. Use TrySend to enqueue records. Call Close on
-// shutdown to drain the channel and wait for background gzip workers.
+// launch its goroutine. Use TrySend to enqueue records. Call the stop
+// fn (from Start) on shutdown to drain the channel and wait for
+// background gzip workers.
 //
+// store may be nil; tests and pure-JSONL deployments leave it nil.
 // clock may be nil; defaults to time.Now.
-func New(dataDir string, chanCap int, clock func() time.Time) *Writer {
+func New(dataDir string, chanCap int, store *sqlite.Store, clock func() time.Time) *Writer {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -80,6 +87,7 @@ func New(dataDir string, chanCap int, clock func() time.Time) *Writer {
 		dataDir: dataDir,
 		clock:   clock,
 		in:      make(chan Record, chanCap),
+		store:   store,
 		files:   make(map[string]*openFile),
 	}
 }
@@ -145,41 +153,65 @@ func (w *Writer) runLoop() {
 func (w *Writer) appendOne(rec Record) {
 	now := w.clock()
 	date := now.UTC().Format("2006-01-02")
-	hashShort := ids.KeyHashShort(rec.KeyHash)
-	if hashShort == "" {
-		hashShort = ids.KeyHashShort(ids.AllZeroKeyHash)
+	keyHash := rec.KeyHash
+	if keyHash == "" {
+		keyHash = ids.AllZeroKeyHash
 	}
+	hashShort := ids.KeyHashShort(keyHash)
 
 	of, err := w.fileFor(date, hashShort)
 	if err != nil {
-		w.bumpFail()
-		_ = err // M2 logs at the call site if needed; writer is silent here.
+		w.bumpJSONLFail()
 		return
 	}
 
 	line, err := marshalLine(rec.Trace)
 	if err != nil {
-		w.bumpFail()
+		w.bumpJSONLFail()
 		return
 	}
 
-	// Record the pre-write offset so M3's SQLite mirror can later seek
-	// to this line by (jsonl_path, jsonl_offset).
+	// Pre-write offset — where this line begins. Stored in SQLite so
+	// the read API can seek directly to it.
 	offset, err := currentSize(of.f)
 	if err != nil {
-		w.bumpFail()
+		w.bumpJSONLFail()
 		return
 	}
 	if _, err := of.f.Write(line); err != nil {
-		w.bumpFail()
+		w.bumpJSONLFail()
 		return
 	}
 	w.mu.Lock()
 	w.stats.Appended++
 	w.mu.Unlock()
 
-	// Pre-write offset is recorded; M3 will route this back to producers.
-	_ = offset
+	if w.store == nil {
+		return
+	}
+
+	// SQLite mirror + session inference in one transaction (one fsync,
+	// not two). Failure here doesn't roll back the JSONL — the JSONL is
+	// already on disk and a startup rebuild will recover.
+	row := sqlite.FromTrace(rec.Trace, keyHash, of.path, offset)
+	prefix, _ := session.Build(rec.Trace.Path, sessionPrefixBody(rec.Trace))
+	if err := w.store.AppendTrace(row, prefix); err != nil {
+		w.bumpSQLiteFail()
+		return
+	}
+	w.mu.Lock()
+	w.stats.Indexed++
+	w.mu.Unlock()
+}
+
+// sessionPrefixBody picks the JSON body to feed session.Build. Returns
+// nil when the request body wasn't parseable JSON (then the trace has
+// no session prefix — landing as a self-root in SQLite).
+func sessionPrefixBody(t trace.Trace) []byte {
+	if len(t.Req.Body) == 0 {
+		return nil
+	}
+	return []byte(t.Req.Body)
 }
 
 func marshalLine(t trace.Trace) ([]byte, error) {
@@ -200,9 +232,15 @@ func currentSize(f *os.File) (int64, error) {
 	return fi.Size(), nil
 }
 
-func (w *Writer) bumpFail() {
+func (w *Writer) bumpJSONLFail() {
 	w.mu.Lock()
 	w.stats.DropJSONLFail++
+	w.mu.Unlock()
+}
+
+func (w *Writer) bumpSQLiteFail() {
+	w.mu.Lock()
+	w.stats.DropSQLiteFail++
 	w.mu.Unlock()
 }
 

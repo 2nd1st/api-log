@@ -15,8 +15,47 @@
 package capture
 
 import (
+	"sync"
 	"time"
 )
+
+// chunkBufPool reuses backing arrays for the byte slices that travel
+// the capture channel. Without pooling, each Sink.Write allocates
+// `make([]byte, len(p))` — at high throughput (a 2000-user team's
+// bursts run ~500-1000 traces/sec with multiple chunks per trace),
+// that allocation rate creates real GC pressure.
+//
+// Pool stores byte slices keyed by no size class — Go's pool returns
+// whatever it has; the caller resizes / discards as needed. Since SSE
+// chunks are typically 4-32 KB and JSON request bodies vary widely,
+// we just retain the underlying capacity per slice and let the GC
+// reclaim if the pool grows huge.
+var chunkBufPool = sync.Pool{
+	New: func() any {
+		// Return a small backing array; chunks larger than this just
+		// allocate fresh (rare for SSE; common for one-shot JSON bodies).
+		b := make([]byte, 0, 4096)
+		return &b
+	},
+}
+
+// putChunkBuf returns a chunk's buf back to the pool if its capacity
+// is reasonable. Large outliers are dropped so the pool doesn't retain
+// big allocations forever.
+func putChunkBuf(buf []byte) {
+	const maxRetainCap = 64 * 1024 // 64 KB — drop anything bigger
+	if cap(buf) == 0 || cap(buf) > maxRetainCap {
+		return
+	}
+	buf = buf[:0]
+	chunkBufPool.Put(&buf)
+}
+
+// ReleaseChunk returns a Chunk's backing buffer to the pool. The
+// drainer calls this once it has finished consuming the chunk.
+func ReleaseChunk(c Chunk) {
+	putChunkBuf(c.Data)
+}
 
 // Chunk is one byte payload on a capture channel, tagged with the time
 // captureSink.Write was called (= time the inner Transport delivered these
@@ -48,11 +87,24 @@ type Sink struct {
 // chunk on s.Ch. Always returns (len(p), nil) — Sinks cannot fail in the
 // io.Writer sense; the forwarding goroutine's reads are never short-read
 // or error'd because of capture behavior.
+//
+// The byte slice is taken from a sync.Pool; the drainer must call
+// ReleaseChunk(c) once it has finished consuming the chunk so the
+// backing array returns to the pool.
 func (s *Sink) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	buf := make([]byte, len(p))
+	bufPtr := chunkBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	if cap(buf) < len(p) {
+		// Pool slot wasn't large enough — allocate a fresh slice large
+		// enough for this write. Future writes of similar size will
+		// recycle this larger allocation through the pool.
+		buf = make([]byte, len(p))
+	} else {
+		buf = buf[:len(p)]
+	}
 	copy(buf, p)
 
 	ts := time.Now()
@@ -64,6 +116,9 @@ func (s *Sink) Write(p []byte) (int, error) {
 	select {
 	case s.Ch <- c:
 	default:
+		// Channel full → drop. Return the buffer to the pool so we don't
+		// leak it on a drop spike.
+		putChunkBuf(buf)
 		if s.OnDrop != nil {
 			s.OnDrop()
 		}

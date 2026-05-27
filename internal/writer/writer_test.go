@@ -38,7 +38,7 @@ func makeTrace(id string) trace.Trace {
 func TestAppendOneWritesJSONLLine(t *testing.T) {
 	dir := t.TempDir()
 	fixed := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
-	w := New(dir, 16, func() time.Time { return fixed })
+	w := New(dir, 16, nil, func() time.Time { return fixed })
 	stop := w.Start()
 
 	if !w.TrySend(Record{Trace: makeTrace("01H"), KeyHash: "a1b2c3d4e5f6a7b8"}) {
@@ -74,7 +74,7 @@ func TestAppendOneWritesJSONLLine(t *testing.T) {
 func TestPerKeyHashFileSeparation(t *testing.T) {
 	dir := t.TempDir()
 	fixed := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
-	w := New(dir, 16, func() time.Time { return fixed })
+	w := New(dir, 16, nil, func() time.Time { return fixed })
 	stop := w.Start()
 
 	w.TrySend(Record{Trace: makeTrace("a-1"), KeyHash: "aaaaaaaa11111111"})
@@ -89,7 +89,7 @@ func TestPerKeyHashFileSeparation(t *testing.T) {
 
 func TestNoAuthGoesToZeroHashFile(t *testing.T) {
 	dir := t.TempDir()
-	w := New(dir, 4, nil) // clock = time.Now
+	w := New(dir, 4, nil, nil) // clock = time.Now
 	stop := w.Start()
 	w.TrySend(Record{Trace: makeTrace("01H"), KeyHash: ""})
 	stop()
@@ -121,7 +121,7 @@ func TestDailyRotationGzipsOldFile(t *testing.T) {
 		defer muClock.Unlock()
 		return now
 	}
-	w := New(dir, 16, clock)
+	w := New(dir, 16, nil, clock)
 	stop := w.Start()
 
 	// First trace lands on day 2026-05-27.
@@ -183,7 +183,7 @@ func TestDailyRotationGzipsOldFile(t *testing.T) {
 func TestTrySendDropsWhenFull(t *testing.T) {
 	dir := t.TempDir()
 	// Tiny channel + no goroutine started → all sends drop after one.
-	w := New(dir, 1, nil)
+	w := New(dir, 1, nil, nil)
 	// Don't call Start so nothing consumes.
 
 	if !w.TrySend(Record{Trace: makeTrace("first"), KeyHash: "x"}) {
@@ -202,7 +202,7 @@ func TestTrySendDropsWhenFull(t *testing.T) {
 }
 
 func TestStopIdempotent(t *testing.T) {
-	w := New(t.TempDir(), 4, nil)
+	w := New(t.TempDir(), 4, nil, nil)
 	stop := w.Start()
 	stop()
 	// Second call must not panic.

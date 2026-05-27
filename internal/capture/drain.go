@@ -45,6 +45,7 @@ func Drain(ch <-chan Chunk, tmpFile io.Writer, maxBodyBytes int64) DrainResult {
 
 	for c := range ch {
 		if len(c.Data) == 0 {
+			ReleaseChunk(c)
 			continue
 		}
 		if firstByteAt == 0 {
@@ -52,6 +53,7 @@ func Drain(ch <-chan Chunk, tmpFile io.Writer, maxBodyBytes int64) DrainResult {
 		}
 		if stopped {
 			// Continue draining the channel but discard.
+			ReleaseChunk(c)
 			continue
 		}
 		// Enforce max_body_bytes: write only up to the remaining quota,
@@ -60,6 +62,7 @@ func Drain(ch <-chan Chunk, tmpFile io.Writer, maxBodyBytes int64) DrainResult {
 		if remaining <= 0 {
 			truncated = true
 			stopped = true
+			ReleaseChunk(c)
 			continue
 		}
 		toWrite := c.Data
@@ -74,6 +77,7 @@ func Drain(ch <-chan Chunk, tmpFile io.Writer, maxBodyBytes int64) DrainResult {
 			writeErr = err
 			stopped = true
 		}
+		ReleaseChunk(c)
 	}
 
 	return DrainResult{

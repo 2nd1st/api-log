@@ -22,12 +22,15 @@ import (
 
 	"log/slog"
 
+	"path/filepath"
+
 	"github.com/leoyun/api-log/internal/capture"
 	"github.com/leoyun/api-log/internal/config"
 	"github.com/leoyun/api-log/internal/ids"
 	"github.com/leoyun/api-log/internal/logging"
 	"github.com/leoyun/api-log/internal/parser"
 	"github.com/leoyun/api-log/internal/proxy"
+	"github.com/leoyun/api-log/internal/store/sqlite"
 	"github.com/leoyun/api-log/internal/trace"
 	"github.com/leoyun/api-log/internal/writer"
 )
@@ -74,9 +77,20 @@ func run() error {
 		return fmt.Errorf("parse upstream URL: %w", err)
 	}
 
-	// Single-writer goroutine for JSONL append. M3 will extend with
-	// SQLite upsert inside the same goroutine.
-	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, nil)
+	// Open the SQLite derived cache. Per ARCHITECTURE § 4: WAL mode +
+	// pragmas applied inside Open. Single write connection — the writer
+	// goroutine below is the sole writer.
+	sqlitePath := filepath.Join(cfg.Storage.DataDir, "index.sqlite")
+	store, err := sqlite.Open(sqlitePath)
+	if err != nil {
+		return fmt.Errorf("open sqlite: %w", err)
+	}
+	defer store.Close()
+	slog.Info("sqlite open", "path", sqlitePath)
+
+	// Single-writer goroutine for JSONL append + SQLite upsert. Both
+	// run in the same goroutine in one transaction per trace.
+	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, nil)
 	stopWriter := wrtr.Start()
 	defer stopWriter()
 
