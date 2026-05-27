@@ -952,8 +952,19 @@
   async function renderConversation(panel, row, tr) {
     const path = row.path;
     const req = tr.req && tr.req.body;
-    const resp = tr.resp && tr.resp.body;
+    let resp = tr.resp && tr.resp.body;
     const events = (tr.resp && tr.resp.events) || [];
+    // Defensive: some upstreams (sub2gpt observed) mis-label a plain
+    // JSON chat.completion response as Content-Type: text/event-stream.
+    // The recorder's SSE parser falls back to body_b64 in that case
+    // and leaves resp.body null. Try to recover here so the
+    // conversation tab still gets the assistant turn.
+    if (!resp && events.length === 0 && tr.resp && tr.resp.body_b64) {
+      try {
+        const raw = atob(tr.resp.body_b64);
+        resp = JSON.parse(raw);
+      } catch (_) { /* keep resp null; we'll just show user turn */ }
+    }
     const thisTurns = extractTurns(path, req, resp, events);
 
     const header = `<div class="convo-controls">
