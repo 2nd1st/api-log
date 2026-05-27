@@ -35,3 +35,4 @@
 /experiments/*/data/
 /experiments/x-forwarded-test/go.sum
 /experiments/x-forwarded-test/*.bin
+/.tmp-screenshots/
