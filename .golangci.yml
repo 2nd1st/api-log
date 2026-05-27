@@ -1,0 +1,32 @@
+# golangci-lint config. Keep minimal; principle 5 (one tool, default config).
+# Run: `golangci-lint run ./...`
+
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - misspell
+
+  settings:
+    govet:
+      enable:
+        - shadow
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+run:
+  timeout: 5m
