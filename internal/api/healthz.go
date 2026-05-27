@@ -21,15 +21,3 @@ func healthz(deps Deps) http.Handler {
 	})
 }
 
-// rootPointer returns the JSON pointer to the separate viewer project
-// per ARCHITECTURE § 6.6. v0 ships no embedded HTML.
-func rootPointer(deps Deps) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{
-			"name":    "api-log",
-			"viewer":  "https://github.com/leoyun/api-log-viewer",
-			"version": deps.Version,
-		})
-	})
-}
-

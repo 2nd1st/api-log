@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>api-log viewer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel-2: #1d212c;
+    --line: #262b38;
+    --fg: #d7dae0;
+    --muted: #888d99;
+    --accent: #7ab8ff;
+    --ok: #6bd084;
+    --warn: #e2b352;
+    --err: #e87272;
+    --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+  }
+  body { display: flex; flex-direction: column; }
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 8px 16px; border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  header h1 {
+    margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.5px;
+    color: var(--accent); font-family: var(--mono);
+  }
+  header nav { display: flex; gap: 4px; }
+  header nav a {
+    padding: 4px 10px; color: var(--muted); text-decoration: none;
+    border-radius: 4px; font-size: 12px;
+  }
+  header nav a.active { background: var(--panel-2); color: var(--fg); }
+  header nav a:hover { color: var(--fg); }
+  header .spacer { flex: 1; }
+  header .pill {
+    font-family: var(--mono); font-size: 11px;
+    padding: 3px 8px; border-radius: 10px; background: var(--panel-2);
+    border: 1px solid var(--line);
+  }
+  header .pill.ok  { color: var(--ok); border-color: #2a3d2e; }
+  header .pill.bad { color: var(--err); border-color: #4a2a2a; }
+  header button, header input {
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
+    padding: 4px 8px; border-radius: 4px; font-family: var(--mono); font-size: 11px;
+  }
+  header button { cursor: pointer; }
+  header button:hover { background: var(--line); }
+  main { flex: 1; overflow: hidden; display: flex; }
+  .view { flex: 1; overflow: hidden; display: none; }
+  .view.active { display: flex; }
+
+  /* Traces view: 3-pane: filter / list / detail */
+  #traces { flex-direction: row; }
+  #filters {
+    width: 220px; padding: 12px; border-right: 1px solid var(--line);
+    overflow: auto; background: var(--panel);
+  }
+  #filters label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+  #filters input, #filters select {
+    width: 100%; background: var(--panel-2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 3px; padding: 5px 7px;
+    font-family: var(--mono); font-size: 11px;
+  }
+  #filters .row { display: flex; gap: 4px; margin-top: 12px; }
+  #filters button {
+    flex: 1; background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
+    padding: 6px; border-radius: 3px; font-size: 11px; cursor: pointer;
+  }
+  #filters button.primary { background: var(--accent); color: #0f1115; border-color: var(--accent); }
+  #filters button:hover { background: var(--line); }
+
+  #list {
+    width: 50%; overflow: auto; border-right: 1px solid var(--line);
+  }
+  #list table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+  #list th, #list td {
+    text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #list th {
+    position: sticky; top: 0; background: var(--panel); color: var(--muted);
+    font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  #list tbody tr { cursor: pointer; }
+  #list tbody tr:hover { background: var(--panel-2); }
+  #list tbody tr.selected { background: var(--panel-2); }
+  .status-2 { color: var(--ok); }
+  .status-4 { color: var(--warn); }
+  .status-5 { color: var(--err); }
+  .badge {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; margin-right: 4px;
+  }
+  #list .pager {
+    display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line);
+    background: var(--panel); position: sticky; bottom: 0;
+  }
+  #list .pager button { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 11px; }
+  #list .pager span { color: var(--muted); font-size: 11px; align-self: center; margin-left: auto; font-family: var(--mono); }
+
+  #detail { flex: 1; overflow: auto; padding: 16px; }
+  #detail .empty { color: var(--muted); text-align: center; margin-top: 80px; font-size: 14px; }
+  #detail .head {
+    display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
+    padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px;
+  }
+  #detail .head .id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  #detail .head .path { font-family: var(--mono); font-size: 13px; }
+  #detail .head .meta { display: flex; gap: 14px; color: var(--muted); font-size: 11px; }
+  #detail .head .meta span { font-family: var(--mono); }
+  #detail .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  #detail .tabs a {
+    padding: 4px 12px; color: var(--muted); cursor: pointer; border-radius: 4px;
+    font-size: 12px; user-select: none;
+  }
+  #detail .tabs a:hover { color: var(--fg); }
+  #detail .tabs a.active { background: var(--panel-2); color: var(--fg); }
+  #detail .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 14px; }
+  pre.json {
+    margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+    word-break: break-word; line-height: 1.5;
+  }
+  .json-key { color: var(--accent); }
+  .json-string { color: #b5bd68; }
+  .json-num, .json-bool, .json-null { color: var(--warn); }
+
+  .kv {
+    font-family: var(--mono); font-size: 11px; display: grid;
+    grid-template-columns: 200px 1fr; gap: 2px 12px;
+  }
+  .kv .k { color: var(--muted); }
+
+  .events-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+  .events-table th, .events-table td {
+    text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top;
+  }
+  .events-table th { color: var(--muted); font-weight: 500; }
+  .events-table td.data { max-width: 600px; overflow: hidden; text-overflow: ellipsis; }
+  .events-table tr.expanded td.data { white-space: pre-wrap; max-width: none; overflow: visible; }
+
+  .replay-controls { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .replay-controls button {
+    background: var(--accent); color: #0f1115; border: none;
+    padding: 5px 12px; border-radius: 3px; cursor: pointer; font-size: 11px;
+  }
+  .replay-controls button:hover { opacity: 0.85; }
+  .replay-controls button.stop { background: var(--err); color: white; }
+  .replay-out {
+    background: #000; color: #d0d0d0; font-family: var(--mono); font-size: 11px;
+    padding: 10px; border-radius: 3px; min-height: 200px; max-height: 500px;
+    overflow: auto; white-space: pre-wrap;
+  }
+
+  /* Healthz view */
+  #healthz { flex-direction: column; padding: 20px; gap: 16px; overflow: auto; }
+  #healthz .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    padding: 14px;
+  }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .card .value { font-family: var(--mono); font-size: 22px; font-weight: 500; }
+  .card .sub { color: var(--muted); font-size: 11px; font-family: var(--mono); margin-top: 6px; }
+  .card.bad .value { color: var(--err); }
+  .card.warn .value { color: var(--warn); }
+
+  /* Session tree */
+  .tree { font-family: var(--mono); font-size: 11px; }
+  .tree-node { padding: 4px 0; border-left: 1px solid var(--line); padding-left: 12px; margin-left: 6px; cursor: pointer; }
+  .tree-node:hover .tree-path { color: var(--fg); }
+  .tree-node.selected { background: var(--panel-2); }
+  .tree-node.root { border-left: none; padding-left: 0; margin-left: 0; }
+  .tree-path { color: var(--muted); }
+  .tree-meta { color: var(--muted); font-size: 10px; margin-left: 8px; }
+
+  /* Token modal */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--panel); padding: 24px; border-radius: 6px;
+    border: 1px solid var(--line); width: 480px; max-width: 90vw;
+  }
+  .modal h2 { margin: 0 0 12px; font-size: 14px; color: var(--accent); font-family: var(--mono); }
+  .modal p { color: var(--muted); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
+  .modal input { width: 100%; background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 8px; font-family: var(--mono); font-size: 12px; }
+  .modal .btn-row { display: flex; gap: 8px; margin-top: 12px; }
+  .modal button { background: var(--accent); color: #0f1115; border: none; padding: 7px 16px; border-radius: 3px; cursor: pointer; font-size: 12px; }
+  .modal button.secondary { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); }
+  .modal button:hover { opacity: 0.85; }
+</style>
+</head>
+<body>
+<header>
+  <h1>api-log/viewer</h1>
+  <nav id="nav">
+    <a data-view="traces" href="#/traces">Traces</a>
+    <a data-view="healthz" href="#/healthz">Healthz</a>
+  </nav>
+  <div class="spacer"></div>
+  <span id="status-pill" class="pill">connecting…</span>
+  <button id="refresh">↻</button>
+  <button id="auth-btn" title="set admin token">auth</button>
+</header>
+
+<main>
+  <section id="traces" class="view">
+    <aside id="filters">
+      <label>status</label>
+      <input id="f-status" placeholder="200 / 4xx / 5xx" />
+      <label>path</label>
+      <input id="f-path" placeholder="/v1/chat/completions" />
+      <label>model</label>
+      <input id="f-model" placeholder="gpt-5.5" />
+      <label>key_hash</label>
+      <input id="f-keyhash" placeholder="first 16 hex" />
+      <label>session_root_id</label>
+      <input id="f-session" placeholder="ULID" />
+      <label>since (ISO8601)</label>
+      <input id="f-since" placeholder="2026-05-28T00:00:00Z" />
+      <label>limit</label>
+      <input id="f-limit" type="number" value="50" min="1" max="500" />
+      <div class="row">
+        <button id="f-apply" class="primary">Apply</button>
+        <button id="f-clear">Clear</button>
+      </div>
+    </aside>
+    <div id="list">
+      <table>
+        <thead><tr>
+          <th>ts</th><th>status</th><th>path</th><th>model</th><th>key</th><th>session</th>
+        </tr></thead>
+        <tbody id="list-rows"></tbody>
+      </table>
+      <div class="pager">
+        <button id="page-prev" disabled>← prev</button>
+        <button id="page-next" disabled>next →</button>
+        <span id="page-info">—</span>
+      </div>
+    </div>
+    <div id="detail">
+      <div class="empty">click a trace on the left</div>
+    </div>
+  </section>
+
+  <section id="healthz" class="view">
+    <div class="cards" id="health-cards"></div>
+    <div id="health-timings"></div>
+  </section>
+</main>
+
+<div id="modal-bg" class="modal-bg">
+  <div class="modal">
+    <h2>Admin token</h2>
+    <p>Enter the bearer token from <code>$APILOG_DATA_DIR/admin_token</code>. The token never leaves this browser — it's stored in <code>localStorage</code> and sent on every API request from this page.</p>
+    <input id="token-input" type="password" placeholder="hex token…" autocomplete="off" />
+    <div class="btn-row">
+      <button id="token-save">Save</button>
+      <button id="token-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- state + helpers ----------
+
+  const $ = (id) => document.getElementById(id);
+  const apiBase = new URL('../', window.location.href);
+  const api = (path) => new URL(path.replace(/^\//, ''), apiBase).toString();
+
+  const state = {
+    token: localStorage.getItem('apilog.token') || '',
+    view: 'traces',
+    traces: [],
+    cursor: null,
+    cursorStack: [],
+    selectedId: null,
+    detail: null,
+    detailTab: 'overview',
+    healthz: null,
+    healthzTimer: null,
+    replaySrc: null,
+  };
+
+  async function authFetch(path, opts = {}) {
+    if (!state.token) {
+      showAuthModal();
+      throw new Error('no token');
+    }
+    const r = await fetch(api(path), {
+      ...opts,
+      headers: { 'Authorization': 'Bearer ' + state.token, ...(opts.headers || {}) },
+    });
+    if (r.status === 401) {
+      showAuthModal();
+      throw new Error('unauthorized');
+    }
+    return r;
+  }
+
+  function setStatus(text, kind) {
+    const p = $('status-pill');
+    p.textContent = text;
+    p.className = 'pill' + (kind ? ' ' + kind : '');
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  function jsonHL(value) {
+    const json = JSON.stringify(value, null, 2);
+    if (json == null) return '';
+    return esc(json).replace(
+      /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
+      (m, str, colon, lit) => {
+        if (str) return colon ? `<span class="json-key">${str}</span>${colon}` : `<span class="json-string">${str}</span>`;
+        if (lit) return `<span class="json-${lit==='null'?'null':'bool'}">${lit}</span>`;
+        return `<span class="json-num">${m}</span>`;
+      }
+    );
+  }
+
+  function shortId(id) { return id ? id.slice(-8) : ''; }
+  function shortTs(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  }
+  function fmtMs(ms) {
+    if (ms == null) return '—';
+    if (ms < 1000) return ms + 'ms';
+    return (ms / 1000).toFixed(2) + 's';
+  }
+
+  // ---------- routing ----------
+
+  function applyHash() {
+    const h = window.location.hash || '#/traces';
+    const [_, view, ...rest] = h.split('/');
+    state.view = view || 'traces';
+    document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === state.view));
+    document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === state.view));
+    if (state.view === 'healthz') startHealthz();
+    else stopHealthz();
+    if (state.view === 'traces' && state.traces.length === 0) loadTraces({ reset: true });
+    // deep-link trace id: #/traces/<id>
+    if (state.view === 'traces' && rest[0]) {
+      const id = rest[0];
+      if (id !== state.selectedId) selectTrace(id);
+    }
+  }
+  window.addEventListener('hashchange', applyHash);
+
+  // ---------- traces list ----------
+
+  function readFilters() {
+    const f = {};
+    const status = $('f-status').value.trim();
+    if (status) f.status = status;
+    const path = $('f-path').value.trim();
+    if (path) f.path = path;
+    const model = $('f-model').value.trim();
+    if (model) f.model = model;
+    const kh = $('f-keyhash').value.trim();
+    if (kh) f.key_hash = kh;
+    const sr = $('f-session').value.trim();
+    if (sr) f.session_root_id = sr;
+    const since = $('f-since').value.trim();
+    if (since) f.since = since;
+    const limit = $('f-limit').value.trim();
+    if (limit) f.limit = limit;
+    return f;
+  }
+
+  async function loadTraces({ reset, cursor } = {}) {
+    if (reset) { state.cursorStack = []; cursor = null; }
+    const f = readFilters();
+    const qs = new URLSearchParams(f);
+    if (cursor) qs.set('cursor', cursor);
+    try {
+      const r = await authFetch('api/traces?' + qs.toString());
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      state.traces = j.traces || [];
+      state.cursor = j.next_cursor || null;
+      renderList();
+      setStatus(`ok · ${state.traces.length} of ${j.total ?? '?'}`, 'ok');
+    } catch (e) {
+      setStatus('list failed', 'bad');
+    }
+  }
+
+  function renderList() {
+    const tbody = $('list-rows');
+    tbody.innerHTML = state.traces.map((t) => {
+      const sBucket = Math.floor((t.status || 0) / 100);
+      return `<tr data-id="${t.id}" class="${t.id === state.selectedId ? 'selected' : ''}">
+        <td>${shortTs(t.ts_start)}</td>
+        <td class="status-${sBucket}">${t.status ?? '—'}</td>
+        <td>${esc(t.path || '')}</td>
+        <td>${esc(t.model || '—')}</td>
+        <td title="${esc(t.key_hash || '')}">${(t.key_hash || '').slice(0, 8)}</td>
+        <td title="${esc(t.session_root_id || '')}">${shortId(t.session_root_id)}</td>
+      </tr>`;
+    }).join('');
+    $('page-next').disabled = !state.cursor;
+    $('page-prev').disabled = state.cursorStack.length === 0;
+    $('page-info').textContent = state.traces.length ? `${state.traces.length} loaded` : 'empty';
+  }
+
+  // ---------- detail ----------
+
+  async function selectTrace(id) {
+    state.selectedId = id;
+    state.detail = null;
+    state.detailTab = 'overview';
+    document.querySelectorAll('#list-rows tr').forEach((r) => r.classList.toggle('selected', r.dataset.id === id));
+    if (window.location.hash !== `#/traces/${id}`) {
+      history.replaceState(null, '', `#/traces/${id}`);
+    }
+    $('detail').innerHTML = `<div class="empty">loading ${esc(id)}…</div>`;
+    try {
+      const r = await authFetch(`api/traces/${id}`);
+      if (!r.ok) throw new Error(r.status);
+      state.detail = await r.json();
+      renderDetail();
+    } catch (e) {
+      $('detail').innerHTML = `<div class="empty">load failed: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderDetail() {
+    const d = state.detail;
+    if (!d) { $('detail').innerHTML = `<div class="empty">click a trace on the left</div>`; return; }
+    const row = d.row, tr = d.trace || {};
+    const dur = row.ts_start && row.ts_end
+      ? new Date(row.ts_end) - new Date(row.ts_start) : null;
+    const sBucket = Math.floor((row.status || 0) / 100);
+    const events = (tr.resp && tr.resp.events) || [];
+    const hasReplay = events.length > 0;
+    const tabs = ['overview', 'headers', 'body', events.length ? 'events' : null, 'session', hasReplay ? 'replay' : null].filter(Boolean);
+    $('detail').innerHTML = `
+      <div class="head">
+        <span class="path">${esc(row.method || 'POST')} ${esc(row.path || '')}</span>
+        <span class="status-${sBucket}">${row.status ?? '—'}</span>
+        <span class="id">${esc(row.id)}</span>
+        <div class="meta">
+          <span>${shortTs(row.ts_start)}</span>
+          <span>dur=${fmtMs(dur)}</span>
+          <span>model=${esc(row.model || '—')}</span>
+          <span>tokens=${row.prompt_tokens ?? '—'}/${row.completion_tokens ?? '—'}</span>
+          <span>key=${(row.key_hash || '').slice(0, 8)}</span>
+          ${row.parent_id ? `<span>parent=<a href="#/traces/${row.parent_id}">${shortId(row.parent_id)}</a></span>` : ''}
+        </div>
+      </div>
+      <div class="tabs">
+        ${tabs.map((t) => `<a data-tab="${t}" class="${t === state.detailTab ? 'active' : ''}">${t}</a>`).join('')}
+      </div>
+      <div class="panel" id="detail-panel"></div>
+    `;
+    renderDetailTab();
+  }
+
+  function renderDetailTab() {
+    const d = state.detail; if (!d) return;
+    const row = d.row, tr = d.trace || {};
+    const panel = $('detail-panel');
+    const tab = state.detailTab;
+    if (tab === 'overview') {
+      panel.innerHTML = `<div class="kv">
+        ${Object.entries(row).map(([k, v]) => `<div class="k">${esc(k)}</div><div>${esc(typeof v === 'object' && v !== null ? JSON.stringify(v) : v)}</div>`).join('')}
+      </div>`;
+    } else if (tab === 'headers') {
+      const reqH = (tr.req && tr.req.headers) || {};
+      const resH = (tr.resp && tr.resp.headers) || {};
+      panel.innerHTML = `
+        <h3 style="margin:0 0 8px;font-size:12px;color:var(--muted)">REQUEST HEADERS</h3>
+        <div class="kv">${Object.entries(reqH).map(([k, v]) => `<div class="k">${esc(k)}</div><div>${esc(v)}</div>`).join('')}</div>
+        <h3 style="margin:16px 0 8px;font-size:12px;color:var(--muted)">RESPONSE HEADERS</h3>
+        <div class="kv">${Object.entries(resH).map(([k, v]) => `<div class="k">${esc(k)}</div><div>${esc(v)}</div>`).join('')}</div>`;
+    } else if (tab === 'body') {
+      const req = (tr.req && tr.req.body) || (tr.req && tr.req.body_b64);
+      const resp = (tr.resp && tr.resp.body) || (tr.resp && tr.resp.body_b64);
+      panel.innerHTML = `
+        <h3 style="margin:0 0 8px;font-size:12px;color:var(--muted)">REQUEST BODY</h3>
+        <pre class="json">${req ? jsonHL(req) : '<span style="color:var(--muted)">empty</span>'}</pre>
+        <h3 style="margin:16px 0 8px;font-size:12px;color:var(--muted)">RESPONSE BODY</h3>
+        <pre class="json">${resp ? jsonHL(resp) : '<span style="color:var(--muted)">empty (streaming — see events tab)</span>'}</pre>`;
+    } else if (tab === 'events') {
+      const events = (tr.resp && tr.resp.events) || [];
+      panel.innerHTML = `<table class="events-table">
+        <thead><tr><th style="width:80px">t_delta</th><th style="width:140px">event</th><th>data</th></tr></thead>
+        <tbody>${events.map((e, i) => `<tr data-i="${i}">
+          <td>${e.t_delta_ms != null ? e.t_delta_ms + 'ms' : '—'}</td>
+          <td>${esc(e.event || '(data-only)')}</td>
+          <td class="data" title="click to expand">${esc(typeof e.data === 'object' ? JSON.stringify(e.data) : e.data)}</td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+      panel.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', () => tr.classList.toggle('expanded')));
+    } else if (tab === 'session') {
+      renderSessionTree(panel, row);
+    } else if (tab === 'replay') {
+      renderReplay(panel, row);
+    }
+    panel.parentElement.querySelectorAll('.tabs a').forEach((a) => {
+      a.addEventListener('click', () => { state.detailTab = a.dataset.tab; renderDetail(); });
+    });
+  }
+
+  async function renderSessionTree(panel, row) {
+    if (!row.session_root_id) { panel.innerHTML = '<div style="color:var(--muted)">no session</div>'; return; }
+    panel.innerHTML = '<div style="color:var(--muted)">loading session…</div>';
+    try {
+      const r = await authFetch(`api/traces?session_root_id=${row.session_root_id}&limit=500`);
+      const j = await r.json();
+      const nodes = (j.traces || []).slice().sort((a, b) => a.ts_start.localeCompare(b.ts_start));
+      // Build parent->children map.
+      const byId = new Map(nodes.map((n) => [n.id, { ...n, kids: [] }]));
+      let root = null;
+      for (const n of byId.values()) {
+        if (n.parent_id && byId.has(n.parent_id)) byId.get(n.parent_id).kids.push(n);
+        else if (!n.parent_id || n.id === n.session_root_id) root = n;
+      }
+      if (!root) root = nodes[0] ? byId.get(nodes[0].id) : null;
+      if (!root) { panel.innerHTML = '<div style="color:var(--muted)">empty</div>'; return; }
+      function r2html(n, depth) {
+        const sel = n.id === row.id ? ' selected' : '';
+        const cls = 'tree-node' + (depth === 0 ? ' root' : '') + sel;
+        return `<div class="${cls}" data-id="${n.id}">
+          <span class="status-${Math.floor((n.status||0)/100)}">${n.status ?? '—'}</span>
+          <span class="tree-path">${esc(n.path || '')}</span>
+          <span class="tree-meta">${shortTs(n.ts_start)} · ${shortId(n.id)}</span>
+          ${n.kids.length ? n.kids.map((k) => r2html(k, depth + 1)).join('') : ''}
+        </div>`;
+      }
+      panel.innerHTML = `<div class="tree">${r2html(root, 0)}</div>
+        <div style="color:var(--muted);font-size:11px;margin-top:10px">${nodes.length} traces in session · root=${shortId(root.id)}</div>`;
+      panel.querySelectorAll('.tree-node').forEach((el) => {
+        el.addEventListener('click', (e) => { e.stopPropagation(); selectTrace(el.dataset.id); });
+      });
+    } catch (e) {
+      panel.innerHTML = `<div style="color:var(--err)">session load failed: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderReplay(panel, row) {
+    panel.innerHTML = `
+      <div class="replay-controls">
+        <button data-speed="1">1×</button>
+        <button data-speed="2">2×</button>
+        <button data-speed="10">10×</button>
+        <button data-speed="0">nodelay</button>
+        <button class="stop" id="rp-stop">stop</button>
+        <span id="rp-status" style="color:var(--muted);font-size:11px"></span>
+      </div>
+      <div class="replay-out" id="rp-out">(press a speed button to replay)</div>`;
+    const out = $('rp-out');
+    const stat = $('rp-status');
+    const stopReplay = () => {
+      if (state.replaySrc) { state.replaySrc.abort(); state.replaySrc = null; stat.textContent = 'stopped'; }
+    };
+    panel.querySelectorAll('button[data-speed]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        stopReplay();
+        out.textContent = '';
+        const speed = b.dataset.speed;
+        const url = api(`api/traces/${row.id}/replay`) + (speed === '0' ? '?nodelay=1' : `?speed=${speed}`);
+        stat.textContent = 'streaming…';
+        // EventSource doesn't accept custom headers, so we fetch + read stream.
+        const ctrl = new AbortController();
+        state.replaySrc = ctrl;
+        try {
+          const r = await fetch(url, {
+            headers: { 'Authorization': 'Bearer ' + state.token },
+            signal: ctrl.signal,
+          });
+          if (!r.ok) { stat.textContent = `error ${r.status}`; return; }
+          const reader = r.body.getReader();
+          const dec = new TextDecoder();
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) { stat.textContent = 'done'; break; }
+            out.textContent += dec.decode(value, { stream: true });
+            out.scrollTop = out.scrollHeight;
+          }
+        } catch (e) {
+          if (e.name !== 'AbortError') stat.textContent = 'failed: ' + e.message;
+        } finally {
+          state.replaySrc = null;
+        }
+      });
+    });
+    $('rp-stop').addEventListener('click', stopReplay);
+  }
+
+  // ---------- healthz ----------
+
+  async function loadHealthz() {
+    try {
+      const r = await authFetch('healthz');
+      if (!r.ok) throw new Error(r.status);
+      state.healthz = await r.json();
+      renderHealthz();
+      const c = state.healthz.counters || {};
+      const bad = c.drop_writer_full + c.drop_jsonl_fail + c.drop_sqlite_fail;
+      setStatus(bad > 0 ? `drops: ${bad}` : `ok · ${c.appended} traces`, bad > 0 ? 'bad' : 'ok');
+    } catch (e) {
+      setStatus('healthz down', 'bad');
+    }
+  }
+
+  function renderHealthz() {
+    if (!state.healthz) return;
+    const h = state.healthz; const c = h.counters || {};
+    const drops = c.drop_writer_full + c.drop_jsonl_fail + c.drop_sqlite_fail;
+    const cards = [
+      { label: 'uptime', value: Math.floor(h.uptime_seconds / 60) + 'm', sub: 'started ' + new Date(Date.now() - h.uptime_seconds*1000).toISOString().slice(0, 19) + 'Z' },
+      { label: 'appended', value: c.appended, sub: `2xx ${c.appended_2xx ?? 0} · 4xx ${c.appended_4xx ?? 0} · 5xx ${c.appended_5xx ?? 0}` },
+      { label: 'indexed (SQLite)', value: c.indexed, sub: `lag = ${c.appended - c.indexed}` },
+      { label: 'drops', value: drops, sub: `writer ${c.drop_writer_full} · jsonl ${c.drop_jsonl_fail} · sqlite ${c.drop_sqlite_fail}`, kind: drops > 0 ? 'bad' : null },
+      { label: 'truncated', value: c.truncated_req_total + c.truncated_resp_total, sub: `req ${c.truncated_req_total} · resp ${c.truncated_resp_total}`, kind: (c.truncated_req_total + c.truncated_resp_total) > 0 ? 'warn' : null },
+      { label: 'writer chan high-water', value: c.writer_chan_high_water, sub: 'channel buffer 1024' },
+      { label: 'slow traces', value: c.slow_traces ?? 0, sub: `> ${30}s end-to-end`, kind: c.slow_traces > 0 ? 'warn' : null },
+      { label: 'upstream dial errors', value: c.upstream_dial_err ?? 0, sub: 'DNS / TLS / refused', kind: c.upstream_dial_err > 0 ? 'bad' : null },
+    ];
+    $('health-cards').innerHTML = cards.map((c) => `<div class="card ${c.kind || ''}">
+      <div class="label">${esc(c.label)}</div>
+      <div class="value">${esc(c.value)}</div>
+      ${c.sub ? `<div class="sub">${esc(c.sub)}</div>` : ''}
+    </div>`).join('');
+
+    const t = c.timings || {};
+    $('health-timings').innerHTML = `
+      <div style="margin:8px 0 6px;color:var(--muted);font-size:12px">PER-TRACE TIMINGS (ms)</div>
+      <div class="cards">
+        ${['drain_ms','parse_ms','sqlite_ms'].map((k) => {
+          const v = t[k] || {};
+          return `<div class="card">
+            <div class="label">${k.replace('_ms','')}</div>
+            <div class="value">${v.p50_ms ?? 0}<span style="color:var(--muted);font-size:13px"> p50</span></div>
+            <div class="sub">p95 ${v.p95_ms ?? 0}ms · p99 ${v.p99_ms ?? 0}ms · n ${v.count ?? 0} · mean ${(v.mean_ms ?? 0).toFixed(2)}ms</div>
+          </div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  function startHealthz() {
+    loadHealthz();
+    stopHealthz();
+    state.healthzTimer = setInterval(loadHealthz, 5000);
+  }
+  function stopHealthz() { if (state.healthzTimer) { clearInterval(state.healthzTimer); state.healthzTimer = null; } }
+
+  // ---------- auth modal ----------
+
+  function showAuthModal() {
+    $('token-input').value = state.token;
+    $('modal-bg').classList.add('show');
+    setTimeout(() => $('token-input').focus(), 0);
+  }
+  function hideAuthModal() { $('modal-bg').classList.remove('show'); }
+  $('token-save').addEventListener('click', () => {
+    state.token = $('token-input').value.trim();
+    localStorage.setItem('apilog.token', state.token);
+    hideAuthModal();
+    if (state.view === 'traces') loadTraces({ reset: true });
+    else loadHealthz();
+  });
+  $('token-cancel').addEventListener('click', hideAuthModal);
+  $('auth-btn').addEventListener('click', showAuthModal);
+
+  // ---------- wire events ----------
+
+  $('refresh').addEventListener('click', () => {
+    if (state.view === 'traces') loadTraces({ reset: true });
+    else loadHealthz();
+  });
+  $('f-apply').addEventListener('click', () => loadTraces({ reset: true }));
+  $('f-clear').addEventListener('click', () => {
+    document.querySelectorAll('#filters input').forEach((i) => { if (i.type !== 'number') i.value = ''; });
+    $('f-limit').value = '50';
+    loadTraces({ reset: true });
+  });
+  $('page-next').addEventListener('click', () => {
+    if (!state.cursor) return;
+    state.cursorStack.push(state.cursor);
+    loadTraces({ cursor: state.cursor });
+  });
+  $('page-prev').addEventListener('click', () => {
+    state.cursorStack.pop();
+    const prev = state.cursorStack[state.cursorStack.length - 1] || null;
+    loadTraces({ cursor: prev });
+  });
+  $('list-rows').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr'); if (!tr) return;
+    selectTrace(tr.dataset.id);
+  });
+
+  // ---------- boot ----------
+
+  if (!state.token) showAuthModal();
+  applyHash();
+})();
+</script>
+</body>
+</html>

@@ -282,11 +282,30 @@ func TestGetByIDNotFound(t *testing.T) {
 	}
 }
 
-func TestRootReturnsViewerPointer(t *testing.T) {
+func TestRootRedirectsToViewer(t *testing.T) {
 	srv, _, _, _ := newTestServer(t, "tok-test")
+	// Don't follow the redirect — we want to assert the 302 + Location.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
-	req.Header.Set("Authorization", "Bearer tok-test")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("status = %d, want 302", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/viewer/" {
+		t.Errorf("Location = %q, want /viewer/", loc)
+	}
+}
+
+func TestViewerServesHTML(t *testing.T) {
+	// /viewer/ is intentionally unauthenticated — the page needs to
+	// load to prompt the user for their token. Verify it serves the
+	// embedded HTML even without a Bearer header.
+	srv, _, _, _ := newTestServer(t, "tok-test")
+	resp, err := http.Get(srv.URL + "/viewer/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,8 +314,11 @@ func TestRootReturnsViewerPointer(t *testing.T) {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "api-log-viewer") {
-		t.Errorf("root response missing viewer pointer: %s", body)
+	if !strings.Contains(string(body), "api-log/viewer") {
+		t.Errorf("viewer missing expected title")
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
 }
 

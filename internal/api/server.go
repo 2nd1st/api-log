@@ -15,6 +15,7 @@ import (
 
 	"github.com/leoyun/api-log/internal/counters"
 	"github.com/leoyun/api-log/internal/store/sqlite"
+	"github.com/leoyun/api-log/internal/viewer"
 )
 
 // Deps is the bag of process-wide handles the API handlers need.
@@ -36,7 +37,17 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("GET /api/traces", authMW(deps.AdminToken, listTraces(deps)))
 	mux.Handle("GET /api/traces/{id}", authMW(deps.AdminToken, getTrace(deps)))
 	mux.Handle("GET /api/traces/{id}/replay", authMW(deps.AdminToken, replayHandler(deps)))
-	mux.Handle("GET /{$}", authMW(deps.AdminToken, rootPointer(deps)))
+
+	// Embedded viewer. Intentionally NOT behind authMW — the page has
+	// to load to prompt the user for their token. All AJAX calls the
+	// page makes hit the authed /api/* routes above.
+	mux.Handle("GET /viewer/", viewer.Handler("/viewer"))
+
+	// Root redirects to the viewer; old JSON pointer (M4) is gone now
+	// that there's a real UI to send people to.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/viewer/", http.StatusFound)
+	})
 
 	return mux
 }
