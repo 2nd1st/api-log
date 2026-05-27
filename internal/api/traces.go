@@ -106,11 +106,22 @@ func parseListFilters(r *http.Request) (sqlite.ListFilters, string, string) {
 		f.Until = t
 	}
 	if v := q.Get("status"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return f, "bad_param", "status"
+		// Accept "2xx" / "4xx" / "5xx" as a range filter; anything else
+		// must parse as an exact status code.
+		if len(v) == 3 && (v[1] == 'x' || v[1] == 'X') && (v[2] == 'x' || v[2] == 'X') {
+			switch v[0] {
+			case '2', '4', '5':
+				f.StatusBucket = int(v[0] - '0')
+			default:
+				return f, "bad_param", "status"
+			}
+		} else {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return f, "bad_param", "status"
+			}
+			f.Status = &n
 		}
-		f.Status = &n
 	}
 	if v := q.Get("model"); v != "" {
 		f.Model = v

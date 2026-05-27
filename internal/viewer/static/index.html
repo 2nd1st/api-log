@@ -3,274 +3,506 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>api-log viewer</title>
+<title>api-log</title>
 <style>
   :root {
-    --bg: #0f1115;
-    --panel: #161a22;
-    --panel-2: #1d212c;
-    --line: #262b38;
-    --fg: #d7dae0;
-    --muted: #888d99;
-    --accent: #7ab8ff;
-    --ok: #6bd084;
-    --warn: #e2b352;
-    --err: #e87272;
-    --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+    --bg:        #0c0d10;
+    --panel:     #131418;
+    --panel-2:   #181a1f;
+    --line:      #23252b;
+    --line-2:    #2d3038;
+    --fg:        #e4e4e7;
+    --fg-dim:    #a1a1aa;
+    --muted:     #71717a;
+    --muted-2:   #52525b;
+    --accent:    #5eead4;     /* teal-300 — single accent, sparingly */
+    --good:      #86efac;
+    --warn:      #fcd34d;
+    --bad:       #fca5a5;
+    --sel:       rgba(94,234,212,0.08);
+
+    --font:      -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    --mono:      ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+    --r:         3px;          /* unified small radius */
   }
-  * { box-sizing: border-box; }
+  *, *::before, *::after { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; height: 100%;
     background: var(--bg); color: var(--fg);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 13px;
+    font-family: var(--font); font-size: 13px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
   }
   body { display: flex; flex-direction: column; }
+  a { color: var(--accent); text-decoration: none; }
+
+  /* ---------- header ---------- */
   header {
-    display: flex; align-items: center; gap: 16px;
-    padding: 8px 16px; border-bottom: 1px solid var(--line);
-    background: var(--panel);
+    display: flex; align-items: center; gap: 20px;
+    padding: 0 16px; height: 38px; flex: none;
+    border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  header h1 {
-    margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.5px;
-    color: var(--accent); font-family: var(--mono);
+  header .brand {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    color: var(--fg); letter-spacing: 0;
   }
-  header nav { display: flex; gap: 4px; }
+  header .brand .slash { color: var(--muted); }
+  header nav { display: flex; gap: 0; height: 100%; }
   header nav a {
-    padding: 4px 10px; color: var(--muted); text-decoration: none;
-    border-radius: 4px; font-size: 12px;
+    display: flex; align-items: center; padding: 0 12px;
+    color: var(--muted); font-size: 12px;
+    border-bottom: 1px solid transparent; margin-bottom: -1px;
   }
-  header nav a.active { background: var(--panel-2); color: var(--fg); }
-  header nav a:hover { color: var(--fg); }
+  header nav a:hover { color: var(--fg-dim); }
+  header nav a.active { color: var(--fg); border-bottom-color: var(--accent); }
   header .spacer { flex: 1; }
-  header .pill {
-    font-family: var(--mono); font-size: 11px;
-    padding: 3px 8px; border-radius: 10px; background: var(--panel-2);
-    border: 1px solid var(--line);
+  header .status { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  header .status.bad { color: var(--bad); }
+  header .status.warn { color: var(--warn); }
+  header .icon-btn {
+    background: none; border: none; color: var(--muted); padding: 4px;
+    cursor: pointer; font: inherit; line-height: 1;
   }
-  header .pill.ok  { color: var(--ok); border-color: #2a3d2e; }
-  header .pill.bad { color: var(--err); border-color: #4a2a2a; }
-  header button, header input {
-    background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
-    padding: 4px 8px; border-radius: 4px; font-family: var(--mono); font-size: 11px;
-  }
-  header button { cursor: pointer; }
-  header button:hover { background: var(--line); }
-  main { flex: 1; overflow: hidden; display: flex; }
-  .view { flex: 1; overflow: hidden; display: none; }
+  header .icon-btn:hover { color: var(--fg); }
+  header .icon-btn svg { display: block; width: 14px; height: 14px; }
+
+  /* ---------- main shell ---------- */
+  main { flex: 1; overflow: hidden; display: flex; min-height: 0; }
+  .view { flex: 1; display: none; min-height: 0; min-width: 0; }
   .view.active { display: flex; }
 
-  /* Traces view: 3-pane: filter / list / detail */
+  /* ---------- traces view: filter / list / detail ---------- */
   #traces { flex-direction: row; }
   #filters {
-    width: 220px; padding: 12px; border-right: 1px solid var(--line);
-    overflow: auto; background: var(--panel);
+    width: 208px; flex: none;
+    padding: 12px 12px 16px;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    overflow: auto;
   }
-  #filters label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
-  #filters input, #filters select {
-    width: 100%; background: var(--panel-2); color: var(--fg);
-    border: 1px solid var(--line); border-radius: 3px; padding: 5px 7px;
-    font-family: var(--mono); font-size: 11px;
+  #filters .group { margin-bottom: 12px; }
+  #filters label {
+    display: block; font-size: 10.5px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 4px;
   }
-  #filters .row { display: flex; gap: 4px; margin-top: 12px; }
-  #filters button {
-    flex: 1; background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
-    padding: 6px; border-radius: 3px; font-size: 11px; cursor: pointer;
+  #filters .input, #filters select {
+    width: 100%;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: var(--r);
+    padding: 5px 7px; font-family: var(--mono); font-size: 11.5px;
+    line-height: 1.4; outline: none;
   }
-  #filters button.primary { background: var(--accent); color: #0f1115; border-color: var(--accent); }
-  #filters button:hover { background: var(--line); }
+  #filters .input:focus, #filters select:focus { border-color: var(--line-2); }
+  #filters select {
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 14px) 9px, calc(100% - 9px) 9px;
+    background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+    padding-right: 22px;
+  }
+  #filters .actions { display: flex; gap: 6px; margin-top: 16px; }
+  #filters .actions button {
+    flex: 1; background: var(--bg); color: var(--fg-dim);
+    border: 1px solid var(--line); border-radius: var(--r);
+    padding: 5px 8px; cursor: pointer; font: inherit; font-size: 11.5px;
+  }
+  #filters .actions button:hover { color: var(--fg); border-color: var(--line-2); }
+  #filters .actions button.primary {
+    background: var(--accent); color: #0a1714; border-color: var(--accent);
+  }
+  #filters .actions button.primary:hover { background: #4dd4be; }
 
+  /* ---------- list ---------- */
   #list {
-    width: 50%; overflow: auto; border-right: 1px solid var(--line);
+    width: 52%; min-width: 380px; max-width: 720px;
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0;
   }
-  #list table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
-  #list th, #list td {
-    text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
+  #list .table-wrap { flex: 1; overflow: auto; min-height: 0; }
+  #list table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
+  #list thead { position: sticky; top: 0; z-index: 1; background: var(--panel); }
   #list th {
-    position: sticky; top: 0; background: var(--panel); color: var(--muted);
-    font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+    text-align: left; padding: 7px 10px;
+    color: var(--muted); font-weight: 500;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
   }
+  #list td {
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 0;     /* triggers ellipsis with table-layout: auto */
+  }
+  #list td.t { width: 88px; color: var(--fg-dim); }
+  #list td.s { width: 44px; }
+  #list td.m { width: 88px; color: var(--fg-dim); }
+  #list td.k { width: 70px; color: var(--muted); }
+  #list td.sess { width: 80px; color: var(--muted); }
   #list tbody tr { cursor: pointer; }
   #list tbody tr:hover { background: var(--panel-2); }
-  #list tbody tr.selected { background: var(--panel-2); }
-  .status-2 { color: var(--ok); }
-  .status-4 { color: var(--warn); }
-  .status-5 { color: var(--err); }
-  .badge {
-    display: inline-block; padding: 1px 6px; border-radius: 3px;
-    background: var(--panel-2); border: 1px solid var(--line);
-    color: var(--muted); font-size: 10px; margin-right: 4px;
-  }
-  #list .pager {
-    display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line);
-    background: var(--panel); position: sticky; bottom: 0;
-  }
-  #list .pager button { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 11px; }
-  #list .pager span { color: var(--muted); font-size: 11px; align-self: center; margin-left: auto; font-family: var(--mono); }
+  #list tbody tr.selected { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
+  .st-2 { color: var(--good); }
+  .st-4 { color: var(--warn); }
+  .st-5 { color: var(--bad); }
+  .st-x { color: var(--muted); }
 
-  #detail { flex: 1; overflow: auto; padding: 16px; }
-  #detail .empty { color: var(--muted); text-align: center; margin-top: 80px; font-size: 14px; }
+  #list .pager {
+    flex: none;
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 10px;
+    border-top: 1px solid var(--line); background: var(--panel);
+    font-family: var(--mono); font-size: 11px;
+  }
+  #list .pager button {
+    background: var(--bg); color: var(--fg-dim);
+    border: 1px solid var(--line); border-radius: var(--r);
+    padding: 2px 8px; cursor: pointer; font: inherit; font-size: 11px;
+  }
+  #list .pager button:hover:not(:disabled) { color: var(--fg); border-color: var(--line-2); }
+  #list .pager button:disabled { opacity: 0.35; cursor: default; }
+  #list .pager .info { margin-left: auto; color: var(--muted); }
+
+  /* ---------- detail ---------- */
+  #detail { flex: 1; overflow: auto; padding: 0; min-width: 0; min-height: 0; }
+  #detail .empty { color: var(--muted); padding: 64px 32px; text-align: center; font-size: 12px; }
   #detail .head {
-    display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
-    padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px;
+    position: sticky; top: 0; z-index: 1;
+    padding: 12px 16px; background: var(--bg);
+    border-bottom: 1px solid var(--line);
   }
-  #detail .head .id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  #detail .head .path { font-family: var(--mono); font-size: 13px; }
-  #detail .head .meta { display: flex; gap: 14px; color: var(--muted); font-size: 11px; }
-  #detail .head .meta span { font-family: var(--mono); }
-  #detail .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  #detail .head .title {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  #detail .head .method { color: var(--muted); }
+  #detail .head .path { color: var(--fg); }
+  #detail .head .status { font-weight: 600; }
+  #detail .head .id { color: var(--muted-2); font-size: 11px; margin-left: auto; }
+  #detail .head .meta {
+    margin-top: 6px;
+    display: flex; flex-wrap: wrap; gap: 4px 18px;
+    color: var(--muted); font-family: var(--mono); font-size: 11px;
+  }
+  #detail .head .meta span b { color: var(--fg-dim); font-weight: 500; }
+  #detail .tabs {
+    display: flex; padding: 0 16px;
+    background: var(--bg); border-bottom: 1px solid var(--line);
+    position: sticky; top: 65px; z-index: 1;
+  }
   #detail .tabs a {
-    padding: 4px 12px; color: var(--muted); cursor: pointer; border-radius: 4px;
-    font-size: 12px; user-select: none;
+    padding: 8px 14px; color: var(--muted);
+    border-bottom: 1px solid transparent; margin-bottom: -1px;
+    cursor: pointer; font-size: 12px;
   }
-  #detail .tabs a:hover { color: var(--fg); }
-  #detail .tabs a.active { background: var(--panel-2); color: var(--fg); }
-  #detail .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 14px; }
+  #detail .tabs a:hover { color: var(--fg-dim); }
+  #detail .tabs a.active { color: var(--fg); border-bottom-color: var(--accent); }
+  #detail .body { padding: 16px; }
+  #detail h3.section {
+    margin: 0 0 6px; font-size: 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500;
+  }
+  #detail h3.section + * { margin-top: 0; }
+  #detail h3.section.more { margin-top: 18px; }
+
   pre.json {
-    margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
-    word-break: break-word; line-height: 1.5;
+    margin: 0; padding: 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; max-height: 480px; overflow: auto;
   }
-  .json-key { color: var(--accent); }
-  .json-string { color: #b5bd68; }
-  .json-num, .json-bool, .json-null { color: var(--warn); }
+  .json-key    { color: #93c5fd; }
+  .json-string { color: #d6c992; }
+  .json-num    { color: #c4b5fd; }
+  .json-bool, .json-null { color: var(--bad); }
 
   .kv {
-    font-family: var(--mono); font-size: 11px; display: grid;
-    grid-template-columns: 200px 1fr; gap: 2px 12px;
+    font-family: var(--mono); font-size: 11.5px;
+    display: grid; grid-template-columns: 180px 1fr;
+    border-top: 1px solid var(--line);
   }
-  .kv .k { color: var(--muted); }
+  .kv > div {
+    padding: 5px 10px; border-bottom: 1px solid var(--line);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .kv .k { color: var(--muted); background: var(--panel); }
+  .kv .v.empty { color: var(--muted-2); }
 
-  .events-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+  .events-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
   .events-table th, .events-table td {
-    text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top;
+    text-align: left; padding: 5px 10px;
+    border-bottom: 1px solid var(--line); vertical-align: top;
   }
-  .events-table th { color: var(--muted); font-weight: 500; }
-  .events-table td.data { max-width: 600px; overflow: hidden; text-overflow: ellipsis; }
-  .events-table tr.expanded td.data { white-space: pre-wrap; max-width: none; overflow: visible; }
+  .events-table th { color: var(--muted); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .events-table td.t  { width: 72px; color: var(--fg-dim); }
+  .events-table td.ev { width: 180px; color: var(--accent); }
+  .events-table td.data { color: var(--fg-dim); max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .events-table tr { cursor: pointer; }
+  .events-table tr:hover { background: var(--panel); }
+  .events-table tr.expanded td.data { white-space: pre-wrap; max-width: none; overflow: visible; word-break: break-word; }
 
-  .replay-controls { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
-  .replay-controls button {
-    background: var(--accent); color: #0f1115; border: none;
-    padding: 5px 12px; border-radius: 3px; cursor: pointer; font-size: 11px;
+  /* replay */
+  .replay-controls {
+    display: flex; gap: 6px; align-items: center; margin-bottom: 10px;
+    font-family: var(--mono); font-size: 11px;
   }
-  .replay-controls button:hover { opacity: 0.85; }
-  .replay-controls button.stop { background: var(--err); color: white; }
+  .replay-controls button {
+    background: var(--panel); color: var(--fg-dim);
+    border: 1px solid var(--line); border-radius: var(--r);
+    padding: 4px 10px; cursor: pointer; font: inherit;
+  }
+  .replay-controls button:hover { color: var(--fg); border-color: var(--line-2); }
+  .replay-controls button.run { color: var(--accent); border-color: rgba(94,234,212,0.4); }
+  .replay-controls button.stop { color: var(--bad); border-color: rgba(252,165,165,0.4); }
+  .replay-controls .status { margin-left: auto; color: var(--muted); }
   .replay-out {
-    background: #000; color: #d0d0d0; font-family: var(--mono); font-size: 11px;
-    padding: 10px; border-radius: 3px; min-height: 200px; max-height: 500px;
+    background: #06070a; border: 1px solid var(--line); border-radius: var(--r);
+    color: #c9c9c9; font-family: var(--mono); font-size: 11px;
+    padding: 10px 12px; min-height: 200px; max-height: 520px;
     overflow: auto; white-space: pre-wrap;
   }
 
-  /* Healthz view */
-  #healthz { flex-direction: column; padding: 20px; gap: 16px; overflow: auto; }
-  #healthz .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-  .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
-    padding: 14px;
+  /* conversation transcript */
+  .convo { display: flex; flex-direction: column; gap: 10px; max-width: 920px; }
+  .convo .turn {
+    border: 1px solid var(--line); border-radius: var(--r);
+    background: var(--panel); padding: 9px 12px;
   }
-  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-  .card .value { font-family: var(--mono); font-size: 22px; font-weight: 500; }
-  .card .sub { color: var(--muted); font-size: 11px; font-family: var(--mono); margin-top: 6px; }
-  .card.bad .value { color: var(--err); }
-  .card.warn .value { color: var(--warn); }
+  .convo .turn.user     { border-color: var(--line-2); }
+  .convo .turn.system   { background: var(--bg); }
+  .convo .turn.assistant { background: var(--panel-2); }
+  .convo .role {
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px;
+  }
+  .convo .turn.assistant .role { color: var(--accent); }
+  .convo .turn.user .role      { color: var(--good); }
+  .convo .turn.system .role    { color: var(--warn); }
+  .convo .content {
+    font-family: var(--font); font-size: 12.5px; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-word; color: var(--fg);
+  }
+  .convo .tool {
+    margin-top: 6px; padding: 6px 8px;
+    background: var(--bg); border: 1px solid var(--line); border-radius: var(--r);
+    font-family: var(--mono); font-size: 11px; color: var(--fg-dim);
+  }
+  .convo .tool .tool-name { color: var(--accent); }
+  .convo .session-divider {
+    color: var(--muted); font-family: var(--mono); font-size: 10.5px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 4px 0; border-bottom: 1px dashed var(--line);
+  }
+  .convo-controls {
+    margin-bottom: 12px; display: flex; gap: 8px; align-items: center;
+    font-family: var(--mono); font-size: 11px;
+  }
+  .convo-controls label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); }
+  .convo-controls input[type=checkbox] { accent-color: var(--accent); }
 
-  /* Session tree */
-  .tree { font-family: var(--mono); font-size: 11px; }
-  .tree-node { padding: 4px 0; border-left: 1px solid var(--line); padding-left: 12px; margin-left: 6px; cursor: pointer; }
-  .tree-node:hover .tree-path { color: var(--fg); }
-  .tree-node.selected { background: var(--panel-2); }
+  /* session-grouped list rows */
+  #list tr.sess-row td.path { color: var(--fg-dim); }
+  #list tr.sess-row td.n { color: var(--accent); }
+  .list-mode-toggle {
+    display: flex; gap: 0; font-family: var(--mono); font-size: 11px;
+    padding: 6px 10px; border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .list-mode-toggle button {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    padding: 3px 10px; cursor: pointer; font: inherit; font-size: 11px;
+  }
+  .list-mode-toggle button:first-child { border-radius: var(--r) 0 0 var(--r); }
+  .list-mode-toggle button:last-child  { border-radius: 0 var(--r) var(--r) 0; border-left: none; }
+  .list-mode-toggle button.active { color: var(--fg); background: var(--bg); border-color: var(--line-2); }
+
+  /* session tree */
+  .tree { font-family: var(--mono); font-size: 11.5px; }
+  .tree-node {
+    padding: 4px 8px;
+    border-left: 1px dashed var(--line); margin-left: 6px;
+    padding-left: 14px; cursor: pointer; display: flex; gap: 8px; align-items: baseline;
+  }
   .tree-node.root { border-left: none; padding-left: 0; margin-left: 0; }
-  .tree-path { color: var(--muted); }
-  .tree-meta { color: var(--muted); font-size: 10px; margin-left: 8px; }
+  .tree-node:hover { background: var(--panel); }
+  .tree-node.current { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
+  .tree-node .path { color: var(--fg-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .tree-node .meta { color: var(--muted); font-size: 10.5px; }
+  .tree-footer { color: var(--muted); font-size: 11px; padding: 10px 0 0; }
 
-  /* Token modal */
+  /* ---------- healthz ---------- */
+  #healthz {
+    flex-direction: column; padding: 16px 20px; gap: 18px; overflow: auto;
+  }
+  #healthz .group-title {
+    font-size: 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin: 0 0 8px;
+  }
+  #healthz .cards {
+    display: grid; gap: 1px;
+    grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+    background: var(--line); border: 1px solid var(--line);
+  }
+  .card { background: var(--panel); padding: 12px 14px; }
+  .card .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .card .value { font-family: var(--mono); font-size: 20px; font-weight: 500; margin-top: 4px; }
+  .card .sub { color: var(--muted); font-size: 11px; font-family: var(--mono); margin-top: 4px; }
+  .card.bad  .value { color: var(--bad); }
+  .card.warn .value { color: var(--warn); }
+  .card.good .value { color: var(--good); }
+
+  /* ---------- token modal ---------- */
   .modal-bg {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    position: fixed; inset: 0; background: rgba(0,0,0,0.66);
     display: none; align-items: center; justify-content: center; z-index: 100;
+    backdrop-filter: blur(2px);
   }
   .modal-bg.show { display: flex; }
   .modal {
-    background: var(--panel); padding: 24px; border-radius: 6px;
-    border: 1px solid var(--line); width: 480px; max-width: 90vw;
+    background: var(--panel); padding: 18px 20px;
+    border: 1px solid var(--line); border-radius: var(--r);
+    width: 460px; max-width: 90vw;
   }
-  .modal h2 { margin: 0 0 12px; font-size: 14px; color: var(--accent); font-family: var(--mono); }
-  .modal p { color: var(--muted); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
-  .modal input { width: 100%; background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 8px; font-family: var(--mono); font-size: 12px; }
-  .modal .btn-row { display: flex; gap: 8px; margin-top: 12px; }
-  .modal button { background: var(--accent); color: #0f1115; border: none; padding: 7px 16px; border-radius: 3px; cursor: pointer; font-size: 12px; }
-  .modal button.secondary { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); }
-  .modal button:hover { opacity: 0.85; }
+  .modal h2 { margin: 0 0 8px; font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .modal p  { color: var(--muted); font-size: 11.5px; margin: 0 0 12px; line-height: 1.55; }
+  .modal p code { background: var(--bg); padding: 1px 4px; border-radius: 2px; font-size: 11px; }
+  .modal input {
+    width: 100%; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: var(--r);
+    padding: 7px 9px; font-family: var(--mono); font-size: 11.5px;
+    outline: none;
+  }
+  .modal input:focus { border-color: var(--line-2); }
+  .modal .btn-row { display: flex; gap: 6px; margin-top: 10px; justify-content: flex-end; }
+  .modal button {
+    background: var(--accent); color: #0a1714; border: none;
+    padding: 6px 14px; border-radius: var(--r); cursor: pointer; font: inherit; font-size: 11.5px;
+  }
+  .modal button.secondary {
+    background: var(--bg); color: var(--fg-dim); border: 1px solid var(--line);
+  }
+  .modal button:hover { opacity: 0.9; }
+
+  /* scroll polish */
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2d35; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #383b44; }
 </style>
 </head>
 <body>
 <header>
-  <h1>api-log/viewer</h1>
+  <span class="brand">api-log<span class="slash">/</span>viewer</span>
   <nav id="nav">
     <a data-view="traces" href="#/traces">Traces</a>
     <a data-view="healthz" href="#/healthz">Healthz</a>
   </nav>
   <div class="spacer"></div>
-  <span id="status-pill" class="pill">connecting…</span>
-  <button id="refresh">↻</button>
-  <button id="auth-btn" title="set admin token">auth</button>
+  <span id="status" class="status">connecting…</span>
+  <button class="icon-btn" id="refresh" title="reload">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+  </button>
+  <button class="icon-btn" id="auth-btn" title="set admin token">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+  </button>
 </header>
 
 <main>
   <section id="traces" class="view">
     <aside id="filters">
-      <label>status</label>
-      <input id="f-status" placeholder="200 / 4xx / 5xx" />
-      <label>path</label>
-      <input id="f-path" placeholder="/v1/chat/completions" />
-      <label>model</label>
-      <input id="f-model" placeholder="gpt-5.5" />
-      <label>key_hash</label>
-      <input id="f-keyhash" placeholder="first 16 hex" />
-      <label>session_root_id</label>
-      <input id="f-session" placeholder="ULID" />
-      <label>since (ISO8601)</label>
-      <input id="f-since" placeholder="2026-05-28T00:00:00Z" />
-      <label>limit</label>
-      <input id="f-limit" type="number" value="50" min="1" max="500" />
-      <div class="row">
+      <div class="group">
+        <label>status</label>
+        <select id="f-status">
+          <option value="">any</option>
+          <option value="2xx">2xx</option>
+          <option value="4xx">4xx</option>
+          <option value="5xx">5xx</option>
+          <option value="200">200</option>
+          <option value="401">401</option>
+          <option value="403">403</option>
+          <option value="404">404</option>
+          <option value="429">429</option>
+          <option value="500">500</option>
+          <option value="502">502</option>
+        </select>
+      </div>
+      <div class="group">
+        <label>path</label>
+        <input class="input" id="f-path" list="dl-paths" placeholder="any" autocomplete="off" />
+        <datalist id="dl-paths"></datalist>
+      </div>
+      <div class="group">
+        <label>model</label>
+        <input class="input" id="f-model" list="dl-models" placeholder="any" autocomplete="off" />
+        <datalist id="dl-models"></datalist>
+      </div>
+      <div class="group">
+        <label>key_hash</label>
+        <input class="input" id="f-keyhash" list="dl-keys" placeholder="prefix" autocomplete="off" />
+        <datalist id="dl-keys"></datalist>
+      </div>
+      <div class="group">
+        <label>session_root_id</label>
+        <input class="input" id="f-session" placeholder="ULID" autocomplete="off" />
+      </div>
+      <div class="group">
+        <label>since (ISO 8601)</label>
+        <input class="input" id="f-since" placeholder="2026-05-28T00:00:00Z" autocomplete="off" />
+      </div>
+      <div class="group">
+        <label>limit</label>
+        <input class="input" id="f-limit" type="number" value="100" min="1" max="500" />
+      </div>
+      <div class="actions">
         <button id="f-apply" class="primary">Apply</button>
         <button id="f-clear">Clear</button>
       </div>
     </aside>
+
     <div id="list">
-      <table>
-        <thead><tr>
-          <th>ts</th><th>status</th><th>path</th><th>model</th><th>key</th><th>session</th>
-        </tr></thead>
-        <tbody id="list-rows"></tbody>
-      </table>
+      <div class="list-mode-toggle">
+        <button id="mode-traces" class="active">traces</button>
+        <button id="mode-sessions">sessions</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead id="list-thead"></thead>
+          <tbody id="list-rows"></tbody>
+        </table>
+      </div>
       <div class="pager">
         <button id="page-prev" disabled>← prev</button>
         <button id="page-next" disabled>next →</button>
-        <span id="page-info">—</span>
+        <span class="info" id="page-info">—</span>
       </div>
     </div>
+
     <div id="detail">
-      <div class="empty">click a trace on the left</div>
+      <div class="empty">select a trace</div>
     </div>
   </section>
 
   <section id="healthz" class="view">
-    <div class="cards" id="health-cards"></div>
-    <div id="health-timings"></div>
+    <div>
+      <h3 class="group-title">writer / index</h3>
+      <div class="cards" id="health-cards"></div>
+    </div>
+    <div>
+      <h3 class="group-title">per-trace timings (ms)</h3>
+      <div class="cards" id="health-timings"></div>
+    </div>
   </section>
 </main>
 
 <div id="modal-bg" class="modal-bg">
   <div class="modal">
-    <h2>Admin token</h2>
-    <p>Enter the bearer token from <code>$APILOG_DATA_DIR/admin_token</code>. The token never leaves this browser — it's stored in <code>localStorage</code> and sent on every API request from this page.</p>
-    <input id="token-input" type="password" placeholder="hex token…" autocomplete="off" />
+    <h2>admin token</h2>
+    <p>Bearer from <code>$APILOG_DATA_DIR/admin_token</code>. Stored in <code>localStorage</code> on this device only; sent on every <code>/api/*</code> and <code>/healthz</code> request from this tab.</p>
+    <input id="token-input" type="password" placeholder="64 hex chars…" autocomplete="off" />
     <div class="btn-row">
-      <button id="token-save">Save</button>
       <button id="token-cancel" class="secondary">Cancel</button>
+      <button id="token-save">Save</button>
     </div>
   </div>
 </div>
@@ -288,47 +520,48 @@
   const state = {
     token: localStorage.getItem('apilog.token') || '',
     view: 'traces',
+    listMode: 'traces',   // 'traces' | 'sessions'
     traces: [],
+    sessions: [],
     cursor: null,
     cursorStack: [],
     selectedId: null,
     detail: null,
-    detailTab: 'overview',
+    detailTab: 'conversation',
     healthz: null,
     healthzTimer: null,
-    replaySrc: null,
+    replayAbort: null,
+    knownPaths: new Set(),
+    knownModels: new Set(),
+    knownKeys: new Set(),
+    convoIncludeSession: false,
   };
 
   async function authFetch(path, opts = {}) {
-    if (!state.token) {
-      showAuthModal();
-      throw new Error('no token');
-    }
+    if (!state.token) { showAuthModal(); throw new Error('no token'); }
     const r = await fetch(api(path), {
       ...opts,
       headers: { 'Authorization': 'Bearer ' + state.token, ...(opts.headers || {}) },
     });
-    if (r.status === 401) {
-      showAuthModal();
-      throw new Error('unauthorized');
-    }
+    if (r.status === 401) { showAuthModal(); throw new Error('unauthorized'); }
     return r;
   }
 
   function setStatus(text, kind) {
-    const p = $('status-pill');
-    p.textContent = text;
-    p.className = 'pill' + (kind ? ' ' + kind : '');
+    const el = $('status');
+    el.textContent = text;
+    el.className = 'status' + (kind ? ' ' + kind : '');
   }
 
   function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   }
 
   function jsonHL(value) {
-    const json = JSON.stringify(value, null, 2);
-    if (json == null) return '';
-    return esc(json).replace(
+    const j = JSON.stringify(value, null, 2);
+    if (j == null) return '';
+    return esc(j).replace(
       /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
       (m, str, colon, lit) => {
         if (str) return colon ? `<span class="json-key">${str}</span>${colon}` : `<span class="json-string">${str}</span>`;
@@ -349,6 +582,23 @@
     if (ms < 1000) return ms + 'ms';
     return (ms / 1000).toFixed(2) + 's';
   }
+  function statusClass(s) {
+    if (!s || s < 100) return 'st-x';
+    const b = Math.floor(s / 100);
+    return b === 2 ? 'st-2' : b === 4 ? 'st-4' : b === 5 ? 'st-5' : 'st-x';
+  }
+
+  function refreshDatalist(id, set) {
+    const dl = $(id); if (!dl) return;
+    const cur = new Set([...dl.options].map(o => o.value));
+    [...set].sort().forEach(v => {
+      if (v && !cur.has(v)) {
+        const o = document.createElement('option');
+        o.value = v;
+        dl.appendChild(o);
+      }
+    });
+  }
 
   // ---------- routing ----------
 
@@ -360,8 +610,7 @@
     document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === state.view));
     if (state.view === 'healthz') startHealthz();
     else stopHealthz();
-    if (state.view === 'traces' && state.traces.length === 0) loadTraces({ reset: true });
-    // deep-link trace id: #/traces/<id>
+    if (state.view === 'traces' && state.traces.length === 0 && state.sessions.length === 0) loadList({ reset: true });
     if (state.view === 'traces' && rest[0]) {
       const id = rest[0];
       if (id !== state.selectedId) selectTrace(id);
@@ -373,21 +622,20 @@
 
   function readFilters() {
     const f = {};
-    const status = $('f-status').value.trim();
-    if (status) f.status = status;
-    const path = $('f-path').value.trim();
-    if (path) f.path = path;
-    const model = $('f-model').value.trim();
-    if (model) f.model = model;
-    const kh = $('f-keyhash').value.trim();
-    if (kh) f.key_hash = kh;
-    const sr = $('f-session').value.trim();
-    if (sr) f.session_root_id = sr;
-    const since = $('f-since').value.trim();
-    if (since) f.since = since;
-    const limit = $('f-limit').value.trim();
-    if (limit) f.limit = limit;
+    const s = $('f-status').value.trim();
+    if (s) f.status = s;
+    const p = $('f-path').value.trim(); if (p) f.path = p;
+    const m = $('f-model').value.trim(); if (m) f.model = m;
+    const kh = $('f-keyhash').value.trim(); if (kh) f.key_hash = kh;
+    const sr = $('f-session').value.trim(); if (sr) f.session_root_id = sr;
+    const si = $('f-since').value.trim(); if (si) f.since = si;
+    const lim = $('f-limit').value.trim(); if (lim) f.limit = lim;
     return f;
+  }
+
+  async function loadList({ reset, cursor } = {}) {
+    if (state.listMode === 'sessions') return loadSessions({ reset });
+    return loadTraces({ reset, cursor });
   }
 
   async function loadTraces({ reset, cursor } = {}) {
@@ -401,29 +649,78 @@
       const j = await r.json();
       state.traces = j.traces || [];
       state.cursor = j.next_cursor || null;
-      renderList();
-      setStatus(`ok · ${state.traces.length} of ${j.total ?? '?'}`, 'ok');
+      // accumulate filter suggestions
+      for (const t of state.traces) {
+        if (t.path) state.knownPaths.add(t.path);
+        if (t.model) state.knownModels.add(t.model);
+        if (t.key_hash) state.knownKeys.add(t.key_hash);
+      }
+      refreshDatalist('dl-paths', state.knownPaths);
+      refreshDatalist('dl-models', state.knownModels);
+      refreshDatalist('dl-keys', state.knownKeys);
+      renderTracesList();
+      setStatus(`${state.traces.length} loaded`, 'good');
     } catch (e) {
       setStatus('list failed', 'bad');
     }
   }
 
-  function renderList() {
-    const tbody = $('list-rows');
-    tbody.innerHTML = state.traces.map((t) => {
-      const sBucket = Math.floor((t.status || 0) / 100);
-      return `<tr data-id="${t.id}" class="${t.id === state.selectedId ? 'selected' : ''}">
-        <td>${shortTs(t.ts_start)}</td>
-        <td class="status-${sBucket}">${t.status ?? '—'}</td>
+  async function loadSessions() {
+    const f = readFilters();
+    const qs = new URLSearchParams();
+    if (f.since) qs.set('since', f.since);
+    if (f.limit) qs.set('limit', f.limit);
+    try {
+      const r = await authFetch('api/sessions?' + qs.toString());
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      state.sessions = j.sessions || [];
+      state.cursor = null;
+      renderSessionsList();
+      setStatus(`${state.sessions.length} sessions`, 'good');
+    } catch (e) {
+      setStatus('sessions failed', 'bad');
+    }
+  }
+
+  function renderTracesList() {
+    $('list-thead').innerHTML = `<tr>
+      <th>time</th><th>status</th><th>path</th><th>model</th><th>key</th><th>session</th>
+    </tr>`;
+    $('list-rows').innerHTML = state.traces.map((t) => `
+      <tr data-id="${t.id}" class="${t.id === state.selectedId ? 'selected' : ''}">
+        <td class="t">${shortTs(t.ts_start)}</td>
+        <td class="s ${statusClass(t.status)}">${t.status ?? '—'}</td>
         <td>${esc(t.path || '')}</td>
-        <td>${esc(t.model || '—')}</td>
-        <td title="${esc(t.key_hash || '')}">${(t.key_hash || '').slice(0, 8)}</td>
-        <td title="${esc(t.session_root_id || '')}">${shortId(t.session_root_id)}</td>
-      </tr>`;
-    }).join('');
+        <td class="m">${esc(t.model || '—')}</td>
+        <td class="k" title="${esc(t.key_hash || '')}">${(t.key_hash || '').slice(0, 8)}</td>
+        <td class="sess" title="${esc(t.session_root_id || '')}">${shortId(t.session_root_id)}</td>
+      </tr>`).join('');
     $('page-next').disabled = !state.cursor;
     $('page-prev').disabled = state.cursorStack.length === 0;
-    $('page-info').textContent = state.traces.length ? `${state.traces.length} loaded` : 'empty';
+    $('page-info').textContent = state.traces.length ? `${state.traces.length} rows` : 'empty';
+  }
+
+  function renderSessionsList() {
+    $('list-thead').innerHTML = `<tr>
+      <th>last seen</th><th>turns</th><th>status</th><th>path</th><th>model</th><th>session</th>
+    </tr>`;
+    $('list-rows').innerHTML = state.sessions.map((s) => {
+      // Clicking opens the *latest* trace in this session — that's
+      // where the most recent activity is. From there, the session
+      // tab shows the whole tree.
+      return `<tr class="sess-row" data-session="${s.session_root_id}">
+        <td class="t">${shortTs(s.last_ts)}</td>
+        <td class="s n">${s.n_turns}</td>
+        <td class="s ${statusClass(s.last_status)}">${s.last_status ?? '—'}</td>
+        <td class="path">${esc(s.last_path || '')}</td>
+        <td class="m">${esc(s.last_model || '—')}</td>
+        <td class="sess" title="${esc(s.session_root_id || '')}">${shortId(s.session_root_id)}</td>
+      </tr>`;
+    }).join('');
+    $('page-next').disabled = true;
+    $('page-prev').disabled = true;
+    $('page-info').textContent = state.sessions.length ? `${state.sessions.length} sessions` : 'empty';
   }
 
   // ---------- detail ----------
@@ -431,12 +728,12 @@
   async function selectTrace(id) {
     state.selectedId = id;
     state.detail = null;
-    state.detailTab = 'overview';
+    state.detailTab = 'conversation';
     document.querySelectorAll('#list-rows tr').forEach((r) => r.classList.toggle('selected', r.dataset.id === id));
     if (window.location.hash !== `#/traces/${id}`) {
       history.replaceState(null, '', `#/traces/${id}`);
     }
-    $('detail').innerHTML = `<div class="empty">loading ${esc(id)}…</div>`;
+    $('detail').innerHTML = `<div class="empty">loading ${esc(id)}</div>`;
     try {
       const r = await authFetch(`api/traces/${id}`);
       if (!r.ok) throw new Error(r.status);
@@ -449,33 +746,34 @@
 
   function renderDetail() {
     const d = state.detail;
-    if (!d) { $('detail').innerHTML = `<div class="empty">click a trace on the left</div>`; return; }
+    if (!d) { $('detail').innerHTML = '<div class="empty">select a trace</div>'; return; }
     const row = d.row, tr = d.trace || {};
-    const dur = row.ts_start && row.ts_end
-      ? new Date(row.ts_end) - new Date(row.ts_start) : null;
-    const sBucket = Math.floor((row.status || 0) / 100);
+    const dur = row.ts_start && row.ts_end ? new Date(row.ts_end) - new Date(row.ts_start) : null;
     const events = (tr.resp && tr.resp.events) || [];
-    const hasReplay = events.length > 0;
-    const tabs = ['overview', 'headers', 'body', events.length ? 'events' : null, 'session', hasReplay ? 'replay' : null].filter(Boolean);
+    const tabs = ['conversation', 'overview', 'headers', 'body', events.length ? 'events' : null, 'session', events.length ? 'replay' : null].filter(Boolean);
     $('detail').innerHTML = `
       <div class="head">
-        <span class="path">${esc(row.method || 'POST')} ${esc(row.path || '')}</span>
-        <span class="status-${sBucket}">${row.status ?? '—'}</span>
-        <span class="id">${esc(row.id)}</span>
+        <div class="title">
+          <span class="method">${esc(row.method || 'POST')}</span>
+          <span class="path">${esc(row.path || '')}</span>
+          <span class="status ${statusClass(row.status)}">${row.status ?? '—'}</span>
+          <span class="id">${esc(row.id)}</span>
+        </div>
         <div class="meta">
-          <span>${shortTs(row.ts_start)}</span>
-          <span>dur=${fmtMs(dur)}</span>
-          <span>model=${esc(row.model || '—')}</span>
-          <span>tokens=${row.prompt_tokens ?? '—'}/${row.completion_tokens ?? '—'}</span>
-          <span>key=${(row.key_hash || '').slice(0, 8)}</span>
-          ${row.parent_id ? `<span>parent=<a href="#/traces/${row.parent_id}">${shortId(row.parent_id)}</a></span>` : ''}
+          <span><b>${shortTs(row.ts_start)}</b></span>
+          <span>dur <b>${fmtMs(dur)}</b></span>
+          <span>model <b>${esc(row.model || '—')}</b></span>
+          <span>tokens <b>${row.prompt_tokens ?? '—'} / ${row.completion_tokens ?? '—'}</b></span>
+          <span>key <b>${(row.key_hash || '').slice(0, 8) || '—'}</b></span>
+          ${row.parent_id ? `<span>parent <b><a href="#/traces/${row.parent_id}">${shortId(row.parent_id)}</a></b></span>` : ''}
         </div>
       </div>
-      <div class="tabs">
-        ${tabs.map((t) => `<a data-tab="${t}" class="${t === state.detailTab ? 'active' : ''}">${t}</a>`).join('')}
-      </div>
-      <div class="panel" id="detail-panel"></div>
+      <div class="tabs">${tabs.map((t) => `<a data-tab="${t}" class="${t === state.detailTab ? 'active' : ''}">${t}</a>`).join('')}</div>
+      <div class="body" id="detail-panel"></div>
     `;
+    document.querySelectorAll('#detail .tabs a').forEach((a) => {
+      a.addEventListener('click', () => { state.detailTab = a.dataset.tab; renderDetail(); });
+    });
     renderDetailTab();
   }
 
@@ -484,44 +782,270 @@
     const row = d.row, tr = d.trace || {};
     const panel = $('detail-panel');
     const tab = state.detailTab;
-    if (tab === 'overview') {
-      panel.innerHTML = `<div class="kv">
-        ${Object.entries(row).map(([k, v]) => `<div class="k">${esc(k)}</div><div>${esc(typeof v === 'object' && v !== null ? JSON.stringify(v) : v)}</div>`).join('')}
-      </div>`;
+    if (tab === 'conversation') {
+      renderConversation(panel, row, tr);
+    } else if (tab === 'overview') {
+      panel.innerHTML = `<div class="kv">${Object.entries(row).map(([k, v]) => {
+        const val = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        return `<div class="k">${esc(k)}</div><div class="v ${val === '' ? 'empty' : ''}">${val === '' ? '—' : esc(val)}</div>`;
+      }).join('')}</div>`;
     } else if (tab === 'headers') {
       const reqH = (tr.req && tr.req.headers) || {};
       const resH = (tr.resp && tr.resp.headers) || {};
+      const kv = (h) => `<div class="kv">${Object.entries(h).map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`).join('')}</div>`;
       panel.innerHTML = `
-        <h3 style="margin:0 0 8px;font-size:12px;color:var(--muted)">REQUEST HEADERS</h3>
-        <div class="kv">${Object.entries(reqH).map(([k, v]) => `<div class="k">${esc(k)}</div><div>${esc(v)}</div>`).join('')}</div>
-        <h3 style="margin:16px 0 8px;font-size:12px;color:var(--muted)">RESPONSE HEADERS</h3>
-        <div class="kv">${Object.entries(resH).map(([k, v]) => `<div class="k">${esc(k)}</div><div>${esc(v)}</div>`).join('')}</div>`;
+        <h3 class="section">request</h3>${kv(reqH)}
+        <h3 class="section more">response</h3>${kv(resH)}`;
     } else if (tab === 'body') {
       const req = (tr.req && tr.req.body) || (tr.req && tr.req.body_b64);
       const resp = (tr.resp && tr.resp.body) || (tr.resp && tr.resp.body_b64);
+      const empty = '<pre class="json"><span style="color:var(--muted-2)">empty (streaming — see events tab)</span></pre>';
       panel.innerHTML = `
-        <h3 style="margin:0 0 8px;font-size:12px;color:var(--muted)">REQUEST BODY</h3>
-        <pre class="json">${req ? jsonHL(req) : '<span style="color:var(--muted)">empty</span>'}</pre>
-        <h3 style="margin:16px 0 8px;font-size:12px;color:var(--muted)">RESPONSE BODY</h3>
-        <pre class="json">${resp ? jsonHL(resp) : '<span style="color:var(--muted)">empty (streaming — see events tab)</span>'}</pre>`;
+        <h3 class="section">request body</h3><pre class="json">${req ? jsonHL(req) : '<span style="color:var(--muted-2)">empty</span>'}</pre>
+        <h3 class="section more">response body</h3>${resp ? `<pre class="json">${jsonHL(resp)}</pre>` : empty}`;
     } else if (tab === 'events') {
       const events = (tr.resp && tr.resp.events) || [];
       panel.innerHTML = `<table class="events-table">
-        <thead><tr><th style="width:80px">t_delta</th><th style="width:140px">event</th><th>data</th></tr></thead>
-        <tbody>${events.map((e, i) => `<tr data-i="${i}">
-          <td>${e.t_delta_ms != null ? e.t_delta_ms + 'ms' : '—'}</td>
-          <td>${esc(e.event || '(data-only)')}</td>
+        <thead><tr><th>t_delta</th><th>event</th><th>data</th></tr></thead>
+        <tbody>${events.map((e) => `<tr>
+          <td class="t">${e.t_delta_ms != null ? e.t_delta_ms + ' ms' : '—'}</td>
+          <td class="ev">${esc(e.event || '(data-only)')}</td>
           <td class="data" title="click to expand">${esc(typeof e.data === 'object' ? JSON.stringify(e.data) : e.data)}</td>
-        </tr>`).join('')}</tbody>
-      </table>`;
+        </tr>`).join('')}</tbody></table>`;
       panel.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', () => tr.classList.toggle('expanded')));
     } else if (tab === 'session') {
       renderSessionTree(panel, row);
     } else if (tab === 'replay') {
       renderReplay(panel, row);
     }
-    panel.parentElement.querySelectorAll('.tabs a').forEach((a) => {
-      a.addEventListener('click', () => { state.detailTab = a.dataset.tab; renderDetail(); });
+  }
+
+  // ---------- conversation extraction ----------
+  //
+  // The viewer reads two distinct sources to reconstruct a conversation:
+  //   1. The request body's prior turns (messages[] / input).
+  //   2. The response — body (non-streaming) OR events[] (SSE).
+  //
+  // Different protocols spell these differently; the extractor returns
+  // a normalized list of { role, content, tools? } turns for one trace.
+
+  function extractTurns(path, req, resp, events) {
+    const turns = [];
+    const isChat = path && path.indexOf('/v1/chat/completions') !== -1;
+    const isAnthropic = path && path.indexOf('/v1/messages') !== -1;
+    const isResponses = path && path.indexOf('/v1/responses') !== -1;
+
+    // ---- prior turns from request ----
+    if (isChat || isAnthropic) {
+      if (req && Array.isArray(req.system)) {
+        // Anthropic permits system as array of blocks; collapse to text.
+        const text = req.system.map(b => typeof b === 'string' ? b : (b.text || JSON.stringify(b))).join('\n');
+        if (text) turns.push({ role: 'system', content: text });
+      } else if (req && req.system && typeof req.system === 'string') {
+        turns.push({ role: 'system', content: req.system });
+      }
+      const msgs = (req && req.messages) || [];
+      for (const m of msgs) {
+        turns.push({ role: m.role, content: contentToText(m.content), raw: m });
+      }
+    } else if (isResponses) {
+      if (req && req.instructions) turns.push({ role: 'system', content: req.instructions });
+      if (req && req.input != null) {
+        if (typeof req.input === 'string') {
+          turns.push({ role: 'user', content: req.input });
+        } else if (Array.isArray(req.input)) {
+          for (const item of req.input) {
+            if (typeof item === 'string') {
+              turns.push({ role: 'user', content: item });
+            } else if (item && item.role && item.content) {
+              turns.push({ role: item.role, content: contentToText(item.content), raw: item });
+            } else if (item && item.type) {
+              turns.push({ role: item.role || 'user', content: contentToText(item.content || item.text || item), raw: item });
+            }
+          }
+        }
+      }
+    } else {
+      // Unknown protocol — try a generic shape.
+      const msgs = (req && req.messages) || [];
+      for (const m of msgs) turns.push({ role: m.role || 'user', content: contentToText(m.content), raw: m });
+      if (req && typeof req.prompt === 'string') turns.push({ role: 'user', content: req.prompt });
+    }
+
+    // ---- assistant turn from response ----
+    let assistantText = '';
+    if (events && events.length) {
+      assistantText = assistantFromEvents(events, isAnthropic, isResponses);
+    } else if (resp) {
+      if (isChat && resp.choices && resp.choices[0]) {
+        assistantText = contentToText(resp.choices[0].message?.content || '');
+      } else if (isAnthropic && resp.content) {
+        assistantText = contentToText(resp.content);
+      } else if (isResponses) {
+        // Responses non-streaming: output_text shortcut OR walk output[].content[].text
+        if (typeof resp.output_text === 'string') assistantText = resp.output_text;
+        else if (Array.isArray(resp.output)) {
+          assistantText = resp.output.flatMap(o => (o.content || []).map(c => c.text || '')).join('');
+        }
+      } else if (resp.error) {
+        // Error response — surface as a system-role pseudo-turn.
+        turns.push({ role: 'system', content: 'ERROR ' + JSON.stringify(resp.error) });
+      }
+    }
+    if (assistantText) turns.push({ role: 'assistant', content: assistantText });
+    return turns;
+  }
+
+  // contentToText handles both plain strings and the OpenAI/Anthropic
+  // multi-modal content-block forms ([{type:"text", text:"..."}, ...]).
+  function contentToText(c) {
+    if (c == null) return '';
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) {
+      return c.map(b => {
+        if (typeof b === 'string') return b;
+        if (b && typeof b === 'object') {
+          if (b.type === 'text' || b.text) return b.text || '';
+          if (b.type === 'tool_use') return `[tool_use ${b.name || ''} ${JSON.stringify(b.input || {})}]`;
+          if (b.type === 'tool_result') return `[tool_result ${b.tool_use_id || ''}: ${contentToText(b.content)}]`;
+          if (b.type === 'image' || b.type === 'image_url') return '[image]';
+          if (b.type === 'thinking') return b.thinking ? `[thinking] ${b.thinking}` : '[thinking]';
+        }
+        return JSON.stringify(b);
+      }).join('');
+    }
+    if (typeof c === 'object') return JSON.stringify(c);
+    return String(c);
+  }
+
+  function assistantFromEvents(events, isAnthropic, isResponses) {
+    let buf = '';
+    for (const e of events) {
+      const d = e.data;
+      if (!d || typeof d !== 'object') continue;
+      // Anthropic Messages streaming.
+      if (isAnthropic) {
+        if (d.type === 'content_block_delta' && d.delta) {
+          if (d.delta.type === 'text_delta' && typeof d.delta.text === 'string') buf += d.delta.text;
+          else if (d.delta.type === 'thinking_delta' && typeof d.delta.thinking === 'string') buf += d.delta.thinking;
+        }
+        continue;
+      }
+      // OpenAI Responses streaming.
+      if (isResponses) {
+        if (d.type === 'response.output_text.delta' && typeof d.delta === 'string') { buf += d.delta; continue; }
+        if (typeof d.delta === 'string') { buf += d.delta; continue; }
+        if (d.delta && typeof d.delta.text === 'string') { buf += d.delta.text; continue; }
+        continue;
+      }
+      // OpenAI Chat streaming (default).
+      if (d.choices && d.choices[0]) {
+        const ch = d.choices[0];
+        if (ch.delta && typeof ch.delta.content === 'string') { buf += ch.delta.content; continue; }
+      }
+    }
+    return buf;
+  }
+
+  // ---------- conversation tab renderer ----------
+
+  async function renderConversation(panel, row, tr) {
+    const path = row.path;
+    const req = tr.req && tr.req.body;
+    const resp = tr.resp && tr.resp.body;
+    const events = (tr.resp && tr.resp.events) || [];
+    const thisTurns = extractTurns(path, req, resp, events);
+
+    const header = `<div class="convo-controls">
+      <label><input type="checkbox" id="convo-session" ${state.convoIncludeSession ? 'checked' : ''} ${row.session_root_id ? '' : 'disabled'}/>
+        include earlier turns from this session (${shortId(row.session_root_id)})
+      </label>
+    </div>`;
+
+    if (!state.convoIncludeSession || !row.session_root_id) {
+      panel.innerHTML = header + renderConvoTurns(thisTurns);
+      wireConvoControls(panel, row);
+      return;
+    }
+
+    // Build cumulative transcript: walk all traces in this session
+    // ordered by ts_start, extract each turn-set, concatenate; mark the
+    // current turn with a divider.
+    panel.innerHTML = header + '<div style="color:var(--muted)">loading session transcript…</div>';
+    try {
+      const r = await authFetch(`api/traces?session_root_id=${row.session_root_id}&limit=100`);
+      const j = await r.json();
+      const traceRows = (j.traces || []).slice().sort((a, b) => a.ts_start.localeCompare(b.ts_start));
+      const all = [];
+      let added = 0;
+      for (let i = 0; i < traceRows.length; i++) {
+        const tRow = traceRows[i];
+        // Fetch each trace's JSONL.
+        const dr = await authFetch(`api/traces/${tRow.id}`);
+        if (!dr.ok) continue;
+        const dj = await dr.json();
+        const ev = (dj.trace.resp && dj.trace.resp.events) || [];
+        const turns = extractTurns(tRow.path, dj.trace.req && dj.trace.req.body, dj.trace.resp && dj.trace.resp.body, ev);
+        // For non-first turns the request already carries the prior
+        // history, so just keep the last assistant turn from this
+        // trace (avoid duplication). For the first trace we keep all
+        // turns of its body.
+        if (i === 0) {
+          all.push({ divider: `turn 1 · ${shortTs(tRow.ts_start)} · ${shortId(tRow.id)}` });
+          all.push(...turns);
+        } else {
+          // Only push the assistant reply (and user turn if it's the
+          // new last user message — which always appears as the
+          // request body's last user message of this trace).
+          all.push({ divider: `turn ${i + 1} · ${shortTs(tRow.ts_start)} · ${shortId(tRow.id)}` });
+          // Find last user turn + assistant from this trace.
+          const lastUser = [...turns].reverse().find(t => t.role === 'user');
+          const assistant = turns.find(t => t.role === 'assistant');
+          if (lastUser) all.push(lastUser);
+          if (assistant) all.push(assistant);
+        }
+        added++;
+        if (added >= 30) break; // hard cap; viewer is a viewer, not an exporter
+      }
+      panel.innerHTML = header + renderConvoTurns(all);
+      wireConvoControls(panel, row);
+    } catch (e) {
+      panel.innerHTML = header + `<div style="color:var(--bad)">session transcript failed: ${esc(e.message)}</div>`;
+      wireConvoControls(panel, row);
+    }
+  }
+
+  function renderConvoTurns(turns) {
+    if (!turns || turns.length === 0) return '<div style="color:var(--muted)">no extractable conversation</div>';
+    const out = turns.map(t => {
+      if (t.divider) return `<div class="session-divider">${esc(t.divider)}</div>`;
+      const role = t.role || 'user';
+      const cls = role === 'assistant' ? 'assistant' : role === 'system' ? 'system' : 'user';
+      let toolHtml = '';
+      // Surface tool calls / results from the raw message structure.
+      if (t.raw && Array.isArray(t.raw.content)) {
+        for (const b of t.raw.content) {
+          if (b && b.type === 'tool_use') {
+            toolHtml += `<div class="tool">↗ <span class="tool-name">${esc(b.name || 'tool')}</span> ${esc(JSON.stringify(b.input || {}))}</div>`;
+          } else if (b && b.type === 'tool_result') {
+            toolHtml += `<div class="tool">↙ <span class="tool-name">tool_result</span> ${esc(contentToText(b.content))}</div>`;
+          }
+        }
+      }
+      return `<div class="turn ${cls}">
+        <div class="role">${esc(role)}</div>
+        <div class="content">${esc(t.content || '')}</div>
+        ${toolHtml}
+      </div>`;
+    }).join('');
+    return `<div class="convo">${out}</div>`;
+  }
+
+  function wireConvoControls(panel, row) {
+    const cb = panel.querySelector('#convo-session');
+    if (cb) cb.addEventListener('change', () => {
+      state.convoIncludeSession = cb.checked;
+      renderDetailTab();
     });
   }
 
@@ -532,7 +1056,6 @@
       const r = await authFetch(`api/traces?session_root_id=${row.session_root_id}&limit=500`);
       const j = await r.json();
       const nodes = (j.traces || []).slice().sort((a, b) => a.ts_start.localeCompare(b.ts_start));
-      // Build parent->children map.
       const byId = new Map(nodes.map((n) => [n.id, { ...n, kids: [] }]));
       let root = null;
       for (const n of byId.values()) {
@@ -541,60 +1064,53 @@
       }
       if (!root) root = nodes[0] ? byId.get(nodes[0].id) : null;
       if (!root) { panel.innerHTML = '<div style="color:var(--muted)">empty</div>'; return; }
-      function r2html(n, depth) {
-        const sel = n.id === row.id ? ' selected' : '';
-        const cls = 'tree-node' + (depth === 0 ? ' root' : '') + sel;
+      const r2html = (n, d) => {
+        const cur = n.id === row.id ? ' current' : '';
+        const cls = 'tree-node' + (d === 0 ? ' root' : '') + cur;
         return `<div class="${cls}" data-id="${n.id}">
-          <span class="status-${Math.floor((n.status||0)/100)}">${n.status ?? '—'}</span>
-          <span class="tree-path">${esc(n.path || '')}</span>
-          <span class="tree-meta">${shortTs(n.ts_start)} · ${shortId(n.id)}</span>
-          ${n.kids.length ? n.kids.map((k) => r2html(k, depth + 1)).join('') : ''}
+          <span class="${statusClass(n.status)}">${n.status ?? '—'}</span>
+          <span class="path">${esc(n.path || '')}</span>
+          <span class="meta">${shortTs(n.ts_start)} · ${shortId(n.id)}</span>
+          ${n.kids.length ? n.kids.map((k) => r2html(k, d + 1)).join('') : ''}
         </div>`;
-      }
+      };
       panel.innerHTML = `<div class="tree">${r2html(root, 0)}</div>
-        <div style="color:var(--muted);font-size:11px;margin-top:10px">${nodes.length} traces in session · root=${shortId(root.id)}</div>`;
+        <div class="tree-footer">${nodes.length} traces · root ${shortId(root.id)}</div>`;
       panel.querySelectorAll('.tree-node').forEach((el) => {
         el.addEventListener('click', (e) => { e.stopPropagation(); selectTrace(el.dataset.id); });
       });
     } catch (e) {
-      panel.innerHTML = `<div style="color:var(--err)">session load failed: ${esc(e.message)}</div>`;
+      panel.innerHTML = `<div style="color:var(--bad)">session load failed: ${esc(e.message)}</div>`;
     }
   }
 
   function renderReplay(panel, row) {
     panel.innerHTML = `
       <div class="replay-controls">
-        <button data-speed="1">1×</button>
-        <button data-speed="2">2×</button>
-        <button data-speed="10">10×</button>
-        <button data-speed="0">nodelay</button>
+        <button class="run" data-speed="1">1×</button>
+        <button class="run" data-speed="2">2×</button>
+        <button class="run" data-speed="10">10×</button>
+        <button class="run" data-speed="0">nodelay</button>
         <button class="stop" id="rp-stop">stop</button>
-        <span id="rp-status" style="color:var(--muted);font-size:11px"></span>
+        <span class="status" id="rp-status">idle</span>
       </div>
-      <div class="replay-out" id="rp-out">(press a speed button to replay)</div>`;
-    const out = $('rp-out');
-    const stat = $('rp-status');
-    const stopReplay = () => {
-      if (state.replaySrc) { state.replaySrc.abort(); state.replaySrc = null; stat.textContent = 'stopped'; }
-    };
+      <div class="replay-out" id="rp-out">(press a speed button)</div>`;
+    const out = $('rp-out'), stat = $('rp-status');
+    const stop = () => { if (state.replayAbort) { state.replayAbort.abort(); state.replayAbort = null; stat.textContent = 'stopped'; } };
     panel.querySelectorAll('button[data-speed]').forEach((b) => {
       b.addEventListener('click', async () => {
-        stopReplay();
-        out.textContent = '';
+        stop(); out.textContent = '';
         const speed = b.dataset.speed;
         const url = api(`api/traces/${row.id}/replay`) + (speed === '0' ? '?nodelay=1' : `?speed=${speed}`);
         stat.textContent = 'streaming…';
-        // EventSource doesn't accept custom headers, so we fetch + read stream.
-        const ctrl = new AbortController();
-        state.replaySrc = ctrl;
+        const ctrl = new AbortController(); state.replayAbort = ctrl;
         try {
           const r = await fetch(url, {
             headers: { 'Authorization': 'Bearer ' + state.token },
             signal: ctrl.signal,
           });
-          if (!r.ok) { stat.textContent = `error ${r.status}`; return; }
-          const reader = r.body.getReader();
-          const dec = new TextDecoder();
+          if (!r.ok) { stat.textContent = `http ${r.status}`; return; }
+          const reader = r.body.getReader(), dec = new TextDecoder();
           while (true) {
             const { value, done } = await reader.read();
             if (done) { stat.textContent = 'done'; break; }
@@ -603,12 +1119,10 @@
           }
         } catch (e) {
           if (e.name !== 'AbortError') stat.textContent = 'failed: ' + e.message;
-        } finally {
-          state.replaySrc = null;
-        }
+        } finally { state.replayAbort = null; }
       });
     });
-    $('rp-stop').addEventListener('click', stopReplay);
+    $('rp-stop').addEventListener('click', stop);
   }
 
   // ---------- healthz ----------
@@ -620,8 +1134,8 @@
       state.healthz = await r.json();
       renderHealthz();
       const c = state.healthz.counters || {};
-      const bad = c.drop_writer_full + c.drop_jsonl_fail + c.drop_sqlite_fail;
-      setStatus(bad > 0 ? `drops: ${bad}` : `ok · ${c.appended} traces`, bad > 0 ? 'bad' : 'ok');
+      const drops = (c.drop_writer_full|0) + (c.drop_jsonl_fail|0) + (c.drop_sqlite_fail|0);
+      setStatus(drops > 0 ? `${drops} drops` : `${c.appended} traces`, drops > 0 ? 'bad' : 'good');
     } catch (e) {
       setStatus('healthz down', 'bad');
     }
@@ -629,44 +1143,37 @@
 
   function renderHealthz() {
     if (!state.healthz) return;
-    const h = state.healthz; const c = h.counters || {};
-    const drops = c.drop_writer_full + c.drop_jsonl_fail + c.drop_sqlite_fail;
+    const h = state.healthz, c = h.counters || {};
+    const drops = (c.drop_writer_full|0) + (c.drop_jsonl_fail|0) + (c.drop_sqlite_fail|0);
+    const trunc = (c.truncated_req_total|0) + (c.truncated_resp_total|0);
     const cards = [
-      { label: 'uptime', value: Math.floor(h.uptime_seconds / 60) + 'm', sub: 'started ' + new Date(Date.now() - h.uptime_seconds*1000).toISOString().slice(0, 19) + 'Z' },
-      { label: 'appended', value: c.appended, sub: `2xx ${c.appended_2xx ?? 0} · 4xx ${c.appended_4xx ?? 0} · 5xx ${c.appended_5xx ?? 0}` },
-      { label: 'indexed (SQLite)', value: c.indexed, sub: `lag = ${c.appended - c.indexed}` },
-      { label: 'drops', value: drops, sub: `writer ${c.drop_writer_full} · jsonl ${c.drop_jsonl_fail} · sqlite ${c.drop_sqlite_fail}`, kind: drops > 0 ? 'bad' : null },
-      { label: 'truncated', value: c.truncated_req_total + c.truncated_resp_total, sub: `req ${c.truncated_req_total} · resp ${c.truncated_resp_total}`, kind: (c.truncated_req_total + c.truncated_resp_total) > 0 ? 'warn' : null },
-      { label: 'writer chan high-water', value: c.writer_chan_high_water, sub: 'channel buffer 1024' },
-      { label: 'slow traces', value: c.slow_traces ?? 0, sub: `> ${30}s end-to-end`, kind: c.slow_traces > 0 ? 'warn' : null },
-      { label: 'upstream dial errors', value: c.upstream_dial_err ?? 0, sub: 'DNS / TLS / refused', kind: c.upstream_dial_err > 0 ? 'bad' : null },
+      { label: 'uptime', value: Math.floor(h.uptime_seconds / 60) + 'm', sub: new Date(Date.now() - h.uptime_seconds*1000).toISOString().slice(0, 19) + 'Z' },
+      { label: 'appended', value: c.appended, sub: `2xx ${c.appended_2xx|0} · 4xx ${c.appended_4xx|0} · 5xx ${c.appended_5xx|0}` },
+      { label: 'indexed', value: c.indexed, sub: `lag ${c.appended - c.indexed}` },
+      { label: 'drops', value: drops, sub: `writer ${c.drop_writer_full|0} · jsonl ${c.drop_jsonl_fail|0} · sqlite ${c.drop_sqlite_fail|0}`, kind: drops > 0 ? 'bad' : null },
+      { label: 'truncated', value: trunc, sub: `req ${c.truncated_req_total|0} · resp ${c.truncated_resp_total|0}`, kind: trunc > 0 ? 'warn' : null },
+      { label: 'writer chan', value: c.writer_chan_high_water, sub: 'high-water / 1024' },
+      { label: 'slow traces', value: c.slow_traces|0, sub: '> 30s end-to-end', kind: (c.slow_traces|0) > 0 ? 'warn' : null },
+      { label: 'upstream dial err', value: c.upstream_dial_err|0, sub: 'dns / tls / refused', kind: (c.upstream_dial_err|0) > 0 ? 'bad' : null },
     ];
-    $('health-cards').innerHTML = cards.map((c) => `<div class="card ${c.kind || ''}">
-      <div class="label">${esc(c.label)}</div>
-      <div class="value">${esc(c.value)}</div>
-      ${c.sub ? `<div class="sub">${esc(c.sub)}</div>` : ''}
+    $('health-cards').innerHTML = cards.map((card) => `<div class="card ${card.kind || ''}">
+      <div class="label">${esc(card.label)}</div>
+      <div class="value">${esc(card.value)}</div>
+      <div class="sub">${esc(card.sub || '')}</div>
     </div>`).join('');
 
     const t = c.timings || {};
-    $('health-timings').innerHTML = `
-      <div style="margin:8px 0 6px;color:var(--muted);font-size:12px">PER-TRACE TIMINGS (ms)</div>
-      <div class="cards">
-        ${['drain_ms','parse_ms','sqlite_ms'].map((k) => {
-          const v = t[k] || {};
-          return `<div class="card">
-            <div class="label">${k.replace('_ms','')}</div>
-            <div class="value">${v.p50_ms ?? 0}<span style="color:var(--muted);font-size:13px"> p50</span></div>
-            <div class="sub">p95 ${v.p95_ms ?? 0}ms · p99 ${v.p99_ms ?? 0}ms · n ${v.count ?? 0} · mean ${(v.mean_ms ?? 0).toFixed(2)}ms</div>
-          </div>`;
-        }).join('')}
+    $('health-timings').innerHTML = ['drain_ms','parse_ms','sqlite_ms'].map((k) => {
+      const v = t[k] || {};
+      return `<div class="card">
+        <div class="label">${k.replace('_ms','')}</div>
+        <div class="value">${v.p50_ms ?? 0} <span style="color:var(--muted);font-size:12px;font-weight:400">p50</span></div>
+        <div class="sub">p95 ${v.p95_ms ?? 0} · p99 ${v.p99_ms ?? 0} · n ${v.count ?? 0} · mean ${(v.mean_ms ?? 0).toFixed(2)}</div>
       </div>`;
+    }).join('');
   }
 
-  function startHealthz() {
-    loadHealthz();
-    stopHealthz();
-    state.healthzTimer = setInterval(loadHealthz, 5000);
-  }
+  function startHealthz() { loadHealthz(); stopHealthz(); state.healthzTimer = setInterval(loadHealthz, 5000); }
   function stopHealthz() { if (state.healthzTimer) { clearInterval(state.healthzTimer); state.healthzTimer = null; } }
 
   // ---------- auth modal ----------
@@ -681,37 +1188,64 @@
     state.token = $('token-input').value.trim();
     localStorage.setItem('apilog.token', state.token);
     hideAuthModal();
-    if (state.view === 'traces') loadTraces({ reset: true });
+    if (state.view === 'traces') loadList({ reset: true });
     else loadHealthz();
   });
   $('token-cancel').addEventListener('click', hideAuthModal);
   $('auth-btn').addEventListener('click', showAuthModal);
+  $('token-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); $('token-save').click(); }
+  });
 
   // ---------- wire events ----------
 
   $('refresh').addEventListener('click', () => {
-    if (state.view === 'traces') loadTraces({ reset: true });
+    if (state.view === 'traces') loadList({ reset: true });
     else loadHealthz();
   });
-  $('f-apply').addEventListener('click', () => loadTraces({ reset: true }));
+  $('f-apply').addEventListener('click', () => loadList({ reset: true }));
   $('f-clear').addEventListener('click', () => {
-    document.querySelectorAll('#filters input').forEach((i) => { if (i.type !== 'number') i.value = ''; });
-    $('f-limit').value = '50';
-    loadTraces({ reset: true });
+    $('f-status').value = '';
+    ['f-path','f-model','f-keyhash','f-session','f-since'].forEach(id => $(id).value = '');
+    $('f-limit').value = '100';
+    loadList({ reset: true });
   });
   $('page-next').addEventListener('click', () => {
     if (!state.cursor) return;
     state.cursorStack.push(state.cursor);
-    loadTraces({ cursor: state.cursor });
+    loadTraces({ cursor: state.cursor }); // pagination only in trace mode
   });
   $('page-prev').addEventListener('click', () => {
     state.cursorStack.pop();
     const prev = state.cursorStack[state.cursorStack.length - 1] || null;
     loadTraces({ cursor: prev });
   });
-  $('list-rows').addEventListener('click', (e) => {
+  $('list-rows').addEventListener('click', async (e) => {
     const tr = e.target.closest('tr'); if (!tr) return;
-    selectTrace(tr.dataset.id);
+    if (tr.dataset.id) { selectTrace(tr.dataset.id); return; }
+    // Session row — open the latest trace in this session.
+    if (tr.dataset.session) {
+      try {
+        const r = await authFetch(`api/traces?session_root_id=${tr.dataset.session}&limit=1`);
+        const j = await r.json();
+        const latest = (j.traces || [])[0];
+        if (latest) selectTrace(latest.id);
+      } catch (e) { setStatus('open session failed', 'bad'); }
+    }
+  });
+  $('mode-traces').addEventListener('click', () => switchMode('traces'));
+  $('mode-sessions').addEventListener('click', () => switchMode('sessions'));
+  function switchMode(m) {
+    if (state.listMode === m) return;
+    state.listMode = m;
+    document.getElementById('mode-traces').classList.toggle('active', m === 'traces');
+    document.getElementById('mode-sessions').classList.toggle('active', m === 'sessions');
+    loadList({ reset: true });
+  }
+  // Enter in any filter input applies.
+  document.querySelectorAll('#filters .input, #filters select').forEach((el) => {
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadList({ reset: true }); });
+    if (el.tagName === 'SELECT') el.addEventListener('change', () => loadList({ reset: true }));
   });
 
   // ---------- boot ----------

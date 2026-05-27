@@ -37,6 +37,7 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("GET /api/traces", authMW(deps.AdminToken, listTraces(deps)))
 	mux.Handle("GET /api/traces/{id}", authMW(deps.AdminToken, getTrace(deps)))
 	mux.Handle("GET /api/traces/{id}/replay", authMW(deps.AdminToken, replayHandler(deps)))
+	mux.Handle("GET /api/sessions", authMW(deps.AdminToken, listSessions(deps)))
 
 	// Embedded viewer. Intentionally NOT behind authMW — the page has
 	// to load to prompt the user for their token. All AJAX calls the

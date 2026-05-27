@@ -314,8 +314,8 @@ func TestViewerServesHTML(t *testing.T) {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "api-log/viewer") {
-		t.Errorf("viewer missing expected title")
+	if !strings.Contains(string(body), `class="brand"`) {
+		t.Errorf("viewer body missing brand element")
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want text/html", ct)

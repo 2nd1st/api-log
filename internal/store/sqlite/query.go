@@ -17,6 +17,7 @@ type ListFilters struct {
 	Since         time.Time // ts_start >= Since (zero = no bound)
 	Until         time.Time // ts_start <  Until (zero = no bound)
 	Status        *int      // exact match if set
+	StatusBucket  int       // 0 = no constraint; 2/4/5 = match 2xx/4xx/5xx range
 	Model         string    // exact match if set
 	KeyHashPrefix string    // accepts 8- or 16-char prefix; matches by LIKE
 	SessionRootID string    // exact match if set
@@ -66,6 +67,11 @@ func (s *Store) List(filters ListFilters) (ListPage, error) {
 	if filters.Status != nil {
 		conds = append(conds, "status = ?")
 		args = append(args, *filters.Status)
+	}
+	if filters.StatusBucket >= 2 && filters.StatusBucket <= 5 {
+		lo := filters.StatusBucket * 100
+		conds = append(conds, "status >= ? AND status < ?")
+		args = append(args, lo, lo+100)
 	}
 	if filters.Model != "" {
 		conds = append(conds, "model = ?")
@@ -128,6 +134,96 @@ func (s *Store) List(filters ListFilters) (ListPage, error) {
 		page.NextCursorID = last.ID
 	}
 	return page, nil
+}
+
+// SessionSummary is one row of the /api/sessions response — an
+// aggregate over a session_root_id. Useful for "what conversations are
+// happening" without paging through every per-turn trace.
+type SessionSummary struct {
+	SessionRootID    string
+	NTurns           int64
+	FirstTs          time.Time
+	LastTs           time.Time
+	LastPath         string
+	LastStatus       int
+	LastModel        string
+	DistinctKeyCount int64
+	OkCount          int64
+	ErrCount         int64
+}
+
+// ListSessions returns the most recent sessions, latest-activity first.
+// limit defaults to 100, max 500. Optional since filter applies to the
+// session's last-activity timestamp.
+func (s *Store) ListSessions(since time.Time, limit int) ([]SessionSummary, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	conds := ""
+	args := []any{}
+	if !since.IsZero() {
+		conds = "HAVING MAX(ts_start) >= ?"
+		args = append(args, unixMs(since))
+	}
+	// Subquery picks the latest trace per session so we can carry its
+	// path/status/model into the summary. Cheaper than a window in
+	// SQLite for our row counts.
+	q := `
+		SELECT
+		  t.session_root_id,
+		  COUNT(*) AS n_turns,
+		  MIN(t.ts_start) AS first_ts,
+		  MAX(t.ts_start) AS last_ts,
+		  COUNT(DISTINCT t.key_hash) AS keys,
+		  SUM(CASE WHEN t.status >= 200 AND t.status < 300 THEN 1 ELSE 0 END) AS ok,
+		  SUM(CASE WHEN t.status >= 400 THEN 1 ELSE 0 END) AS errs,
+		  (SELECT t2.path FROM traces t2 WHERE t2.session_root_id = t.session_root_id ORDER BY ts_start DESC LIMIT 1) AS last_path,
+		  (SELECT t2.status FROM traces t2 WHERE t2.session_root_id = t.session_root_id ORDER BY ts_start DESC LIMIT 1) AS last_status,
+		  (SELECT COALESCE(t2.model, '') FROM traces t2 WHERE t2.session_root_id = t.session_root_id ORDER BY ts_start DESC LIMIT 1) AS last_model
+		FROM traces t
+		GROUP BY t.session_root_id
+		` + conds + `
+		ORDER BY last_ts DESC
+		LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]SessionSummary, 0, limit)
+	for rows.Next() {
+		var (
+			s        SessionSummary
+			firstMs  int64
+			lastMs   int64
+			lastPath sql.NullString
+			lastStat sql.NullInt64
+			lastMdl  sql.NullString
+		)
+		if err := rows.Scan(&s.SessionRootID, &s.NTurns, &firstMs, &lastMs,
+			&s.DistinctKeyCount, &s.OkCount, &s.ErrCount,
+			&lastPath, &lastStat, &lastMdl); err != nil {
+			return nil, err
+		}
+		s.FirstTs = time.UnixMilli(firstMs).UTC()
+		s.LastTs = time.UnixMilli(lastMs).UTC()
+		if lastPath.Valid {
+			s.LastPath = lastPath.String
+		}
+		if lastStat.Valid {
+			s.LastStatus = int(lastStat.Int64)
+		}
+		if lastMdl.Valid {
+			s.LastModel = lastMdl.String
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // GetByID returns the row with the given trace ID. Returns ErrNotFound
