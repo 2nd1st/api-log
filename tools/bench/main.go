@@ -48,7 +48,7 @@ type sample struct {
 
 type opts struct {
 	Upstream        string
-	Key             string
+	Keys            []string
 	AuthHeader      string
 	Conc            int
 	Count           int
@@ -65,7 +65,7 @@ type opts struct {
 func main() {
 	var (
 		upstream       = flag.String("upstream", "http://localhost:7861", "api-log proxy URL (or upstream URL for baseline)")
-		key            = flag.String("key", "", "Bearer token to send (required for real upstream)")
+		key            = flag.String("key", "", "Bearer token(s) to send. Comma-separated to round-robin across goroutines (each worker pins to one key for the run — gives realistic distinct key_hashes downstream).")
 		authHdr        = flag.String("auth-header", "Authorization", "header name for the key (Authorization | x-api-key)")
 		conc           = flag.Int("conc", 50, "concurrent clients")
 		count          = flag.Int("count", 20, "requests per client")
@@ -84,9 +84,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "bench: -key is required")
 		os.Exit(2)
 	}
+	keys := strings.Split(*key, ",")
+	for i := range keys {
+		keys[i] = strings.TrimSpace(keys[i])
+	}
 	o := opts{
 		Upstream:       strings.TrimRight(*upstream, "/"),
-		Key:            *key,
+		Keys:           keys,
 		AuthHeader:     *authHdr,
 		Conc:           *conc,
 		Count:          *count,
@@ -128,9 +132,14 @@ func main() {
 			defer wg.Done()
 			client := makeClient()
 			rng := rand.New(rand.NewSource(o.Seed + int64(workerID)*1009))
+			// Pin one key per worker for the full run — that way each
+			// key produces its own distinct key_hash batch on the
+			// recorder side, and downstream rate limiters see realistic
+			// per-user distribution rather than a shuffled stream.
+			key := o.Keys[workerID%len(o.Keys)]
 			for i := 0; i < o.Count; i++ {
 				proto := o.Protocols[(workerID+i)%len(o.Protocols)]
-				s := runOne(client, &o, proto, workerID, i, rng)
+				s := runOne(client, &o, proto, workerID, i, rng, key)
 				atomic.AddInt64(&sent, 1)
 				mu.Lock()
 				samples = append(samples, s)
@@ -149,7 +158,7 @@ func main() {
 	}
 }
 
-func runOne(client *http.Client, o *opts, proto string, worker, iter int, rng *rand.Rand) sample {
+func runOne(client *http.Client, o *opts, proto string, worker, iter int, rng *rand.Rand, key string) sample {
 	s := sample{Proto: proto}
 	method, path, body, stream := buildRequest(o, proto, worker, iter, rng)
 	s.Stream = stream
@@ -163,14 +172,11 @@ func runOne(client *http.Client, o *opts, proto string, worker, iter int, rng *r
 		return s
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(o.AuthHeader, "Bearer "+o.Key)
-	if o.AuthHeader == "x-api-key" {
-		// Anthropic uses bare key, no Bearer prefix.
-		req.Header.Set(o.AuthHeader, o.Key)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
+	req.Header.Set(o.AuthHeader, "Bearer "+key)
 	if proto == "anthropic-stream" {
-		req.Header.Set("x-api-key", o.Key)
+		// Anthropic protocol expects bare key in x-api-key.
+		req.Header.Del(o.AuthHeader)
+		req.Header.Set("x-api-key", key)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 
