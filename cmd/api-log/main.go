@@ -24,8 +24,11 @@ import (
 
 	"path/filepath"
 
+	"github.com/leoyun/api-log/internal/admin"
+	"github.com/leoyun/api-log/internal/api"
 	"github.com/leoyun/api-log/internal/capture"
 	"github.com/leoyun/api-log/internal/config"
+	"github.com/leoyun/api-log/internal/counters"
 	"github.com/leoyun/api-log/internal/ids"
 	"github.com/leoyun/api-log/internal/logging"
 	"github.com/leoyun/api-log/internal/parser"
@@ -88,9 +91,21 @@ func run() error {
 	defer store.Close()
 	slog.Info("sqlite open", "path", sqlitePath)
 
+	// Admin bearer token for the read API.
+	adminToken, generated, err := admin.EnsureToken(cfg.Storage.DataDir)
+	if err != nil {
+		return fmt.Errorf("admin token: %w", err)
+	}
+	if generated {
+		fmt.Fprintf(os.Stdout, "admin_token: %s\n", adminToken)
+	}
+
+	// Shared atomic counters surfaced on /healthz.
+	ctrs := counters.New()
+
 	// Single-writer goroutine for JSONL append + SQLite upsert. Both
 	// run in the same goroutine in one transaction per trace.
-	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, nil)
+	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, ctrs, nil)
 	stopWriter := wrtr.Start()
 	defer stopWriter()
 
@@ -153,6 +168,15 @@ func run() error {
 			tmpDir.RemoveTraceFiles(traceID)
 			return
 		}
+		// Bump truncated counters per trace direction. Capture-side
+		// flag set is the union of channel-overflow + body-cap drops.
+		if tr.TruncatedReq {
+			ctrs.IncTruncatedReq()
+		}
+		if tr.TruncatedResp {
+			ctrs.IncTruncatedResp()
+		}
+
 		keyHash := ids.KeyHashFromHeaders(state.reqHeader)
 		if !wrtr.TrySend(writer.Record{Trace: tr, KeyHash: keyHash}) {
 			slog.Warn("writer channel full; trace metadata dropped",
@@ -161,7 +185,7 @@ func run() error {
 		tmpDir.RemoveTraceFiles(traceID)
 	})
 
-	srv := &http.Server{
+	proxySrv := &http.Server{
 		Addr:              cfg.Proxy.Listen,
 		Handler:           proxyHandler,
 		ReadHeaderTimeout: cfg.Timeouts.ReadHeader(),
@@ -170,31 +194,62 @@ func run() error {
 		// minutes. M6 adds stream-idle watchdog.
 	}
 
+	// API server (port from cfg.API.Listen). Same process; separate
+	// listener so a slow read API can't impact proxy traffic.
+	apiHandler := api.NewMux(api.Deps{
+		Store:      store,
+		Counters:   ctrs,
+		AdminToken: adminToken,
+		Version:    "0.0.0-dev",
+		StartedAt:  time.Now().UTC(),
+	})
+	apiSrv := &http.Server{
+		Addr:              cfg.API.Listen,
+		Handler:           apiHandler,
+		ReadHeaderTimeout: cfg.Timeouts.ReadHeader(),
+		IdleTimeout:       cfg.Timeouts.Idle(),
+	}
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	serverErr := make(chan error, 1)
+	proxyErr := make(chan error, 1)
+	apiErr := make(chan error, 1)
 	go func() {
 		slog.Info("proxy listener up", "addr", cfg.Proxy.Listen)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
+		if err := proxySrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			proxyErr <- err
 		}
-		close(serverErr)
+		close(proxyErr)
+	}()
+	go func() {
+		slog.Info("api listener up", "addr", cfg.API.Listen)
+		if err := apiSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			apiErr <- err
+		}
+		close(apiErr)
 	}()
 
 	select {
 	case <-rootCtx.Done():
 		slog.Info("shutdown signal received, draining")
-	case err := <-serverErr:
+	case err := <-proxyErr:
 		if err != nil {
 			return fmt.Errorf("proxy server: %w", err)
+		}
+	case err := <-apiErr:
+		if err != nil {
+			return fmt.Errorf("api server: %w", err)
 		}
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Grace())
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Warn("graceful shutdown timed out", "err", err)
+	if err := proxySrv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("proxy graceful shutdown timed out", "err", err)
+	}
+	if err := apiSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("api graceful shutdown timed out", "err", err)
 	}
 	slog.Info("api-log stopped")
 	return nil

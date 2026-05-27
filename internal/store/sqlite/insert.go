@@ -41,6 +41,14 @@ type Row struct {
 	// Identifiers.
 	KeyHash string
 
+	// Session fields. Populated by AppendTrace (writer side) or by
+	// scanRow (read side). Callers should NOT set these on the writer
+	// path — they are derived inside the transaction.
+	PrefixLen           *int
+	PrefixCanonicalHash *string
+	ParentID            *string
+	SessionRootID       string
+
 	// JSONL location.
 	JSONLPath   string
 	JSONLOffset int64

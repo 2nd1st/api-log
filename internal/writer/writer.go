@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leoyun/api-log/internal/counters"
 	"github.com/leoyun/api-log/internal/ids"
 	"github.com/leoyun/api-log/internal/session"
 	"github.com/leoyun/api-log/internal/store/sqlite"
@@ -44,17 +45,19 @@ type AppendResult struct {
 // Writer owns the JSONL writing pipeline. Exactly one goroutine writes
 // to disk; producers send Records on a bounded channel via TrySend.
 type Writer struct {
-	dataDir string
-	clock   func() time.Time
-	in      chan Record
-	store   *sqlite.Store // optional; nil = JSONL-only mode (used in tests / M2 mode)
+	dataDir  string
+	clock    func() time.Time
+	in       chan Record
+	store    *sqlite.Store     // optional; nil = JSONL-only mode (used in tests / M2 mode)
+	counters *counters.Counters // optional; nil = no counter wiring (tests can omit)
 
 	// gzip workers run in the background when files rotate. We wait for
 	// them on Close so a shutdown doesn't leave a half-gzipped file behind.
 	gzWG sync.WaitGroup
 
-	// Counters wires drop / overflow events to /healthz in M4. M2 keeps
-	// them inline as atomic counters available via Stats().
+	// Stats keeps a writer-local copy for tests / SnapshotStats. The
+	// counters package is the shared cross-process view used by /healthz;
+	// Stats is just convenience for unit tests.
 	stats Stats
 	mu    sync.Mutex // guards stats only
 
@@ -78,17 +81,19 @@ type Stats struct {
 // background gzip workers.
 //
 // store may be nil; tests and pure-JSONL deployments leave it nil.
+// ctrs may be nil; counters skipped if so.
 // clock may be nil; defaults to time.Now.
-func New(dataDir string, chanCap int, store *sqlite.Store, clock func() time.Time) *Writer {
+func New(dataDir string, chanCap int, store *sqlite.Store, ctrs *counters.Counters, clock func() time.Time) *Writer {
 	if clock == nil {
 		clock = time.Now
 	}
 	return &Writer{
-		dataDir: dataDir,
-		clock:   clock,
-		in:      make(chan Record, chanCap),
-		store:   store,
-		files:   make(map[string]*openFile),
+		dataDir:  dataDir,
+		clock:    clock,
+		in:       make(chan Record, chanCap),
+		store:    store,
+		counters: ctrs,
+		files:    make(map[string]*openFile),
 	}
 }
 
@@ -123,6 +128,10 @@ func (w *Writer) Start() func() {
 // DropWriterFull) if the channel is full. Producers MUST NOT block on
 // the writer per ARCHITECTURE § 7.5 step 3.
 func (w *Writer) TrySend(r Record) bool {
+	// Observe high-water mark for /healthz.
+	if w.counters != nil {
+		w.counters.ObserveWriterChanLen(len(w.in))
+	}
 	select {
 	case w.in <- r:
 		return true
@@ -130,6 +139,9 @@ func (w *Writer) TrySend(r Record) bool {
 		w.mu.Lock()
 		w.stats.DropWriterFull++
 		w.mu.Unlock()
+		if w.counters != nil {
+			w.counters.IncDropWriterFull()
+		}
 		return false
 	}
 }
@@ -185,6 +197,9 @@ func (w *Writer) appendOne(rec Record) {
 	w.mu.Lock()
 	w.stats.Appended++
 	w.mu.Unlock()
+	if w.counters != nil {
+		w.counters.IncAppended()
+	}
 
 	if w.store == nil {
 		return
@@ -202,6 +217,9 @@ func (w *Writer) appendOne(rec Record) {
 	w.mu.Lock()
 	w.stats.Indexed++
 	w.mu.Unlock()
+	if w.counters != nil {
+		w.counters.IncIndexed()
+	}
 }
 
 // sessionPrefixBody picks the JSON body to feed session.Build. Returns
@@ -236,12 +254,18 @@ func (w *Writer) bumpJSONLFail() {
 	w.mu.Lock()
 	w.stats.DropJSONLFail++
 	w.mu.Unlock()
+	if w.counters != nil {
+		w.counters.IncDropJSONLFail()
+	}
 }
 
 func (w *Writer) bumpSQLiteFail() {
 	w.mu.Lock()
 	w.stats.DropSQLiteFail++
 	w.mu.Unlock()
+	if w.counters != nil {
+		w.counters.IncDropSQLiteFail()
+	}
 }
 
 // ---- per-file handles + rotation ----
