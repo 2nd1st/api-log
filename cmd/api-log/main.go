@@ -88,7 +88,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open sqlite: %w", err)
 	}
-	defer store.Close()
+	// Store closed in graceful shutdown sequence (after writer drains).
 	slog.Info("sqlite open", "path", sqlitePath)
 
 	// Admin bearer token for the read API.
@@ -107,7 +107,8 @@ func run() error {
 	// run in the same goroutine in one transaction per trace.
 	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, ctrs, nil)
 	stopWriter := wrtr.Start()
-	defer stopWriter()
+	// NOTE: stopWriter is NOT deferred here — graceful shutdown calls it
+	// in the right order (after proxy + API listeners are drained).
 
 	// Per-trace registry: holds sinks for the CaptureTransport and the
 	// captured req/resp metadata so finalize can build the JSONL line.
@@ -135,6 +136,18 @@ func run() error {
 		state.clientAddr = r.RemoteAddr
 		state.method = r.Method
 		state.path = r.URL.RequestURI()
+
+		// Stream-idle watchdog: cancel ctx if no resp byte arrives for
+		// stream_idle_seconds. Triggers ServeHTTP unblock → finalize via
+		// ctx-cancel path per ARCHITECTURE § 10.7.
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		state.cancel = cancel
+		state.watchdog = proxy.NewStreamWatchdog(cancel, cfg.Timeouts.StreamIdle())
+		state.respSink.OnByte = state.watchdog.Pulse
+
+		// Register sinks AFTER OnByte is set so the proxy's RoundTrip
+		// (which calls SinksFor and then Write) sees the watchdog hook.
 		reg.put(traceID, state)
 		defer reg.remove(traceID)
 
@@ -144,11 +157,13 @@ func run() error {
 		// ErrorHandler writes a 502 instead — we capture either.
 		crw := &capturingResponseWriter{ResponseWriter: w, status: -1}
 
-		ctx := proxy.WithTraceID(r.Context(), traceID)
+		ctx = proxy.WithTraceID(ctx, traceID)
 		rp.ServeHTTP(crw, r.WithContext(ctx))
 
-		// FINALIZE — M2 real flow.
+		// FINALIZE — close capture channels, join drainers (bounded).
+		state.watchdog.Stop()
 		state.finalize(cfg.Timeouts.DrainerJoin())
+		watchdogFired := state.watchdog.Fired()
 
 		// Determine final status code. If the wrapped writer never saw
 		// WriteHeader (extreme: handler panicked), use the sentinel.
@@ -167,6 +182,12 @@ func run() error {
 			slog.Error("buildTrace failed", "trace_id", traceID, "err", err)
 			tmpDir.RemoveTraceFiles(traceID)
 			return
+		}
+		// Stream-idle watchdog firing means the response stream went
+		// silent past stream_idle_seconds. Mark the trace as
+		// disconnected so consumers see why.
+		if watchdogFired {
+			tr.Disconnected = true
 		}
 		// Bump truncated counters per trace direction. Capture-side
 		// flag set is the union of channel-overflow + body-cap drops.
@@ -243,6 +264,21 @@ func run() error {
 		}
 	}
 
+	// Graceful shutdown sequence per ARCHITECTURE § 7.5. Explicit
+	// ordering (no defer LIFO games):
+	//
+	//   1. Stop accepting new proxy connections (Shutdown waits for
+	//      in-flight forwarding handlers to return). The handlers
+	//      themselves call wrtr.TrySend non-blockingly, so they don't
+	//      depend on the writer goroutine still running — they finalize
+	//      their tmp files, dispatch to the writer chan, and exit. If
+	//      the chan is full, the metadata drops (logged + counter).
+	//   2. Same for API listener.
+	//   3. Close writer channel and wait for the writer goroutine to
+	//      drain remaining records + complete in-flight gzip workers.
+	//   4. Close the SQLite store. Doing this AFTER stopWriter
+	//      guarantees the writer never sees a closed *sql.DB during
+	//      its final flush.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Grace())
 	defer cancel()
 	if err := proxySrv.Shutdown(shutdownCtx); err != nil {
@@ -251,6 +287,8 @@ func run() error {
 	if err := apiSrv.Shutdown(shutdownCtx); err != nil {
 		slog.Warn("api graceful shutdown timed out", "err", err)
 	}
+	stopWriter() // drains writer chan + background gzip workers
+	_ = store.Close()
 	slog.Info("api-log stopped")
 	return nil
 }
@@ -273,6 +311,8 @@ type traceState struct {
 	clientAddr string
 	method     string
 	path       string
+	cancel     context.CancelFunc
+	watchdog   *proxy.StreamWatchdog
 
 	// Set by CaptureTransport via MetaCapture callbacks.
 	reqHeaderMu sync.Mutex
@@ -324,37 +364,36 @@ func startTrace(traceID string, tmpDir *capture.TmpDir, chanSize int, maxBodyByt
 }
 
 // finalize closes the capture channels and waits for drainers (bounded by
-// joinTimeout). Safe to call multiple times.
+// joinTimeout). Safe to call multiple times. If either drainer join
+// times out, the corresponding direction is marked Truncated so the
+// JSONL line records the loss per ARCHITECTURE § 7.1 step 7.
 func (t *traceState) finalize(joinTimeout time.Duration) {
 	t.once.Do(func() {
 		close(t.reqSink.Ch)
 		close(t.respSink.Ch)
 
-		timer := time.NewTimer(joinTimeout)
-		defer timer.Stop()
-
-		select {
-		case t.reqResult = <-t.reqDone:
-		case <-timer.C:
-			slog.Warn("req drainer join timeout")
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(joinTimeout)
-		select {
-		case t.respResult = <-t.respDone:
-		case <-timer.C:
-			slog.Warn("resp drainer join timeout")
-		}
+		t.reqResult = drainWithTimeout(t.reqDone, joinTimeout, "req")
+		t.respResult = drainWithTimeout(t.respDone, joinTimeout, "resp")
 
 		_ = t.reqFile.Close()
 		_ = t.respFile.Close()
 		t.tsEnd = time.Now().UTC()
 	})
+}
+
+// drainWithTimeout waits for one drainer's result, bounded. On timeout
+// returns a DrainResult with Truncated=true so the JSONL line records
+// the loss (and the truncated_*_total counter increments).
+func drainWithTimeout(ch chan capture.DrainResult, timeout time.Duration, label string) capture.DrainResult {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r
+	case <-timer.C:
+		slog.Warn("drainer join timeout", "side", label, "timeout", timeout)
+		return capture.DrainResult{Truncated: true}
+	}
 }
 
 // buildTrace assembles the JSONL line from per-trace state after finalize.

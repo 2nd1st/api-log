@@ -79,6 +79,10 @@ type Sink struct {
 	// OnDrop is called for every Write that dropped its bytes. Typically
 	// flips a per-direction truncated flag plus bumps a counter.
 	OnDrop func()
+	// OnByte is called once per non-empty Write — *before* the channel
+	// send — so a stream-idle watchdog can pulse without depending on
+	// the chunk reaching the drainer. Optional; nil = no callback.
+	OnByte func()
 	// Now is overridable for tests; production keeps it nil → time.Now.
 	Now func() time.Time
 }
@@ -94,6 +98,9 @@ type Sink struct {
 func (s *Sink) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
+	}
+	if s.OnByte != nil {
+		s.OnByte()
 	}
 	bufPtr := chunkBufPool.Get().(*[]byte)
 	buf := *bufPtr
