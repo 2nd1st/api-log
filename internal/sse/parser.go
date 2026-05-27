@@ -36,9 +36,14 @@ type Event struct {
 	// downstream consumers see exactly what the upstream emitted.
 	Data json.RawMessage `json:"data"`
 	// TDeltaMs is the per-event arrival timing in ms from the trace's
-	// ts_start. M2 leaves this nil; M5 wires it from the drainer's
-	// per-chunk timestamps. See ARCHITECTURE § 3.3.
+	// ts_start. nil when the trace was reparse-reconstructed (sentinel
+	// per ARCHITECTURE § 3) or when the upstream response was content-
+	// encoded (drainer can't see frame boundaries through compression).
 	TDeltaMs *int64 `json:"t_delta_ms,omitempty"`
+	// Offset is the byte offset of this event's first field line in the
+	// parsed input. Used at finalize to look up the chunk-arrival
+	// timestamp; not serialized to JSONL.
+	Offset int64 `json:"-"`
 }
 
 // ParseResult is the output of Parse over a complete SSE stream.
@@ -54,6 +59,11 @@ type ParseResult struct {
 // Parse reads an SSE stream from r until EOF and returns the parsed
 // events plus stream-done status.
 //
+// Each Event carries its byte Offset in the input so finalize can attach
+// per-event t_delta_ms by looking up the chunk that contained the byte
+// (capture.LookupChunkTime). The offset is the byte position of the
+// event's FIRST non-blank, non-comment field line.
+//
 // The parser tolerates the three terminator shapes ARCHITECTURE § 10.6
 // names:
 //   - OpenAI Chat Completions: terminates on `data: [DONE]`.
@@ -64,20 +74,21 @@ type ParseResult struct {
 // `event:` / `data:` accumulator at EOF → emit one final event (some
 // servers don't terminate the last frame with a blank line).
 func Parse(r io.Reader) ParseResult {
-	scanner := bufio.NewScanner(r)
-	// SSE frames can be large (final OpenAI Responses event-named
-	// frames carry full response objects with usage; some are 100+ KB).
-	// 1 MB per-line is a comfortable ceiling.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	// bufio.Reader lets us track byte offsets ourselves; bufio.Scanner
+	// hides them. SSE frames can be 100+ KB on Responses final-event;
+	// give the reader a generous buffer.
+	br := bufio.NewReaderSize(r, 64*1024)
 
 	var (
-		events      []Event
-		streamDone  bool
-		curEvent    string
-		curDataBuf  strings.Builder
-		hasData     bool
-		sawAnyLine  bool
-		parseErrMsg string
+		events                  []Event
+		streamDone              bool
+		curEvent                string
+		curDataBuf              strings.Builder
+		hasData                 bool
+		currentEventStartOffset int64 = -1
+		offset                  int64
+		sawAnyLine              bool
+		parseErrMsg             string
 	)
 
 	flush := func() {
@@ -89,23 +100,18 @@ func Parse(r io.Reader) ParseResult {
 		// not a real JSON event payload.
 		if curEvent == "" && data == "[DONE]" {
 			streamDone = true
-			// Reset accumulators; don't emit an Event.
 			curEvent = ""
 			curDataBuf.Reset()
 			hasData = false
+			currentEventStartOffset = -1
 			return
 		}
 
-		ev := Event{Name: curEvent}
+		ev := Event{Name: curEvent, Offset: currentEventStartOffset}
 		if data != "" {
-			// Parse data as JSON; if it doesn't parse, keep the raw
-			// bytes so the consumer can still see them.
 			if json.Valid([]byte(data)) {
 				ev.Data = json.RawMessage(data)
 			} else {
-				// Wrap the raw text as a JSON string so the line stays
-				// valid JSON; consumers can detect non-JSON by the
-				// type of `data`.
 				escaped, _ := json.Marshal(data)
 				ev.Data = json.RawMessage(escaped)
 			}
@@ -120,54 +126,61 @@ func Parse(r io.Reader) ParseResult {
 		curEvent = ""
 		curDataBuf.Reset()
 		hasData = false
+		currentEventStartOffset = -1
 	}
 
-	for scanner.Scan() {
-		sawAnyLine = true
-		line := scanner.Bytes()
+	for {
+		lineStart := offset
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			sawAnyLine = true
+			offset += int64(len(line))
 
-		// Blank line = frame boundary → emit accumulator.
-		if len(line) == 0 {
-			flush()
-			continue
-		}
-
-		// Comment lines start with ':' per the SSE spec. Ignore.
-		if line[0] == ':' {
-			continue
-		}
-
-		field, value, ok := splitField(line)
-		if !ok {
-			// Not a recognizable SSE line. Skip but note it; if NO
-			// SSE-shaped lines appear at all, we'll mark parseError.
-			continue
-		}
-
-		switch field {
-		case "event":
-			curEvent = value
-		case "data":
-			if hasData {
-				// Multiple `data:` lines per frame → join with newline
-				// per SSE spec.
-				curDataBuf.WriteByte('\n')
+			// Strip trailing \r\n or \n for processing.
+			trimmed := line
+			if n := len(trimmed); n > 0 && trimmed[n-1] == '\n' {
+				trimmed = trimmed[:n-1]
 			}
-			curDataBuf.WriteString(value)
-			hasData = true
-		case "id", "retry":
-			// SSE-spec fields we don't preserve in v0 (replay
-			// reconstructs frames from {event, data} only — see
-			// ARCHITECTURE § 6.4 caveat). Silently consumed.
-			continue
-		default:
-			// Unknown field; ignored per SSE spec.
-			continue
-		}
-	}
+			if n := len(trimmed); n > 0 && trimmed[n-1] == '\r' {
+				trimmed = trimmed[:n-1]
+			}
 
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		parseErrMsg = "scan: " + err.Error()
+			// Blank line = frame boundary.
+			if len(trimmed) == 0 {
+				flush()
+			} else if trimmed[0] == ':' {
+				// SSE comment; ignored, doesn't start an event.
+			} else {
+				field, value, ok := splitField(trimmed)
+				if ok {
+					// First field line of this event: capture its start offset.
+					if currentEventStartOffset == -1 {
+						currentEventStartOffset = lineStart
+					}
+					switch field {
+					case "event":
+						curEvent = value
+					case "data":
+						if hasData {
+							curDataBuf.WriteByte('\n')
+						}
+						curDataBuf.WriteString(value)
+						hasData = true
+					case "id", "retry":
+						// SSE-spec fields we don't preserve in v0; see
+						// ARCHITECTURE § 6.4 caveat.
+					default:
+						// Unknown field; ignored per SSE spec.
+					}
+				}
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				parseErrMsg = "read: " + err.Error()
+			}
+			break
+		}
 	}
 
 	// EOF without trailing blank line: flush pending accumulator
@@ -176,8 +189,6 @@ func Parse(r io.Reader) ParseResult {
 		flush()
 	}
 
-	// If we read bytes but produced no events and no streamDone, the
-	// body wasn't actually SSE — caller will fall back to body_b64.
 	if sawAnyLine && len(events) == 0 && !streamDone && parseErrMsg == "" {
 		parseErrMsg = "no SSE frames found"
 	}

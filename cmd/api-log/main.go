@@ -375,7 +375,10 @@ func buildTrace(traceID string, st *traceState, upstreamURL string, finalStatus 
 		return trace.Trace{}, fmt.Errorf("open resp tmp: %w", err)
 	}
 	defer respF.Close()
-	respBody, err := parser.ParseResponse(respF, st.respHeader)
+	respBody, err := parser.ParseResponse(respF, st.respHeader, parser.ParseOpts{
+		ChunkTimings: st.respResult.ChunkTimings,
+		TsStart:      st.tsStart,
+	})
 	if err != nil {
 		return trace.Trace{}, fmt.Errorf("parse resp: %w", err)
 	}

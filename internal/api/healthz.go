@@ -33,12 +33,3 @@ func rootPointer(deps Deps) http.Handler {
 	})
 }
 
-// replayPlaceholder is the M5 endpoint stub. Returns 501 Not Implemented
-// so an early viewer integrating with v0 sees a clear "not yet" rather
-// than a 404 that could mean "endpoint moved".
-func replayPlaceholder() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "not_implemented",
-			map[string]string{"detail": "/replay lands in M5"})
-	})
-}

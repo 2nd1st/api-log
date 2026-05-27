@@ -300,17 +300,54 @@ func TestRootReturnsViewerPointer(t *testing.T) {
 	}
 }
 
-func TestReplayPlaceholder(t *testing.T) {
+func TestReplayMissingTrace(t *testing.T) {
 	srv, _, _, _ := newTestServer(t, "tok-test")
-	req, _ := http.NewRequest("GET", srv.URL+"/api/traces/foo/replay", nil)
+	req, _ := http.NewRequest("GET", srv.URL+"/api/traces/no-such/replay", nil)
 	req.Header.Set("Authorization", "Bearer tok-test")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 501 {
-		t.Errorf("status = %d, want 501", resp.StatusCode)
+	if resp.StatusCode != 404 {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestReplayNotStreaming(t *testing.T) {
+	srv, store, w, _ := newTestServer(t, "tok-test")
+	// Standard chatTrace ingested in tests has resp.body (non-streaming).
+	enqueueTrace(t, w, "non-stream", "rrrrrrrr11111111",
+		[]map[string]any{{"role": "user", "content": "hi"}})
+	waitForRows(t, store, 1)
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/traces/non-stream/replay", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400 (not_streaming)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "not_streaming") {
+		t.Errorf("expected not_streaming in body: %s", body)
+	}
+}
+
+func TestReplayInvalidSpeed(t *testing.T) {
+	srv, _, _, _ := newTestServer(t, "tok-test")
+	req, _ := http.NewRequest("GET", srv.URL+"/api/traces/x/replay?speed=0", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
 }
 

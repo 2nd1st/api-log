@@ -55,7 +55,7 @@ func TestParseRequestNonJSONContentType(t *testing.T) {
 func TestParseResponseJSON(t *testing.T) {
 	body := strings.NewReader(`{"id":"msg_1","content":[]}`)
 	h := http.Header{"Content-Type": {"application/json"}}
-	got, err := ParseResponse(body, h)
+	got, err := ParseResponse(body, h, ParseOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ data: {}
 
 `)
 	h := http.Header{"Content-Type": {"text/event-stream"}}
-	got, err := ParseResponse(body, h)
+	got, err := ParseResponse(body, h, ParseOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ data: {"id":"msg_1"}
 event: content_block_delta
 data: {"text":"hi"}`)
 	h := http.Header{"Content-Type": {"text/event-stream"}}
-	got, _ := ParseResponse(body, h)
+	got, _ := ParseResponse(body, h, ParseOpts{})
 	if got.StreamDone == nil || *got.StreamDone {
 		t.Errorf("StreamDone should be false (no terminator)")
 	}
@@ -114,7 +114,7 @@ func TestParseResponseGzipDecompresses(t *testing.T) {
 		"Content-Type":     {"application/json"},
 		"Content-Encoding": {"gzip"},
 	}
-	got, err := ParseResponse(&buf, h)
+	got, err := ParseResponse(&buf, h, ParseOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestParseResponseUnsupportedEncodingFallsBack(t *testing.T) {
 		"Content-Type":     {"application/json"},
 		"Content-Encoding": {"zstd"},
 	}
-	got, _ := ParseResponse(body, h)
+	got, _ := ParseResponse(body, h, ParseOpts{})
 	if got.BodyB64 == "" {
 		t.Errorf("BodyB64 should be set")
 	}
@@ -157,7 +157,7 @@ func TestParseResponseUnsupportedEncodingFallsBack(t *testing.T) {
 
 func TestParseResponseEmptyBody(t *testing.T) {
 	h := http.Header{"Content-Type": {"application/json"}}
-	got, _ := ParseResponse(strings.NewReader(""), h)
+	got, _ := ParseResponse(strings.NewReader(""), h, ParseOpts{})
 	if string(got.Body) != `null` {
 		t.Errorf("empty JSON body should marshal as null, got %s", got.Body)
 	}

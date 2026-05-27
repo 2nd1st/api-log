@@ -16,10 +16,23 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/leoyun/api-log/internal/capture"
 	"github.com/leoyun/api-log/internal/sse"
 	"github.com/leoyun/api-log/internal/trace"
 )
+
+// ParseOpts carries optional timing data so finalize can attach
+// per-event t_delta_ms (ARCHITECTURE § 3.3) to SSE events.
+//
+// ChunkTimings + TsStart are typically populated only for ParseResponse
+// on identity-encoded SSE; encoded responses leave them nil so events'
+// TDeltaMs stays nil (the sentinel per ARCHITECTURE § 3).
+type ParseOpts struct {
+	ChunkTimings []capture.ChunkTiming
+	TsStart      time.Time
+}
 
 // ParseRequest parses a captured request body into a trace.Body.
 //
@@ -30,7 +43,7 @@ func ParseRequest(r io.Reader, headers http.Header) (trace.Body, error) {
 	if err != nil {
 		return trace.Body{}, fmt.Errorf("read req body: %w", err)
 	}
-	return finalize(body, trace.Headers(headers), false /* not streaming */), nil
+	return finalize(body, trace.Headers(headers), false /* not streaming */, ParseOpts{}), nil
 }
 
 // ParseResponse parses a captured response body into a trace.Body.
@@ -39,13 +52,21 @@ func ParseRequest(r io.Reader, headers http.Header) (trace.Body, error) {
 // (text/event-stream → stream). The header check is the only place
 // shape detection happens at finalize; the sub-shape (data-only vs
 // event-named) is inferred inside internal/sse.
-func ParseResponse(r io.Reader, headers http.Header) (trace.Body, error) {
+//
+// opts.ChunkTimings + opts.TsStart are used to attach per-event
+// t_delta_ms when the body parses as SSE AND we trust the timings
+// (i.e. response was identity-encoded so the drainer's chunk offsets
+// correspond 1:1 to the bytes we're parsing). If the response was
+// content-encoded, the caller passes opts.ChunkTimings = nil and
+// every event's t_delta_ms stays nil (the sentinel per ARCHITECTURE §
+// 3 / § 10.6).
+func ParseResponse(r io.Reader, headers http.Header, opts ParseOpts) (trace.Body, error) {
 	body, err := io.ReadAll(r)
 	if err != nil {
 		return trace.Body{}, fmt.Errorf("read resp body: %w", err)
 	}
 	streaming := isSSEContentType(headers.Get("Content-Type"))
-	return finalize(body, trace.Headers(headers), streaming), nil
+	return finalize(body, trace.Headers(headers), streaming, opts), nil
 }
 
 // finalize materializes the trace.Body from raw bytes + headers.
@@ -54,7 +75,10 @@ func ParseResponse(r io.Reader, headers http.Header) (trace.Body, error) {
 // (gzip / br / zstd / identity) decompress in memory; on success the
 // header is stripped so resp.body and resp.headers are mutually
 // consistent. Unknown encodings → body stays compressed in body_b64.
-func finalize(raw []byte, headers trace.Headers, streaming bool) trace.Body {
+func finalize(raw []byte, headers trace.Headers, streaming bool, opts ParseOpts) trace.Body {
+	originalCE := strings.TrimSpace(http.Header(headers).Get("Content-Encoding"))
+	wasEncoded := originalCE != "" && !strings.EqualFold(originalCE, "identity")
+
 	decoded, decodedHeaders, decodeErr := decodeEncoding(raw, headers)
 	if decodeErr != "" {
 		// Unknown Content-Encoding (or decompression failure): keep raw bytes.
@@ -76,7 +100,15 @@ func finalize(raw []byte, headers trace.Headers, streaming bool) trace.Body {
 	}
 
 	if streaming {
-		return parseSSE(decoded, decodedHeaders)
+		body := parseSSE(decoded, decodedHeaders)
+		// Attach per-event t_delta_ms ONLY when the drainer's chunk
+		// timings refer to the same byte stream we just parsed —
+		// i.e. when the response was identity-encoded. Encoded
+		// responses leave TDeltaMs nil per ARCHITECTURE § 10.6.
+		if !wasEncoded && len(body.Events) > 0 && len(opts.ChunkTimings) > 0 && !opts.TsStart.IsZero() {
+			attachTimings(body.Events, opts.ChunkTimings, opts.TsStart)
+		}
+		return body
 	}
 
 	if isJSONContentType(http.Header(decodedHeaders).Get("Content-Type")) {
@@ -88,6 +120,22 @@ func finalize(raw []byte, headers trace.Headers, streaming bool) trace.Body {
 	return trace.Body{
 		Headers: decodedHeaders,
 		BodyB64: base64.StdEncoding.EncodeToString(decoded),
+	}
+}
+
+// attachTimings sets t_delta_ms on each event by looking up the chunk
+// that contained the event's first byte.
+func attachTimings(events []sse.Event, timings []capture.ChunkTiming, tsStart time.Time) {
+	for i := range events {
+		at, ok := capture.LookupChunkTime(timings, events[i].Offset)
+		if !ok {
+			continue
+		}
+		delta := at.Sub(tsStart).Milliseconds()
+		if delta < 0 {
+			delta = 0
+		}
+		events[i].TDeltaMs = &delta
 	}
 }
 

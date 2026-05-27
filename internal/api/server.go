@@ -35,7 +35,7 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("GET /healthz", authMW(deps.AdminToken, healthz(deps)))
 	mux.Handle("GET /api/traces", authMW(deps.AdminToken, listTraces(deps)))
 	mux.Handle("GET /api/traces/{id}", authMW(deps.AdminToken, getTrace(deps)))
-	mux.Handle("GET /api/traces/{id}/replay", authMW(deps.AdminToken, replayPlaceholder()))
+	mux.Handle("GET /api/traces/{id}/replay", authMW(deps.AdminToken, replayHandler(deps)))
 	mux.Handle("GET /{$}", authMW(deps.AdminToken, rootPointer(deps)))
 
 	return mux
