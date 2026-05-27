@@ -346,7 +346,77 @@ Discuss separately what the human-useful insights are. Candidates:
 The current overview / headers / body tabs become a "raw" tab,
 preserved for debugging; the new default tab is opinionated.
 
-### 4. Unified dashboard
+### 4. Path noise filter (small, useful immediately)
+
+Operators surfaced 2026-05-28: the trace list is polluted by sub2api's
+own admin-UI calls (`/api/v1/auth/me?...`, `/api/v1/admin/...`,
+`/api/v1/subscriptions/active`, etc.). These have nothing to do with
+LLM traffic — they're the gateway's own dashboard polling itself.
+
+Two layers (do the cheap one first):
+
+**Display-side default filter (cheap)**
+
+- Viewer applies a default exclude `path NOT LIKE '/api/v1/*'` on
+  first load. Operator can toggle it off in filters sidebar.
+- Lives entirely in `internal/viewer/static/index.html`; no API or
+  schema change.
+- Risk: zero — raw data still captured, just hidden.
+
+**Capture-time skip (medium, opt-in)**
+
+- New config: `capture.skip_paths: ["/api/v1/*"]` (default empty).
+  Patterns matched against `req.URL.Path` before drainers are wired
+  up; matched requests get forwarded normally but with a no-op sink,
+  no JSONL line written, no SQLite row inserted.
+- Tension with PHILOSOPHY principle 1 ("capture raw, derive
+  structurally") — by skipping at capture time we're making a
+  policy call. Mitigation: default empty + log a startup INFO line
+  listing the active skip patterns so operators see exactly what
+  isn't being recorded.
+- Saves disk + SQLite churn on high-volume admin UIs; worth doing
+  once a deployment has measurable noise (sub2api admin polls every
+  60s per browser tab open).
+
+### 5. Plugin / hook system (strategic, larger)
+
+api-log sits at the natural gate position in front of LLM gateways.
+The operator pointed out 2026-05-28 that this position is useful
+beyond just recording — rate-limit, DDoS-resistance, audit, secret
+redaction, alert routing, etc.
+
+But: today's capture path is intentionally non-interfering. Adding
+gate-style behavior risks violating PHILOSOPHY § 2 ("capture never
+interferes"). The right shape is a **plugin system** with explicit
+hook points and OFF-by-default behavior.
+
+Sketch of hook points (in order of trace lifecycle):
+
+| Hook | Can do | Cannot do (philosophy) |
+|---|---|---|
+| `before_forward(req)` | inspect; reject with 4xx; rate-limit; rewrite headers (rare); short-circuit response | block capture itself — if it fires, what would have been the trace still gets a partial line |
+| `before_record(trace)` | skip recording (path filter use case); add operator tags | block forwarding |
+| `after_record(trace)` | push to external sinks; emit alerts; update operator dashboards | retroactively edit recorded JSONL |
+
+Implementation surface (sketch):
+
+- `internal/plugin` package with `Plugin` interface and a registry.
+- Built-in plugins shipped in-tree but disabled by default:
+  - `pathskip`: maps to (4) above.
+  - `ratelimit`: per-key_hash token bucket with operator-tunable
+    rates; rejects with `429 + Retry-After`.
+  - `defaultfilter`: pushes a default viewer filter; pure config,
+    no runtime hook.
+- Third-party plugins out of scope for now — Go's plugin story is
+  painful (CGO, build-coupling). If demand emerges, evaluate
+  in-process Lua / wasm / sidecar-RPC then.
+
+Why bundle these in-tree instead of "scripting": because the gate
+position is sensitive (a buggy plugin breaks the LLM path). We want
+review + tests for each plugin we ship. Operators get behavior via
+config, not by uploading Go files.
+
+### 6. Unified dashboard
 
 `Healthz` is one card grid today. It should be the home page of an
 overall **Dashboard** tab that also surfaces:
