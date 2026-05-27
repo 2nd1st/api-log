@@ -40,6 +40,16 @@ type SinkLookup interface {
 	SinksFor(traceID string) (req, resp *capture.Sink)
 }
 
+// MetaCapture is an optional hook that receives the outbound request
+// headers (post-Director) and the upstream response status + headers
+// as soon as they are known. Headers are passed as clones; callers may
+// retain them safely. Used by the forwarding handler to populate the
+// trace.Body objects at finalize.
+type MetaCapture interface {
+	OnReqHeaders(traceID string, h http.Header)
+	OnRespMeta(traceID string, statusCode int, h http.Header)
+}
+
 // CaptureTransport wraps an inner http.RoundTripper and tees req.Body /
 // resp.Body to per-trace capture sinks.
 //
@@ -53,6 +63,9 @@ type CaptureTransport struct {
 	Inner http.RoundTripper
 	// Sinks looks up the per-trace sinks at RoundTrip time.
 	Sinks SinkLookup
+	// Meta receives request/response metadata callbacks. Optional;
+	// when nil, the Transport only does body tee.
+	Meta MetaCapture
 }
 
 // RoundTrip wires the body tees and forwards via the inner transport.
@@ -67,7 +80,13 @@ func (t *CaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		reqSink, respSink = t.Sinks.SinksFor(traceID)
 	}
 
-	// 1) Wrap req.Body so the inner Transport's read also feeds reqSink.
+	// 1) Capture outbound request headers (post-Director). Clone so the
+	//    caller can retain safely without seeing later mutations.
+	if t.Meta != nil && traceID != "" {
+		t.Meta.OnReqHeaders(traceID, req.Header.Clone())
+	}
+
+	// 2) Wrap req.Body so the inner Transport's read also feeds reqSink.
 	//    Per ARCHITECTURE § 10.2: GetBody = nil — we don't support
 	//    transport retry because the tee has already consumed bytes once.
 	if req.Body != nil && req.Body != http.NoBody && reqSink != nil {
@@ -75,13 +94,19 @@ func (t *CaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.GetBody = nil
 	}
 
-	// 2) Forward.
+	// 3) Forward.
 	resp, err := t.Inner.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3) Wrap resp.Body so the proxy's read also feeds respSink.
+	// 4) Capture response metadata before wrapping body. Status + headers
+	//    are known at this point regardless of how much body has streamed.
+	if t.Meta != nil && traceID != "" {
+		t.Meta.OnRespMeta(traceID, resp.StatusCode, resp.Header.Clone())
+	}
+
+	// 5) Wrap resp.Body so the proxy's read also feeds respSink.
 	if resp.Body != nil && respSink != nil {
 		resp.Body = newTeeReadCloser(resp.Body, respSink)
 	}

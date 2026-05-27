@@ -221,12 +221,12 @@ client traffic gets recorded. Reproducible smoke for new contributors.
 - **GitHub Action**: builds the image, runs the integration suite,
   publishes to ghcr.io on tag.
 
-### Open questions for M7
+### Source repos for M7
 
-- Is there an official sub2api docker image we can pull, or do we need
-  to bake one? The user already runs sub2api at `http://sub2api.homelab.lan`
-  — clarify image source.
-- CPA image source.
+- **sub2api**: <https://github.com/Wei-Shaw/sub2api> — build from this
+  source (or pull a published image if available); add as a service in
+  `deploy/docker-compose.yml`.
+- **CPA**: image source TBD; revisit in M7.
 
 ---
 
