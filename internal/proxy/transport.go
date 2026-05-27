@@ -66,6 +66,11 @@ type CaptureTransport struct {
 	// Meta receives request/response metadata callbacks. Optional;
 	// when nil, the Transport only does body tee.
 	Meta MetaCapture
+	// OnDialError is invoked when the inner transport returned a
+	// non-HTTP error (DNS / TLS / connection refused). Lets the
+	// caller bump a counter without leaking the counters dependency
+	// into this package. Optional.
+	OnDialError func()
 }
 
 // RoundTrip wires the body tees and forwards via the inner transport.
@@ -97,6 +102,12 @@ func (t *CaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// 3) Forward.
 	resp, err := t.Inner.RoundTrip(req)
 	if err != nil {
+		// Transport-layer failure: DNS / TLS / connect refused / context
+		// canceled. No HTTP status is ever produced — distinguish this
+		// from HTTP 5xx on /healthz.
+		if t.OnDialError != nil {
+			t.OnDialError()
+		}
 		return nil, err
 	}
 

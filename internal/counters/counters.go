@@ -18,9 +18,37 @@ type Counters struct {
 	writerChanHighWater atomic.Int64
 	appended            atomic.Int64
 	indexed             atomic.Int64
+
+	// Status-bucketed appends. Lets operators see "is upstream
+	// returning a wall of 5xx" without grepping JSONL by hand.
+	appended2xx atomic.Int64
+	appended4xx atomic.Int64
+	appended5xx atomic.Int64
+
+	// Transport-layer errors (DNS / TLS / connection refused). Distinct
+	// from HTTP 5xx so "can't reach upstream" and "upstream returned an
+	// error response" don't get confused on /healthz.
+	upstreamDialErr atomic.Int64
+
+	// End-to-end traces that exceeded the slow-trace threshold.
+	slowTraces atomic.Int64
+
+	// Per-stage timing histograms. Drain = sink-close → drainer-join.
+	// Parse = JSON unmarshal + SSE event walk + decompression. SQLite =
+	// AppendTrace (one tx covering JSONL append + UPSERT + session-
+	// inference IN-clause + UPDATE).
+	DrainHist  *Histogram
+	ParseHist  *Histogram
+	SQLiteHist *Histogram
 }
 
-func New() *Counters { return &Counters{} }
+func New() *Counters {
+	return &Counters{
+		DrainHist:  NewHistogram(DefaultTimingBounds),
+		ParseHist:  NewHistogram(DefaultTimingBounds),
+		SQLiteHist: NewHistogram(DefaultTimingBounds),
+	}
+}
 
 // IncDropWriterFull is bumped when the writer channel was full and a
 // trace's metadata was dropped (writer.Writer.TrySend returns false).
@@ -42,8 +70,30 @@ func (c *Counters) IncTruncatedResp() { c.truncatedRespTotal.Add(1) }
 // IncAppended is bumped on each successful JSONL append.
 func (c *Counters) IncAppended() { c.appended.Add(1) }
 
+// IncAppendedByStatus bumps the right status-bucketed counter. status==0
+// or a sentinel (-1) lands nowhere; only 200/4xx/5xx are tallied — those
+// are the buckets that map cleanly to upstream-health questions.
+func (c *Counters) IncAppendedByStatus(status int) {
+	switch {
+	case status >= 200 && status < 300:
+		c.appended2xx.Add(1)
+	case status >= 400 && status < 500:
+		c.appended4xx.Add(1)
+	case status >= 500 && status < 600:
+		c.appended5xx.Add(1)
+	}
+}
+
 // IncIndexed is bumped on each successful SQLite mirror upsert.
 func (c *Counters) IncIndexed() { c.indexed.Add(1) }
+
+// IncUpstreamDialErr is bumped from the CaptureTransport when the inner
+// transport returned a non-HTTP error (DNS / TLS / connect refused).
+func (c *Counters) IncUpstreamDialErr() { c.upstreamDialErr.Add(1) }
+
+// IncSlowTrace is bumped when finalize sees an end-to-end duration
+// over the operator-configured slow-trace threshold.
+func (c *Counters) IncSlowTrace() { c.slowTraces.Add(1) }
 
 // ObserveWriterChanLen records the current writer channel length;
 // keeps the running max in writerChanHighWater.
@@ -71,10 +121,20 @@ type Snapshot struct {
 	WriterChanHighWater int64 `json:"writer_chan_high_water"`
 	Appended            int64 `json:"appended"`
 	Indexed             int64 `json:"indexed"`
+	Appended2xx         int64 `json:"appended_2xx"`
+	Appended4xx         int64 `json:"appended_4xx"`
+	Appended5xx         int64 `json:"appended_5xx"`
+	UpstreamDialErr     int64 `json:"upstream_dial_err"`
+	SlowTraces          int64 `json:"slow_traces"`
+	Timings             struct {
+		DrainMs  HistogramSnapshot `json:"drain_ms"`
+		ParseMs  HistogramSnapshot `json:"parse_ms"`
+		SqliteMs HistogramSnapshot `json:"sqlite_ms"`
+	} `json:"timings"`
 }
 
 func (c *Counters) Snapshot() Snapshot {
-	return Snapshot{
+	s := Snapshot{
 		DropWriterFull:      c.dropWriterFull.Load(),
 		DropJSONLFail:       c.dropJSONLFail.Load(),
 		DropSQLiteFail:      c.dropSQLiteFail.Load(),
@@ -83,5 +143,14 @@ func (c *Counters) Snapshot() Snapshot {
 		WriterChanHighWater: c.writerChanHighWater.Load(),
 		Appended:            c.appended.Load(),
 		Indexed:             c.indexed.Load(),
+		Appended2xx:         c.appended2xx.Load(),
+		Appended4xx:         c.appended4xx.Load(),
+		Appended5xx:         c.appended5xx.Load(),
+		UpstreamDialErr:     c.upstreamDialErr.Load(),
+		SlowTraces:          c.slowTraces.Load(),
 	}
+	s.Timings.DrainMs = c.DrainHist.Snapshot()
+	s.Timings.ParseMs = c.ParseHist.Snapshot()
+	s.Timings.SqliteMs = c.SQLiteHist.Snapshot()
+	return s
 }

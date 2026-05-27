@@ -199,6 +199,7 @@ func (w *Writer) appendOne(rec Record) {
 	w.mu.Unlock()
 	if w.counters != nil {
 		w.counters.IncAppended()
+		w.counters.IncAppendedByStatus(rec.Trace.Status)
 	}
 
 	if w.store == nil {
@@ -210,9 +211,13 @@ func (w *Writer) appendOne(rec Record) {
 	// already on disk and a startup rebuild will recover.
 	row := sqlite.FromTrace(rec.Trace, keyHash, of.path, offset)
 	prefix, _ := session.Build(rec.Trace.Path, sessionPrefixBody(rec.Trace))
+	sqlStart := time.Now()
 	if err := w.store.AppendTrace(row, prefix); err != nil {
 		w.bumpSQLiteFail()
 		return
+	}
+	if w.counters != nil {
+		w.counters.SQLiteHist.Observe(time.Since(sqlStart).Milliseconds())
 	}
 	w.mu.Lock()
 	w.stats.Indexed++

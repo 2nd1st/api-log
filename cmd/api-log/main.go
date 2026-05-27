@@ -118,9 +118,10 @@ func run() error {
 	innerTransport.DisableCompression = true // ARCHITECTURE § 10.3
 
 	captureTransport := &proxy.CaptureTransport{
-		Inner: innerTransport,
-		Sinks: reg,
-		Meta:  reg,
+		Inner:       innerTransport,
+		Sinks:       reg,
+		Meta:        reg,
+		OnDialError: ctrs.IncUpstreamDialErr,
 	}
 	rp := proxy.NewReverseProxy(upstreamURL, captureTransport)
 
@@ -162,7 +163,9 @@ func run() error {
 
 		// FINALIZE — close capture channels, join drainers (bounded).
 		state.watchdog.Stop()
+		drainStart := time.Now()
 		state.finalize(cfg.Timeouts.DrainerJoin())
+		ctrs.DrainHist.Observe(time.Since(drainStart).Milliseconds())
 		watchdogFired := state.watchdog.Fired()
 
 		// Determine final status code. If the wrapped writer never saw
@@ -177,7 +180,9 @@ func run() error {
 			}
 		}
 
+		parseStart := time.Now()
 		tr, err := buildTrace(traceID, state, cfg.Proxy.Upstream, finalStatus)
+		ctrs.ParseHist.Observe(time.Since(parseStart).Milliseconds())
 		if err != nil {
 			slog.Error("buildTrace failed", "trace_id", traceID, "err", err)
 			tmpDir.RemoveTraceFiles(traceID)
@@ -196,6 +201,24 @@ func run() error {
 		}
 		if tr.TruncatedResp {
 			ctrs.IncTruncatedResp()
+		}
+
+		// Slow-trace surfaced as WARN so operators can grep for it.
+		// Tail-of-distribution traces are usually upstream pathology
+		// (long streaming completions, model thinking time, retries),
+		// but having a single log line per occurrence with trace_id +
+		// path + status makes them debuggable.
+		if slowThreshold := cfg.Timeouts.SlowTrace(); slowThreshold > 0 {
+			if dur := tr.TsEnd.Sub(tr.TsStart); dur >= slowThreshold {
+				ctrs.IncSlowTrace()
+				slog.Warn("slow trace",
+					"trace_id", traceID,
+					"path", tr.Path,
+					"status", finalStatus,
+					"duration_ms", dur.Milliseconds(),
+					"threshold_ms", slowThreshold.Milliseconds(),
+				)
+			}
 		}
 
 		keyHash := ids.KeyHashFromHeaders(state.reqHeader)
@@ -233,6 +256,25 @@ func run() error {
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Periodic counter snapshot — one INFO line per interval so prod
+	// incidents have a per-minute history of appended / drops / writer
+	// pressure to grep against, without anyone having to scrape
+	// /healthz on a schedule. 0 disables.
+	if interval := cfg.Diagnostics.SnapshotInterval(); interval > 0 {
+		go func() {
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-t.C:
+					slog.Info("counter snapshot", "counters", ctrs.Snapshot())
+				}
+			}
+		}()
+	}
 
 	proxyErr := make(chan error, 1)
 	apiErr := make(chan error, 1)

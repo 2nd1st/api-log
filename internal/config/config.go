@@ -17,12 +17,13 @@ import (
 // All durations are stored as time.Duration. YAML uses *_seconds keys so the
 // config file stays readable; we convert on load.
 type Config struct {
-	Proxy    ProxyConfig    `yaml:"proxy"`
-	API      APIConfig      `yaml:"api"`
-	Storage  StorageConfig  `yaml:"storage"`
-	Timeouts TimeoutsConfig `yaml:"timeouts"`
-	Shutdown ShutdownConfig `yaml:"shutdown"`
-	Logging  LoggingConfig  `yaml:"logging"`
+	Proxy       ProxyConfig       `yaml:"proxy"`
+	API         APIConfig         `yaml:"api"`
+	Storage     StorageConfig     `yaml:"storage"`
+	Timeouts    TimeoutsConfig    `yaml:"timeouts"`
+	Shutdown    ShutdownConfig    `yaml:"shutdown"`
+	Logging     LoggingConfig     `yaml:"logging"`
+	Diagnostics DiagnosticsConfig `yaml:"diagnostics"`
 }
 
 type ProxyConfig struct {
@@ -47,6 +48,19 @@ type TimeoutsConfig struct {
 	StreamIdleSeconds      int `yaml:"stream_idle_seconds"`
 	ReqBodyCaptureSeconds  int `yaml:"req_body_capture_seconds"`
 	DrainerJoinSeconds     int `yaml:"drainer_join_seconds"`
+
+	// End-to-end traces this slow trigger a WARN log + slow_traces++.
+	// 0 disables (no WARN). Default 30s.
+	SlowTraceSeconds int `yaml:"slow_trace_seconds"`
+}
+
+// Diagnostics knobs — periodic background work that doesn't touch the
+// trace path; safe to leave at defaults.
+type DiagnosticsConfig struct {
+	// Cadence for the counter-snapshot INFO line. 0 disables.
+	// Default 60s; tight enough for prod incident timelines, loose
+	// enough not to spam logs.
+	SnapshotIntervalSeconds int `yaml:"snapshot_interval_seconds"`
 }
 
 type ShutdownConfig struct {
@@ -80,12 +94,16 @@ func Defaults() Config {
 			StreamIdleSeconds:     600,
 			ReqBodyCaptureSeconds: 60,
 			DrainerJoinSeconds:    2,
+			SlowTraceSeconds:      30,
 		},
 		Shutdown: ShutdownConfig{
 			GraceSeconds: 30,
 		},
 		Logging: LoggingConfig{
 			Level: "info",
+		},
+		Diagnostics: DiagnosticsConfig{
+			SnapshotIntervalSeconds: 60,
 		},
 	}
 }
@@ -193,6 +211,22 @@ func applyEnv(cfg *Config) error {
 			c.Timeouts.DrainerJoinSeconds = n
 			return nil
 		}},
+		{"APILOG_TIMEOUTS_SLOW_TRACE_SECONDS", func(c *Config, v string) error {
+			n, err := envInt(v)
+			if err != nil {
+				return err
+			}
+			c.Timeouts.SlowTraceSeconds = n
+			return nil
+		}},
+		{"APILOG_DIAGNOSTICS_SNAPSHOT_INTERVAL_SECONDS", func(c *Config, v string) error {
+			n, err := envInt(v)
+			if err != nil {
+				return err
+			}
+			c.Diagnostics.SnapshotIntervalSeconds = n
+			return nil
+		}},
 		{"APILOG_SHUTDOWN_GRACE_SECONDS", func(c *Config, v string) error {
 			n, err := envInt(v)
 			if err != nil {
@@ -257,5 +291,12 @@ func (c TimeoutsConfig) ReqBodyCapture() time.Duration {
 func (c TimeoutsConfig) DrainerJoin() time.Duration {
 	return time.Duration(c.DrainerJoinSeconds) * time.Second
 }
+func (c TimeoutsConfig) SlowTrace() time.Duration {
+	return time.Duration(c.SlowTraceSeconds) * time.Second
+}
 
 func (c ShutdownConfig) Grace() time.Duration { return time.Duration(c.GraceSeconds) * time.Second }
+
+func (c DiagnosticsConfig) SnapshotInterval() time.Duration {
+	return time.Duration(c.SnapshotIntervalSeconds) * time.Second
+}
