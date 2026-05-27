@@ -266,3 +266,114 @@ Solo + AI assistant, part-time evenings (per the OSS contributor review):
 This is in the ballpark the OSS contributor predicted (6–9 k LOC for v0).
 Each milestone is shippable on its own: M2 → "we have a JSONL recorder",
 M3 → "you can query sessions", M4 → "frontend can render", etc.
+
+---
+
+## ✅ v0 status
+
+M1 – M7 all merged. Two live deployments on the homelab:
+
+| Deployment | Stage | Notes |
+|---|---|---|
+| **sub2gpt** (`sub2gpt.homelab.lan`, viewer at `apilog-sub2gpt.homelab.lan/viewer/`) | iterate here | Every UI/feature change builds and rolls here first. Safe to break. |
+| **sub2api** (`sub2api.homelab.lan`, viewer at `apilog-sub2.homelab.lan/viewer/`) | observe only | Live production traffic flows through api-log. **Do not auto-deploy here**; pull/rebuild only after the change has settled on sub2gpt. Roll back = one Caddyfile line back to `:8080`. |
+
+Diagnostic signals added on top of the M4 counters: per-stage timing
+histograms (drain / parse / sqlite ms with p50/p95/p99), status-bucketed
+appends, upstream dial-error counter, slow-trace WARN log, periodic
+counter snapshot at INFO every 60s.
+
+---
+
+## Post-v0 — known asks (no order, no commitment)
+
+These came out of operator feedback after sub2gpt + sub2api went live.
+
+### 1. Export (highest priority)
+
+- Batch export by filter (status / model / key_hash / session_root_id /
+  time range — same surface as the viewer's filter sidebar).
+- Output: a single `.zip` containing the matching JSONL line(s) at their
+  original `data/<date>/<keyhash>.jsonl` paths.
+- **The zip also bundles**:
+  - `agent/CLAUDE.md` — operating instructions for a Claude agent who
+    receives the zip ("here is what these JSONL lines mean, here is
+    how to enumerate sessions, etc.").
+  - Tiny helper scripts (jq snippets / Python one-liners) that index the
+    bundled data for follow-up questions without needing to re-implement
+    the read API.
+- Implementation surface: new `internal/exporter` package + read API
+  endpoint `GET /api/export?...` that streams the zip.
+- Why it's #1: makes the recorded traffic actually useful for offline
+  agentic analysis (skill-usage frequency, prompt clustering, regressions
+  across model versions).
+
+### 2. Operator config knobs
+
+We have config plumbing already (`Config` struct + env + YAML). Need to
+add a few surface-level toggles for production posture:
+
+- `storage.archive_after_days` — gzip+move JSONLs older than N to a cold
+  subdir; current behavior is "gzip on next-day rotation, then never
+  touch", which is fine for now but won't be forever.
+- `viewer.default_filters` — what the trace list shows when a fresh
+  browser opens the viewer (e.g. exclude `/api/v1/*` admin UI noise on
+  sub2 deployments).
+- `api.public_query_enabled` — explicit toggle for "allow third-party
+  clients to hit `/api/traces` with their own bearer". Default off.
+  Today the admin token gates everything; this lets us hand out
+  read-only tokens later.
+- Other knobs go here as they're identified.
+
+### 3. Detail-panel insight redesign
+
+The current right panel shows raw views (overview / headers / body /
+events / session / replay). They're faithful to the captured bytes but
+**hard for humans to read** — they're optimized for "prove the recorder
+worked", not for "help the operator understand what happened".
+
+Discuss separately what the human-useful insights are. Candidates:
+
+- "What did this request actually ask for?" → conversation summary
+  with prompt + final answer + token cost + total duration on one line
+- "Was this a retry / continuation?" → session position + parent diff
+- "Why was it slow?" → first-byte vs total time vs upstream timings
+- "What tools did the model use?" → tool_use blocks pulled to the
+  surface
+- "Did anything go weird?" → flag truncation, watchdog-fired, parse
+  error, content-encoding mismatches inline
+
+The current overview / headers / body tabs become a "raw" tab,
+preserved for debugging; the new default tab is opinionated.
+
+### 4. Unified dashboard
+
+`Healthz` is one card grid today. It should be the home page of an
+overall **Dashboard** tab that also surfaces:
+
+- Volume over time (traces / minute, traces / day)
+- Top models / paths / keys by volume
+- Error rates (4xx, 5xx, dial errors) over time
+- p95 latency trend
+- Session creation rate
+- Storage growth (data/ MB)
+- Anomalies surfaced as cards (e.g. "drop_writer_full > 0 in last 5 min")
+
+The existing `/healthz` JSON snapshot is still the source; the new
+view aggregates time-series client-side from periodic polls OR (later)
+a dedicated `/api/metrics?since=...` endpoint.
+
+---
+
+## Iteration model
+
+- **Local repo (`/Volumes/leoyun/personal-projects/api-log-project`)**:
+  source of truth. All changes start here.
+- **Gitea (`leoyun/api-log`)**: pushed on each non-trivial commit. The
+  `/opt/api-log` clones on sub2gpt + sub2api pull from here.
+- **sub2gpt deployment**: `cd /opt/api-log && git pull && cd
+  /opt/sub2gpt && docker compose build --quiet api-log && docker
+  compose up -d api-log`. Iterate freely.
+- **sub2api deployment**: pull + rebuild **only after** the change has
+  been validated on sub2gpt or by integration tests. This is live
+  traffic; don't break it casually.
