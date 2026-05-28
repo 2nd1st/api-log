@@ -216,6 +216,20 @@
   .json-num    { color: #c4b5fd; }
   .json-bool, .json-null { color: var(--bad); }
 
+  .elided {
+    color: var(--muted); font-style: italic;
+    background: var(--bg); padding: 0 4px; border-radius: 2px;
+    border: 1px dashed var(--line-2);
+  }
+  .elide-btn {
+    background: var(--panel-2); color: var(--fg-dim);
+    border: 1px solid var(--line); border-radius: 2px;
+    padding: 1px 7px; cursor: pointer; font: inherit;
+    font-family: var(--mono); font-size: 10.5px;
+    margin-left: 4px;
+  }
+  .elide-btn:hover { color: var(--fg); border-color: var(--line-2); }
+
   .kv {
     font-family: var(--mono); font-size: 11.5px;
     display: grid; grid-template-columns: 180px 1fr;
@@ -558,10 +572,62 @@
       ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   }
 
+  // Threshold above which a JSON string field is elided in the
+  // pretty-print to avoid locking the main thread. Image-generation
+  // b64_json payloads can be megabytes; regex-highlighting them and
+  // setting them via innerHTML grinds the browser to a halt.
+  const JSON_ELIDE_MAX_BYTES = 4096;
+
+  // Holds the elided originals keyed by an opaque token so we can
+  // lazily restore (e.g. render an image preview) without re-fetching.
+  const elidedStore = new Map();
+  let elidedSeq = 0;
+
+  function humanBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(2) + ' MB';
+  }
+
+  // looksLikeBase64Image returns true if a string is the wire form of
+  // a base64-encoded image (heuristic — first few bytes are base64
+  // alphabet AND the field name hints at image data).
+  function looksLikeBase64Image(s, parentKey) {
+    if (typeof s !== 'string' || s.length < 1024) return false;
+    if (!/^[A-Za-z0-9+/=\s]+$/.test(s.slice(0, 96))) return false;
+    const k = (parentKey || '').toLowerCase();
+    return k === 'b64_json' || k === 'image' || k === 'data' || /image|png|jpeg|jpg|webp/.test(k);
+  }
+
+  // elideHuge walks a JSON value and replaces any oversized string
+  // with a sentinel object that jsonHL renders as a placeholder. The
+  // original is preserved in elidedStore for on-demand expansion.
+  // parentKey is the immediate JSON key, used for image-content
+  // detection so we can offer an inline preview.
+  function elideHuge(value, parentKey) {
+    if (value == null) return value;
+    if (typeof value === 'string') {
+      if (value.length > JSON_ELIDE_MAX_BYTES) {
+        const token = '__apilog_elided_' + (++elidedSeq) + '__';
+        elidedStore.set(token, { value, parentKey: parentKey || '' });
+        return token;
+      }
+      return value;
+    }
+    if (Array.isArray(value)) return value.map((v, i) => elideHuge(v, parentKey + '[' + i + ']'));
+    if (typeof value === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) out[k] = elideHuge(v, k);
+      return out;
+    }
+    return value;
+  }
+
   function jsonHL(value) {
-    const j = JSON.stringify(value, null, 2);
+    const elided = elideHuge(value, '');
+    const j = JSON.stringify(elided, null, 2);
     if (j == null) return '';
-    return esc(j).replace(
+    let out = esc(j).replace(
       /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
       (m, str, colon, lit) => {
         if (str) return colon ? `<span class="json-key">${str}</span>${colon}` : `<span class="json-string">${str}</span>`;
@@ -569,7 +635,65 @@
         return `<span class="json-num">${m}</span>`;
       }
     );
+    // Replace elision tokens (they ended up inside json-string spans
+    // because they were string literals). Render as a tagged
+    // placeholder with optional "show as image" affordance.
+    out = out.replace(
+      /<span class="json-string">"(__apilog_elided_\d+__)"<\/span>/g,
+      (_, tok) => {
+        const e = elidedStore.get(tok);
+        if (!e) return tok;
+        const sz = humanBytes(e.value.length);
+        const isImg = looksLikeBase64Image(e.value, e.parentKey);
+        const imgBtn = isImg
+          ? ` <button class="elide-btn" data-tok="${tok}" data-kind="image">show as image</button>`
+          : '';
+        const rawBtn = ` <button class="elide-btn" data-tok="${tok}" data-kind="raw">show raw</button>`;
+        return `<span class="elided">[elided ${sz}${isImg ? ' · base64 image' : ''} · key=${esc(e.parentKey || '?')}]</span>${imgBtn}${rawBtn}`;
+      }
+    );
+    return out;
   }
+
+  // Lazy expander wired on click — turns the placeholder into an
+  // <img> or a raw <textarea>. Bound once via event delegation.
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.elide-btn');
+    if (!btn) return;
+    const tok = btn.dataset.tok;
+    const kind = btn.dataset.kind;
+    const e2 = elidedStore.get(tok);
+    if (!e2) return;
+    const host = btn.parentElement;
+    if (kind === 'image') {
+      const img = document.createElement('img');
+      // Try common image MIME types; PNG covers most.
+      img.src = 'data:image/png;base64,' + e2.value.replace(/\s+/g, '');
+      img.style.maxWidth = '100%';
+      img.style.maxHeight = '420px';
+      img.style.border = '1px solid var(--line)';
+      img.style.borderRadius = 'var(--r)';
+      img.style.marginTop = '6px';
+      host.appendChild(img);
+      btn.remove();
+    } else if (kind === 'raw') {
+      const ta = document.createElement('textarea');
+      ta.value = e2.value;
+      ta.readOnly = true;
+      ta.style.width = '100%';
+      ta.style.minHeight = '200px';
+      ta.style.maxHeight = '320px';
+      ta.style.marginTop = '6px';
+      ta.style.fontFamily = 'var(--mono)';
+      ta.style.fontSize = '11px';
+      ta.style.background = 'var(--bg)';
+      ta.style.color = 'var(--fg-dim)';
+      ta.style.border = '1px solid var(--line)';
+      ta.style.borderRadius = 'var(--r)';
+      host.appendChild(ta);
+      btn.remove();
+    }
+  });
 
   function shortId(id) { return id ? id.slice(-8) : ''; }
   function shortTs(ts) {
@@ -896,26 +1020,38 @@
     return turns;
   }
 
+  // Per-turn content rendered as text gets the same length cap as
+  // jsonHL — viewing a multi-MB string as plain text is just as bad
+  // for the layout/scroll as in JSON form.
+  const CONVO_CONTENT_MAX_BYTES = 16384;
+  function capText(s) {
+    if (typeof s !== 'string' || s.length <= CONVO_CONTENT_MAX_BYTES) return s;
+    return s.slice(0, CONVO_CONTENT_MAX_BYTES) + '\n…[truncated ' + humanBytes(s.length - CONVO_CONTENT_MAX_BYTES) + ' more]';
+  }
+
   // contentToText handles both plain strings and the OpenAI/Anthropic
   // multi-modal content-block forms ([{type:"text", text:"..."}, ...]).
   function contentToText(c) {
     if (c == null) return '';
-    if (typeof c === 'string') return c;
+    if (typeof c === 'string') return capText(c);
     if (Array.isArray(c)) {
       return c.map(b => {
-        if (typeof b === 'string') return b;
+        if (typeof b === 'string') return capText(b);
         if (b && typeof b === 'object') {
-          if (b.type === 'text' || b.text) return b.text || '';
-          if (b.type === 'tool_use') return `[tool_use ${b.name || ''} ${JSON.stringify(b.input || {})}]`;
-          if (b.type === 'tool_result') return `[tool_result ${b.tool_use_id || ''}: ${contentToText(b.content)}]`;
+          if (b.type === 'text' || b.text) return capText(b.text || '');
+          if (b.type === 'tool_use') {
+            const inp = JSON.stringify(b.input || {});
+            return `[tool_use ${b.name || ''} ${inp.length > 512 ? inp.slice(0, 512) + '…' : inp}]`;
+          }
+          if (b.type === 'tool_result') return `[tool_result ${b.tool_use_id || ''}: ${capText(contentToText(b.content))}]`;
           if (b.type === 'image' || b.type === 'image_url') return '[image]';
-          if (b.type === 'thinking') return b.thinking ? `[thinking] ${b.thinking}` : '[thinking]';
+          if (b.type === 'thinking') return b.thinking ? `[thinking] ${capText(b.thinking)}` : '[thinking]';
         }
         return JSON.stringify(b);
       }).join('');
     }
-    if (typeof c === 'object') return JSON.stringify(c);
-    return String(c);
+    if (typeof c === 'object') return capText(JSON.stringify(c));
+    return capText(String(c));
   }
 
   function assistantFromEvents(events, isAnthropic, isResponses) {
