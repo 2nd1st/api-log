@@ -126,6 +126,15 @@ func parseListFilters(r *http.Request) (sqlite.ListFilters, string, string) {
 	if v := q.Get("model"); v != "" {
 		f.Model = v
 	}
+	if v := q.Get("path"); v != "" {
+		// Trailing "*" makes it a prefix match; otherwise exact.
+		// Useful default: /v1/* to hide /api/v1/* admin UI noise.
+		if strings.HasSuffix(v, "*") {
+			f.PathPrefix = strings.TrimSuffix(v, "*")
+		} else {
+			f.Path = v
+		}
+	}
 	if v := q.Get("key_hash"); v != "" {
 		// Accept 8- or 16-char prefix.
 		if len(v) != 8 && len(v) != 16 {

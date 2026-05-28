@@ -442,8 +442,8 @@
         </select>
       </div>
       <div class="group">
-        <label>path</label>
-        <input class="input" id="f-path" list="dl-paths" placeholder="any" autocomplete="off" />
+        <label>path <span style="color:var(--muted-2);text-transform:none;font-size:9.5px">(end with * for prefix)</span></label>
+        <input class="input" id="f-path" list="dl-paths" placeholder="/v1/*" autocomplete="off" />
         <datalist id="dl-paths"></datalist>
       </div>
       <div class="group">
@@ -530,6 +530,12 @@
   const $ = (id) => document.getElementById(id);
   const apiBase = new URL('../', window.location.href);
   const api = (path) => new URL(path.replace(/^\//, ''), apiBase).toString();
+
+  // Default path filter — hides /api/v1/* admin-UI noise on sub2api
+  // deployments. Stored in localStorage so a future settings UI can
+  // edit this; for now operators can clear the input to "*" to see
+  // everything.
+  const DEFAULT_PATH_FILTER = localStorage.getItem('apilog.default_path') || '/v1/*';
 
   const state = {
     token: localStorage.getItem('apilog.token') || '',
@@ -748,7 +754,12 @@
     const f = {};
     const s = $('f-status').value.trim();
     if (s) f.status = s;
-    const p = $('f-path').value.trim(); if (p) f.path = p;
+    // Path filter: pre-populated with DEFAULT_PATH_FILTER on boot;
+    // operator edits freely. Empty box = no path filter (see all);
+    // "*" alone is also treated as "see all" (more intuitive than
+    // an empty box).
+    const p = $('f-path').value.trim();
+    if (p && p !== '*') f.path = p;
     const m = $('f-model').value.trim(); if (m) f.model = m;
     const kh = $('f-keyhash').value.trim(); if (kh) f.key_hash = kh;
     const sr = $('f-session').value.trim(); if (sr) f.session_root_id = sr;
@@ -1353,7 +1364,10 @@
   $('f-apply').addEventListener('click', () => loadList({ reset: true }));
   $('f-clear').addEventListener('click', () => {
     $('f-status').value = '';
-    ['f-path','f-model','f-keyhash','f-session','f-since'].forEach(id => $(id).value = '');
+    ['f-model','f-keyhash','f-session','f-since'].forEach(id => $(id).value = '');
+    // Reset path back to the operator default rather than empty, so
+    // "Clear" doesn't accidentally surface every admin-UI hit again.
+    $('f-path').value = DEFAULT_PATH_FILTER;
     $('f-limit').value = '100';
     loadList({ reset: true });
   });
@@ -1396,6 +1410,10 @@
   });
 
   // ---------- boot ----------
+
+  // Seed the path filter so the user sees the current default and
+  // can edit / clear it directly.
+  if ($('f-path').value === '') $('f-path').value = DEFAULT_PATH_FILTER;
 
   if (!state.token) showAuthModal();
   applyHash();

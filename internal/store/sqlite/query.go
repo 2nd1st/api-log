@@ -19,6 +19,8 @@ type ListFilters struct {
 	Status        *int      // exact match if set
 	StatusBucket  int       // 0 = no constraint; 2/4/5 = match 2xx/4xx/5xx range
 	Model         string    // exact match if set
+	Path          string    // exact match if set
+	PathPrefix    string    // matched as `LIKE <prefix>%`; mutually exclusive with Path
 	KeyHashPrefix string    // accepts 8- or 16-char prefix; matches by LIKE
 	SessionRootID string    // exact match if set
 	Limit         int       // 1..500; <=0 means default 100
@@ -76,6 +78,16 @@ func (s *Store) List(filters ListFilters) (ListPage, error) {
 	if filters.Model != "" {
 		conds = append(conds, "model = ?")
 		args = append(args, filters.Model)
+	}
+	if filters.Path != "" {
+		conds = append(conds, "path = ?")
+		args = append(args, filters.Path)
+	} else if filters.PathPrefix != "" {
+		// Escape LIKE metacharacters in the prefix so paths
+		// containing `%` / `_` don't get treated as wildcards.
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(filters.PathPrefix)
+		conds = append(conds, `path LIKE ? ESCAPE '\'`)
+		args = append(args, esc+"%")
 	}
 	if filters.KeyHashPrefix != "" {
 		conds = append(conds, "key_hash LIKE ?")
