@@ -355,15 +355,23 @@ LLM traffic — they're the gateway's own dashboard polling itself.
 
 Two layers (do the cheap one first):
 
-**Display-side default filter (cheap)**
+**~~Display-side default filter~~ (DONE 2026-05-28, commit `5cbdda1`)**
 
-- Viewer applies a default exclude `path NOT LIKE '/api/v1/*'` on
-  first load. Operator can toggle it off in filters sidebar.
-- Lives entirely in `internal/viewer/static/index.html`; no API or
-  schema change.
-- Risk: zero — raw data still captured, just hidden.
+- Backend: `/api/traces?path=...` supports exact match by default and
+  prefix match when the value ends with `*` (e.g. `path=/v1/*`).
+  Special-case: `path=*` alone disables the filter entirely.
+- Viewer: path input pre-populated with `DEFAULT_PATH_FILTER` (read
+  from `localStorage['apilog.default_path']`, defaulting to `/v1/*`).
+  Clear button resets to the default, not empty.
+- Future settings UI just edits that localStorage key — zero
+  follow-up code change needed there.
 
-**Capture-time skip (medium, opt-in)**
+Open follow-up (cosmetic): recorded path currently includes query
+string (`/api/v1/auth/me?timezone=...`). For UI grouping this could
+be split — `path` = bare URL path, separate `query` field. Defer to
+the recorder schema bump pass.
+
+**Capture-time skip (medium, opt-in, still TODO)**
 
 - New config: `capture.skip_paths: ["/api/v1/*"]` (default empty).
   Patterns matched against `req.URL.Path` before drainers are wired
