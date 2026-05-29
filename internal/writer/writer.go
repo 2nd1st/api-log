@@ -200,6 +200,7 @@ func (w *Writer) appendOne(rec Record) {
 	if w.counters != nil {
 		w.counters.IncAppended()
 		w.counters.IncAppendedByStatus(rec.Trace.Status)
+		w.counters.AddBytes(int64(len(line)))
 	}
 
 	if w.store == nil {

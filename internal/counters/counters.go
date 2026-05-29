@@ -33,6 +33,12 @@ type Counters struct {
 	// End-to-end traces that exceeded the slow-trace threshold.
 	slowTraces atomic.Int64
 
+	// Cumulative on-disk resource total. Bumped at JSONL append time
+	// (writer side) so /healthz can answer "how much have we recorded so
+	// far" without a fs walk. Token totals would belong here too, but the
+	// writer doesn't extract usage from response bodies yet — deferred.
+	totalBytes atomic.Int64
+
 	// Per-stage timing histograms. Drain = sink-close → drainer-join.
 	// Parse = JSON unmarshal + SSE event walk + decompression. SQLite =
 	// AppendTrace (one tx covering JSONL append + UPSERT + session-
@@ -95,6 +101,10 @@ func (c *Counters) IncUpstreamDialErr() { c.upstreamDialErr.Add(1) }
 // over the operator-configured slow-trace threshold.
 func (c *Counters) IncSlowTrace() { c.slowTraces.Add(1) }
 
+// AddBytes records the size of a single JSONL line append. Used to
+// expose total recorded bytes on /healthz without walking the data dir.
+func (c *Counters) AddBytes(n int64) { c.totalBytes.Add(n) }
+
 // ObserveWriterChanLen records the current writer channel length;
 // keeps the running max in writerChanHighWater.
 func (c *Counters) ObserveWriterChanLen(n int) {
@@ -126,7 +136,11 @@ type Snapshot struct {
 	Appended5xx         int64 `json:"appended_5xx"`
 	UpstreamDialErr     int64 `json:"upstream_dial_err"`
 	SlowTraces          int64 `json:"slow_traces"`
-	Timings             struct {
+
+	// Cumulative on-disk resource total (since process start).
+	TotalBytes int64 `json:"total_bytes"`
+
+	Timings struct {
 		DrainMs  HistogramSnapshot `json:"drain_ms"`
 		ParseMs  HistogramSnapshot `json:"parse_ms"`
 		SqliteMs HistogramSnapshot `json:"sqlite_ms"`
@@ -148,6 +162,8 @@ func (c *Counters) Snapshot() Snapshot {
 		Appended5xx:         c.appended5xx.Load(),
 		UpstreamDialErr:     c.upstreamDialErr.Load(),
 		SlowTraces:          c.slowTraces.Load(),
+
+		TotalBytes: c.totalBytes.Load(),
 	}
 	s.Timings.DrainMs = c.DrainHist.Snapshot()
 	s.Timings.ParseMs = c.ParseHist.Snapshot()
