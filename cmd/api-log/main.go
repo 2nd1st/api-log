@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -134,7 +135,7 @@ func run() error {
 			return
 		}
 		state.tsStart = time.Now().UTC()
-		state.clientAddr = r.RemoteAddr
+		state.clientAddr = clientAddrOf(r)
 		state.method = r.Method
 		state.path = r.URL.RequestURI()
 
@@ -578,3 +579,31 @@ func (c *capturingResponseWriter) Flush() {
 //
 // Implementing it requires the underlying ResponseWriter to be a Hijacker.
 // If not, the cast fails and the caller gets a clear error.
+
+// clientAddrOf returns the recorded "client" string for an inbound
+// request. When the request arrives via a trusted reverse proxy
+// (Caddy in the homelab deployment), r.RemoteAddr is the proxy's own
+// loopback address; the real client lives in X-Forwarded-For or
+// X-Real-IP. We prefer those when present so the captured trace
+// reflects the actual originator. The header is a named field on the
+// wire — we extract its leftmost value, no synthesis (PHILOSOPHY §1).
+//
+// Format: "<ip>" when a forwarded header is present (port is unknown
+// past the proxy), else r.RemoteAddr unchanged ("<ip>:<port>" form).
+// XFF values can be comma-separated proxy chains; we take the leftmost
+// hop, which is the original client by RFC 7239 convention.
+func clientAddrOf(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Leftmost = original client. Strip whitespace.
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			xff = xff[:i]
+		}
+		if v := strings.TrimSpace(xff); v != "" {
+			return v
+		}
+	}
+	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+		return xr
+	}
+	return r.RemoteAddr
+}
