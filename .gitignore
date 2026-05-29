@@ -24,6 +24,11 @@
 *.test
 *.prof
 
+# Secrets — never commit. Tokens live at ../.env (parent, not git).
+.env
+.env.local
+.env.*.local
+
 # Editor / OS
 .DS_Store
 .idea/
