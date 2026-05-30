@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -664,30 +665,118 @@ func (c *capturingResponseWriter) Flush() {
 // Implementing it requires the underlying ResponseWriter to be a Hijacker.
 // If not, the cast fails and the caller gets a clear error.
 
-// clientAddrOf returns the recorded "client" string for an inbound
-// request. When the request arrives via a trusted reverse proxy
-// (Caddy in the homelab deployment), r.RemoteAddr is the proxy's own
-// loopback address; the real client lives in X-Forwarded-For or
-// X-Real-IP. We prefer those when present so the captured trace
-// reflects the actual originator. The header is a named field on the
-// wire — we extract its leftmost value, no synthesis (PHILOSOPHY §1).
+// clientAddrOf resolves the real-client IP from inbound HTTP, walking
+// common reverse-proxy header chains and skipping private / loopback
+// hops so that a Caddy / nginx / docker-proxy-on-loopback topology
+// doesn't yield a useless intermediate-hop address.
 //
-// Format: "<ip>" when a forwarded header is present (port is unknown
-// past the proxy), else r.RemoteAddr unchanged ("<ip>:<port>" form).
-// XFF values can be comma-separated proxy chains; we take the leftmost
-// hop, which is the original client by RFC 7239 convention.
+// Priority order (each header's value is filtered through
+// isPrivateOrLoopback):
+//  1. X-Forwarded-For (RFC 7239) — left-to-right; first non-private wins
+//  2. X-Real-IP (nginx, Caddy single-hop convention)
+//  3. Cf-Connecting-Ip (Cloudflare — IPv4 OR IPv6)
+//  4. True-Client-Ip (Akamai / Cloudflare Enterprise)
+//  5. r.RemoteAddr (the socket peer, verbatim including port)
+//
+// IPs are validated via net.ParseIP. Unparseable hops are treated as
+// "skip and continue" — never returned. The final RemoteAddr fallback
+// is returned verbatim because it's the only place we couldn't ground-
+// truth a real IP and want operators to see "the socket said X" even
+// when X is loopback.
+//
+// Zero-config bar (open-source-first): this must produce a useful
+// client IP under direct / Caddy / nginx / Cloudflare / docker /
+// incus-loopback topologies WITHOUT operator-specific config knobs.
+// The header is still a named field on the wire — we read it as-is,
+// no synthesis (PHILOSOPHY §1).
 func clientAddrOf(r *http.Request) string {
+	// 1. XFF chain: leftmost first; skip private/loopback hops.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Leftmost = original client. Strip whitespace.
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			xff = xff[:i]
-		}
-		if v := strings.TrimSpace(xff); v != "" {
-			return v
+		for _, hop := range strings.Split(xff, ",") {
+			ip := strings.TrimSpace(hop)
+			if ip == "" {
+				continue
+			}
+			if !isPrivateOrLoopback(ip) {
+				return ip
+			}
 		}
 	}
-	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+	// 2. Cf-Connecting-Ip — Cloudflare always sets this to the real
+	//    client IP at the edge and rejects client-side spoofing. Higher
+	//    priority than X-Real-IP because middle proxies behind the CDN
+	//    (Caddy / nginx) overwrite X-Real-IP with their own source view,
+	//    which is the CDN POP edge IP — public but NOT the real client.
+	//    Empirically observed 2026-05-30: external probe through Caddy
+	//    surfaced X-Real-IP=172.70.47.73 (Cloudflare AMS edge) while
+	//    Cf-Connecting-Ip carried the real user IPv6.
+	if cf := strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip")); cf != "" {
+		return cf
+	}
+	// 3. True-Client-Ip — Akamai + Cloudflare Enterprise convention.
+	//    Same edge-set semantics; trust verbatim.
+	if tc := strings.TrimSpace(r.Header.Get("True-Client-Ip")); tc != "" {
+		return tc
+	}
+	// 4. X-Real-IP — single-value header set by single-hop reverse
+	//    proxies (nginx, Caddy). Lowest among the edge-headers because
+	//    middle proxies may rewrite it; skip if loopback / RFC1918
+	//    (homelab loopback / docker-proxy topologies poison it).
+	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" && !isPrivateOrLoopback(xr) {
 		return xr
 	}
 	return r.RemoteAddr
+}
+
+// isPrivateOrLoopback returns true when s parses as an IP that lives
+// in a non-publicly-routable range. Unparseable inputs return true so
+// the caller skips them (XFF chains can carry garbage from misbehaving
+// upstream proxies; we don't want garbage as the recorded client).
+//
+// Skipped ranges:
+//   - 127.0.0.0/8 + ::1/128             (loopback)
+//   - 10.0.0.0/8, 172.16.0.0/12,
+//     192.168.0.0/16                    (RFC 1918)
+//   - fc00::/7                          (RFC 4193 unique local)
+//   - 169.254.0.0/16 + fe80::/10        (link-local)
+//   - 100.64.0.0/10                     (RFC 6598 carrier-grade NAT —
+//     also treated as private because it's never a real client IP at
+//     the edge of a CDN)
+func isPrivateOrLoopback(s string) bool {
+	// Strip an optional :port suffix on IPv4-with-port; IPv6 needs
+	// bracket-stripping. Best-effort; net.ParseIP rejects port-suffixed
+	// strings.
+	if i := strings.LastIndex(s, ":"); i > 0 && !strings.Contains(s, "::") {
+		// IPv4 with port "a.b.c.d:port" — but only when there is exactly
+		// one ":" (i.e. not a bare IPv6 with multiple colons). Bracketed
+		// IPv6 forms are handled below.
+		if strings.Count(s, ":") == 1 {
+			s = s[:i]
+		}
+	}
+	s = strings.TrimPrefix(s, "[")
+	if i := strings.LastIndex(s, "]"); i > 0 {
+		s = s[:i]
+	}
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		isCgNat(ip)
+}
+
+// isCgNat reports whether the IPv4 ip lies in 100.64.0.0/10 (RFC 6598
+// carrier-grade NAT). net.IP.IsPrivate does not cover this; we treat
+// it as "skip" because seeing it from XFF means the chain is still
+// inside a carrier's NAT, not at the original client.
+func isCgNat(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	return ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127
 }

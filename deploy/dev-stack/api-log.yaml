@@ -1,0 +1,33 @@
+# Example api-log configuration for the dev-stack.
+#
+# All of these settings have working defaults; this file demonstrates
+# the OPT-IN shape of advanced features (plugin system, runtime
+# overrides, etc.).
+#
+# Pass via flag: api-log -config /etc/api-log/api-log.yaml
+# Or omit and rely on APILOG_* environment overrides + built-in defaults.
+
+# Plugin system. Each plugin entry is opt-in; absence = plugin not
+# enabled. Plugins ship in-tree (internal/plugin/builtin/) but stay
+# OFF by default per PHILOSOPHY §2.
+plugins:
+
+  # path_filter — drop traces whose request path matches one or more
+  # glob patterns at finalize time. Useful for cutting admin / health-
+  # check / dashboard polling that pollutes the trace stream without
+  # adding value. Matches against trace.Path (which includes the
+  # query string verbatim) — e.g. /api/v1/auth/me?timezone=... matches
+  # the /api/v1/auth/* pattern below.
+  # path_filter:
+  #   patterns:
+  #     - "/api/v1/auth/*"          # auth poll noise
+  #     - "/api/v1/subscriptions/*" # subscription dashboard noise
+  #     - "/api/v1/admin/*"         # admin UI polling
+  #     - "/api/internal/*"         # internal-control plane noise
+  #     # Add your own — e.g. "/heartbeat", "/probe/*". Empty list or
+  #     # missing block = plugin disabled.
+
+# Other top-level config blocks (storage, proxy, api, timeouts,
+# media) all accept the same fields shown in internal/config/config.go.
+# Defaults are documented inline in that source file; uncomment + edit
+# only the fields you need to override.
