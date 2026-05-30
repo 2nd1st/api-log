@@ -551,3 +551,177 @@ func TestLoad_ReturnsDefensiveCopy(t *testing.T) {
 		t.Errorf("Load did not return a defensive copy; YAML mutated to %q", yaml[0].ID)
 	}
 }
+
+// ----- Reload (W4.2) ---------------------------------------------
+//
+// The hot-reload contract is two-part:
+//   1. A successful Reload atomically swaps the live instance list.
+//      In-flight IterateBefore / IterateAfter calls finish on whatever
+//      snapshot they loaded; the next call sees the new list.
+//   2. A Reload that surfaces an Init error returns the error AND
+//      leaves the previous snapshot intact — the API layer relies on
+//      this to roll back its persisted override on failure.
+
+func TestRegistry_AtomicReload(t *testing.T) {
+	// Config A: one always-Continue plugin named "a".
+	pA := &fakePlugin{name: "a", beforeAction: ActionContinue}
+	// Config B: a different plugin "b" whose Model mutator tags the
+	// request — observable proof the swap took effect.
+	pB := &fakePlugin{
+		name:         "b",
+		beforeAction: ActionMutate,
+		beforeMutator: func(r *ParsedRequest) *ParsedRequest {
+			cp := *r
+			cp.Model = "via-b"
+			return &cp
+		},
+	}
+	withBuiltins(t, map[string]Ctor{
+		"a": func(_ map[string]any) (any, error) { return pA, nil },
+		"b": func(_ map[string]any) (any, error) { return pB, nil },
+	})
+
+	r, errs := NewRegistry([]InstanceConfig{
+		{Type: "a", ID: "a-1", Enabled: true},
+	})
+	if len(errs) > 0 {
+		t.Fatalf("initial build errs: %v", errs)
+	}
+	// Spin a reader goroutine that calls IterateBefore in a tight loop
+	// for the duration of the swap — the race detector + nil-deref
+	// guards make any visibility bug surface here.
+	stop := make(chan struct{})
+	var readWG sync.WaitGroup
+	readWG.Add(1)
+	go func() {
+		defer readWG.Done()
+		req := &ParsedRequest{Model: "probe"}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = r.IterateBefore(context.Background(), req)
+			}
+		}
+	}()
+
+	// Reload to config B in a parallel goroutine.
+	var swapWG sync.WaitGroup
+	swapWG.Add(1)
+	go func() {
+		defer swapWG.Done()
+		if err := r.Reload(nil, &OverrideList{
+			Instances: []InstanceConfig{{Type: "b", ID: "b-1", Enabled: true}},
+		}); err != nil {
+			t.Errorf("Reload err: %v", err)
+		}
+	}()
+	swapWG.Wait()
+	close(stop)
+	readWG.Wait()
+
+	// Post-swap, IterateBefore MUST see config B — p1's mutator should
+	// have tagged the model. Assert outside the race window so the
+	// outcome is deterministic.
+	final := &ParsedRequest{Model: "probe"}
+	out, intercept := r.IterateBefore(context.Background(), final)
+	if intercept != nil {
+		t.Fatalf("unexpected intercept post-swap")
+	}
+	if out.Model != "via-b" {
+		t.Errorf("post-Reload IterateBefore did not see config B: model=%q", out.Model)
+	}
+	// And the instance list reflects the swap.
+	got := r.Instances()
+	if len(got) != 1 || got[0].ID != "b-1" {
+		t.Errorf("instances post-Reload = %+v, want [b-1]", got)
+	}
+}
+
+func TestRegistry_ReloadInitErrorRollsBack(t *testing.T) {
+	// Initial config: a working plugin. Reload tries to add a plugin
+	// whose Ctor errors — Reload MUST surface the error and leave the
+	// original instances live.
+	working := &fakePlugin{name: "ok", beforeAction: ActionContinue}
+	withBuiltins(t, map[string]Ctor{
+		"ok":  func(_ map[string]any) (any, error) { return working, nil },
+		"bad": func(_ map[string]any) (any, error) { return nil, errors.New("ctor boom") },
+	})
+	r, errs := NewRegistry([]InstanceConfig{
+		{Type: "ok", ID: "ok-1", Enabled: true},
+	})
+	if len(errs) > 0 {
+		t.Fatalf("initial build errs: %v", errs)
+	}
+
+	err := r.Reload(nil, &OverrideList{
+		Instances: []InstanceConfig{
+			{Type: "bad", ID: "bad-1", Enabled: true},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected Reload to fail when ctor errors")
+	}
+	if !strings.Contains(err.Error(), "ctor boom") {
+		t.Errorf("err message = %q, want it to surface 'ctor boom'", err.Error())
+	}
+
+	// Live registry MUST still hold the original instance — the panic-
+	// cap test would have failed too, but this is the contract that
+	// matters: a failed swap leaves traffic on the old config.
+	got := r.Instances()
+	if len(got) != 1 || got[0].ID != "ok-1" {
+		t.Errorf("post-failed-Reload instances = %+v, want [ok-1] (old snapshot preserved)", got)
+	}
+
+	// And iteration still routes through the old plugin (call log grows).
+	r.IterateBefore(context.Background(), &ParsedRequest{Model: "still-here"})
+	if got := len(working.beforeLog); got == 0 {
+		t.Errorf("old plugin did not run after failed Reload — swap leaked through")
+	}
+}
+
+func TestRegistry_ReloadEmptyOverrideClearsLive(t *testing.T) {
+	// Spec §3.3.2: a non-nil OverrideList with empty Instances ==
+	// "all plugins off". Reload with that wipes the live list.
+	p1 := &fakePlugin{name: "p1", beforeAction: ActionContinue}
+	withBuiltins(t, map[string]Ctor{
+		"p1": func(_ map[string]any) (any, error) { return p1, nil },
+	})
+	r, _ := NewRegistry([]InstanceConfig{
+		{Type: "p1", ID: "p1-1", Enabled: true},
+	})
+
+	if err := r.Reload(nil, &OverrideList{Instances: []InstanceConfig{}}); err != nil {
+		t.Fatalf("Reload err: %v", err)
+	}
+	if got := r.Instances(); len(got) != 0 {
+		t.Errorf("instances after empty-override Reload = %+v, want []", got)
+	}
+	// And iteration is a no-op.
+	r.IterateBefore(context.Background(), &ParsedRequest{Model: "noop"})
+	if len(p1.beforeLog) != 0 {
+		t.Errorf("p1 ran despite Reload to empty list")
+	}
+}
+
+func TestRegistry_ReloadNilOverrideFallsThroughToYAML(t *testing.T) {
+	// Reload(yaml, nil): the override is "no override", so the YAML
+	// list wins. Symmetric to TestLoad_NilOverrideFallsThroughToYAML
+	// but exercising the live-swap path.
+	pY := &fakePlugin{name: "y", beforeAction: ActionContinue}
+	withBuiltins(t, map[string]Ctor{
+		"y": func(_ map[string]any) (any, error) { return pY, nil },
+	})
+	r, _ := NewRegistry(nil)
+	if err := r.Reload(
+		[]InstanceConfig{{Type: "y", ID: "y-1", Enabled: true}},
+		nil,
+	); err != nil {
+		t.Fatalf("Reload err: %v", err)
+	}
+	if got := r.Instances(); len(got) != 1 || got[0].ID != "y-1" {
+		t.Errorf("instances = %+v, want [y-1]", got)
+	}
+}

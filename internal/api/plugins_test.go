@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/leoyun/api-log/internal/counters"
+	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
 	"github.com/leoyun/api-log/internal/runtime"
 	"github.com/leoyun/api-log/internal/store/sqlite"
 )
@@ -646,5 +648,245 @@ func mustSaveOverrideList(t *testing.T, dir string, instances []runtime.PluginIn
 	// fixture before the assertions confuse the failure mode).
 	if _, err := os.Stat(filepath.Join(dir, "runtime_overrides.json")); err != nil {
 		t.Fatalf("override file not present after seed: %v", err)
+	}
+}
+
+// --- W4.2 hot-reload tests ----------------------------------------
+//
+// These exercise the registry-swap path Deps.PluginV2Reg lights up.
+// The non-reload tests above leave PluginV2Reg nil so the handlers
+// fall back to persist-only behavior; here we wire a registry and
+// register fake builtins so Reload can actually instantiate.
+
+// stubBeforePlugin is a minimal BeforePlugin used to verify Reload
+// swapped the registry's live config. The Name field tags each
+// instance so a test can tell "before-reload" and "after-reload"
+// instances apart by reading reg.Instances() after the PUT.
+type stubBeforePlugin struct{ name string }
+
+func (s *stubBeforePlugin) Name() string { return s.name }
+func (s *stubBeforePlugin) OnBefore(ctx context.Context, req *pluginv2.ParsedRequest, cfg map[string]any) pluginv2.BeforeResult {
+	return pluginv2.BeforeResult{Action: pluginv2.ActionContinue}
+}
+
+// stubBadPlugin is a Ctor that always errors — used to drive the
+// rollback path: a PUT carrying this type must leave the on-disk file
+// AND the live registry untouched.
+//
+// Both stub plugin types register under their own type name via
+// withStubBuiltins; tests scope their lifetime with t.Cleanup.
+func withStubBuiltins(t *testing.T) {
+	t.Helper()
+	pluginv2.ResetBuiltinsForTest()
+	pluginv2.RegisterBuiltin("stub", func(cfg map[string]any) (any, error) {
+		name, _ := cfg["name"].(string)
+		return &stubBeforePlugin{name: name}, nil
+	})
+	pluginv2.RegisterBuiltin("stub-bad", func(_ map[string]any) (any, error) {
+		return nil, errBadCtor
+	})
+	t.Cleanup(pluginv2.ResetBuiltinsForTest)
+}
+
+var errBadCtor = badCtorErr("stub-bad: always fails")
+
+type badCtorErr string
+
+func (e badCtorErr) Error() string { return string(e) }
+
+// newPluginsHotReloadServer returns a harness whose Deps carry a live
+// pluginv2.Registry. The returned *Registry lets the test assert on
+// the in-memory instance list directly after a PUT — that's the
+// fixture-level "the next request would see the new config" check.
+func newPluginsHotReloadServer(t *testing.T, token string) (*httptest.Server, string, *pluginv2.Registry) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := sqlite.Open(filepath.Join(dir, "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	reg, errs := pluginv2.NewRegistry(nil)
+	if len(errs) > 0 {
+		t.Fatalf("initial registry build: %v", errs)
+	}
+
+	mux := NewMux(Deps{
+		Store:       store,
+		Counters:    counters.New(),
+		AdminToken:  token,
+		Version:     "test",
+		StartedAt:   time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
+		DataDir:     dir,
+		PluginV2Reg: reg,
+		YAMLPlugins: nil,
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, dir, reg
+}
+
+func TestPutConfigPlugins_HotReload(t *testing.T) {
+	// PUT a new instance, then assert the in-memory registry reflects
+	// the change without restart. This is the W4.2 acceptance test:
+	// the GET round-trip already worked in W3 (persisted); the new
+	// behavior is the live-registry swap.
+	withStubBuiltins(t)
+	srv, _, reg := newPluginsHotReloadServer(t, "tok")
+
+	// Pre-condition: empty registry.
+	if got := reg.Instances(); len(got) != 0 {
+		t.Fatalf("pre-PUT instances = %d, want 0", len(got))
+	}
+
+	status, body := doJSON(t, "PUT", srv.URL+"/api/config/plugins", "tok",
+		map[string]any{
+			"instances": []map[string]any{
+				{
+					"type":    "stub",
+					"id":      "stub-1",
+					"enabled": true,
+					"config":  map[string]any{"name": "hot"},
+				},
+			},
+		})
+	if status != http.StatusOK {
+		t.Fatalf("PUT status = %d; body=%+v", status, body)
+	}
+
+	// Live registry MUST hold the new instance now — no process
+	// restart. The handler's response also confirms persist worked;
+	// this assertion is the unique W4.2 contract.
+	got := reg.Instances()
+	if len(got) != 1 || got[0].ID != "stub-1" || got[0].Type != "stub" {
+		t.Errorf("post-PUT registry instances = %+v, want [stub-1/stub]", got)
+	}
+
+	// Follow-up GET still reports the same effective config (proof the
+	// on-disk + in-memory views agree — the swap didn't desync them).
+	status, body = doJSON(t, "GET", srv.URL+"/api/config/plugins", "tok", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET status = %d", status)
+	}
+	if body["source"] != "override" {
+		t.Errorf("source = %v, want override", body["source"])
+	}
+	inst := body["instances"].([]any)
+	if len(inst) != 1 || inst[0].(map[string]any)["id"] != "stub-1" {
+		t.Errorf("GET instances = %+v, want [stub-1]", inst)
+	}
+}
+
+func TestPutConfigPlugins_HotReload_InitErrorRollsBack(t *testing.T) {
+	// PUT carrying a config a Ctor will reject MUST:
+	//   1. Return 500.
+	//   2. Leave the live registry on the previous snapshot.
+	//   3. Leave runtime_overrides.json on the previous Plugins block.
+	withStubBuiltins(t)
+	srv, dir, reg := newPluginsHotReloadServer(t, "tok")
+
+	// Seed a known-good instance via PUT so we have a real prior state
+	// to roll back to.
+	if status, _ := doJSON(t, "PUT", srv.URL+"/api/config/plugins", "tok",
+		map[string]any{
+			"instances": []map[string]any{
+				{"type": "stub", "id": "ok-1", "enabled": true, "config": map[string]any{"name": "ok"}},
+			},
+		}); status != http.StatusOK {
+		t.Fatalf("seed PUT failed: status=%d", status)
+	}
+	// Confirm the seeded registry has it.
+	if got := reg.Instances(); len(got) != 1 || got[0].ID != "ok-1" {
+		t.Fatalf("seeded registry has wrong instance: %+v", got)
+	}
+
+	// Failing PUT: stub-bad ctor errors out.
+	status, body := doJSON(t, "PUT", srv.URL+"/api/config/plugins", "tok",
+		map[string]any{
+			"instances": []map[string]any{
+				{"type": "stub-bad", "id": "boom", "enabled": true},
+			},
+		})
+	if status != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d; body=%+v", status, body)
+	}
+	if body["error"] != "reload_failed" {
+		t.Errorf("error = %v, want reload_failed", body["error"])
+	}
+
+	// Live registry MUST still show the seeded instance — swap rolled
+	// back (or rather: never happened, because Reload is all-or-nothing).
+	got := reg.Instances()
+	if len(got) != 1 || got[0].ID != "ok-1" {
+		t.Errorf("post-failed-PUT registry = %+v, want [ok-1] (rollback)", got)
+	}
+
+	// On-disk file MUST also show the seeded instance — the handler
+	// rolled back the SaveOverride.
+	ov, err := runtime.LoadOverrides(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ov.Plugins == nil || len(ov.Plugins.Instances) != 1 || ov.Plugins.Instances[0].ID != "ok-1" {
+		t.Errorf("post-failed-PUT disk = %+v, want [ok-1] (rollback)", ov.Plugins)
+	}
+}
+
+func TestDeleteConfigPlugins_HotReload(t *testing.T) {
+	// DELETE swaps the live registry to YAML defaults (empty in v0).
+	withStubBuiltins(t)
+	srv, _, reg := newPluginsHotReloadServer(t, "tok")
+
+	// Seed an instance, then DELETE it.
+	if status, _ := doJSON(t, "PUT", srv.URL+"/api/config/plugins", "tok",
+		map[string]any{
+			"instances": []map[string]any{
+				{"type": "stub", "id": "to-clear", "enabled": true},
+			},
+		}); status != http.StatusOK {
+		t.Fatalf("seed PUT failed")
+	}
+	if got := reg.Instances(); len(got) != 1 {
+		t.Fatalf("pre-DELETE registry empty: %+v", got)
+	}
+
+	status, body := doJSON(t, "DELETE", srv.URL+"/api/config/plugins", "tok", nil)
+	if status != http.StatusOK {
+		t.Fatalf("DELETE status = %d; body=%+v", status, body)
+	}
+	if got := reg.Instances(); len(got) != 0 {
+		t.Errorf("post-DELETE registry instances = %+v, want []", got)
+	}
+}
+
+func TestPutPluginInstance_HotReload(t *testing.T) {
+	// PUT /api/config/plugins/{id} (PATCH): toggle Enabled and assert
+	// the live registry picks up the change.
+	withStubBuiltins(t)
+	srv, _, reg := newPluginsHotReloadServer(t, "tok")
+
+	// Seed via PUT so the registry sees the initial state too.
+	if status, _ := doJSON(t, "PUT", srv.URL+"/api/config/plugins", "tok",
+		map[string]any{
+			"instances": []map[string]any{
+				{"type": "stub", "id": "patchme", "enabled": true, "config": map[string]any{"name": "v1"}},
+			},
+		}); status != http.StatusOK {
+		t.Fatalf("seed PUT failed")
+	}
+	if got := reg.Instances(); len(got) != 1 || !got[0].Enabled {
+		t.Fatalf("pre-PATCH: instances = %+v, want one enabled", got)
+	}
+
+	// PATCH: toggle Enabled off.
+	status, body := doJSON(t, "PUT", srv.URL+"/api/config/plugins/patchme", "tok",
+		map[string]any{"enabled": false})
+	if status != http.StatusOK {
+		t.Fatalf("PATCH status = %d; body=%+v", status, body)
+	}
+	got := reg.Instances()
+	if len(got) != 1 || got[0].Enabled {
+		t.Errorf("post-PATCH registry = %+v, want one DISABLED instance", got)
 	}
 }

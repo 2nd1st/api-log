@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/leoyun/api-log/internal/counters"
+	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
 	"github.com/leoyun/api-log/internal/store/sqlite"
 	"github.com/leoyun/api-log/internal/viewer"
 )
@@ -45,6 +46,24 @@ type Deps struct {
 	// each call (rather than caching a pointer) lets future hot-swap
 	// scenarios surface a changing catalogue without touching Deps.
 	PluginTypes func() []PluginTypeDescriptor
+
+	// PluginV2Reg is the live v2 hook-plugin registry. PUT/DELETE
+	// /api/config/plugins handlers call PluginV2Reg.Reload after a
+	// successful SaveOverride so the next request sees the new config
+	// without a process restart (W4.2). Nil-safe: handlers that test
+	// the persistence layer in isolation can pass Deps without it; the
+	// handler then skips the Reload step and behaves as a pure
+	// persist-only endpoint.
+	PluginV2Reg *pluginv2.Registry
+
+	// YAMLPlugins is the pre-override plugin instance list compiled from
+	// config.yaml at process start. The hot-reload path needs it so
+	// Reload can merge against YAML defaults the same way startup did
+	// — passing the merged effective list would double-apply the
+	// override on each Reload. In v0 the YAML side carries no v2
+	// instances, so main.go passes nil; the merge semantics in
+	// pluginv2.Load treat that correctly.
+	YAMLPlugins []pluginv2.InstanceConfig
 }
 
 // NewMux returns an http.Handler ready to mount on the API listener.

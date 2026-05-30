@@ -2,8 +2,11 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // InstanceConfig is the per-instance config tuple loaded from
@@ -166,17 +169,45 @@ func InstanceHasAfter(i *Instance) bool { return i.HasAfter() }
 // Registry holds the ordered list of plugin instances and exposes the
 // iteration entry points used by the proxy hot path.
 //
-// Registry is constructed once per atomic-swap cycle (process start +
-// each runtime config edit). After construction the slice is treated
-// as immutable; concurrent reads are safe without a lock.
+// W4.2 hot-reload (spec §3.4 / §4.4): the live instance list is held
+// inside an atomic.Pointer so Reload can swap it without invalidating
+// the outer *Registry that main.go / api.Deps captured at startup.
+// All iteration methods load the current snapshot at call entry; an
+// in-flight call uses the snapshot it loaded, and the next call after
+// a swap picks up the new one. Old instances are NOT Close()d on swap
+// — Close runs only on graceful shutdown (Registry.Close).
 type Registry struct {
-	instances []*Instance
+	// set is an *instanceSnapshot. Never nil after the first store; the
+	// snapshot helper returns an empty snapshot if the pointer is nil so
+	// zero-value Registry literals stay safe (the panic-cap tests use them).
+	set atomic.Pointer[instanceSnapshot]
 
 	// errors accumulates plugin panic / error breadcrumbs that the
 	// finalize layer attaches to the trace's plugin_errors field
 	// (spec §5.3). Bounded to keep trace lines small.
 	errMu  sync.Mutex
 	errors []PluginError
+}
+
+// instanceSnapshot is the atomic value swapped in by Reload. A struct
+// (not a bare slice) gives the atomic.Pointer a concrete element type
+// without the brackets-in-type-position parse hazard.
+type instanceSnapshot struct {
+	instances []*Instance
+}
+
+// snapshot returns the current instance list snapshot, never nil. A nil
+// atomic value (zero-value Registry literal in tests) yields an empty
+// snapshot rather than panicking — keeps the iterate calls inert.
+func (r *Registry) snapshot() *instanceSnapshot {
+	if r == nil {
+		return &instanceSnapshot{}
+	}
+	s := r.set.Load()
+	if s == nil {
+		return &instanceSnapshot{}
+	}
+	return s
 }
 
 // PluginError is one entry in the per-request error breadcrumb list.
@@ -199,12 +230,23 @@ const maxPluginErrors = 4
 // to the returned errs slice. Init failures (factory returns err) are
 // also collected. Other instances continue to load.
 //
-// The caller (Phase A1 / W3) decides whether to swap based on errs.
-// If errs is non-empty AND the caller is in a runtime-edit path, it
-// MUST NOT swap — spec §4.4: "Init failure does NOT swap the atomic
-// pointer". For process-start the caller logs and exits.
+// Collect-and-continue is the process-start policy: main.go sees the
+// errs slice and decides to log + exit on any failure. The runtime hot-
+// reload path (Reload) uses the same builder but applies all-or-nothing
+// semantics — see Reload for the rollback contract (spec §4.4).
 func NewRegistry(configs []InstanceConfig) (*Registry, []error) {
 	r := &Registry{}
+	instances, errs := buildInstances(configs)
+	r.set.Store(&instanceSnapshot{instances: instances})
+	return r, errs
+}
+
+// buildInstances is the shared instantiation pass used by NewRegistry
+// (collect-and-continue) and Reload (all-or-nothing). It returns the
+// instances that were successfully built and any errors collected; the
+// caller chooses how to react.
+func buildInstances(configs []InstanceConfig) ([]*Instance, []error) {
+	var instances []*Instance
 	var errs []error
 	for _, c := range configs {
 		if c.ID == "" {
@@ -237,9 +279,46 @@ func NewRegistry(configs []InstanceConfig) (*Registry, []error) {
 			errs = append(errs, fmt.Errorf("plugin instance %q (type=%q) implements neither BeforePlugin nor AfterPlugin", c.ID, c.Type))
 			continue
 		}
-		r.instances = append(r.instances, inst)
+		instances = append(instances, inst)
 	}
-	return r, errs
+	return instances, errs
+}
+
+// Reload atomically swaps the registry's live instance list to a fresh
+// build of (yamlList × overrides). All-or-nothing: any builder error
+// returns a joined error and leaves the OLD snapshot live. In-flight
+// requests on the old snapshot finish naturally; Close on old instances
+// is the responsibility of graceful shutdown, NOT the swap (spec §4.4).
+//
+// This is the entry point the API handlers invoke after persisting a
+// config edit; the handler rolls back the persisted file when Reload
+// returns an error. main.go does NOT need to call Reload at startup —
+// NewRegistry already seeds the initial snapshot.
+//
+// Snapshot granularity is per iterate call. Within a single in-flight
+// proxy request the BEFORE and AFTER chains load the snapshot
+// independently, so a Reload landing between them means BEFORE runs on
+// the old config and AFTER on the new. This is intentional (spec: each
+// iterate call loads the freshest instances at entry); per-request
+// snapshot consistency would require threading a snapshot through ctx
+// and is out of scope.
+func (r *Registry) Reload(yamlList []InstanceConfig, overrides *OverrideList) error {
+	if r == nil {
+		return errors.New("v2.Registry.Reload: nil receiver")
+	}
+	effective := Load(yamlList, overrides)
+	instances, errs := buildInstances(effective)
+	if len(errs) > 0 {
+		// Build a flat joined error so the API layer can surface it
+		// verbatim in the rollback response. Old snapshot stays live.
+		msgs := make([]string, 0, len(errs))
+		for _, e := range errs {
+			msgs = append(msgs, e.Error())
+		}
+		return fmt.Errorf("plugin reload init failed: %s", strings.Join(msgs, "; "))
+	}
+	r.set.Store(&instanceSnapshot{instances: instances})
+	return nil
 }
 
 // Instances returns a snapshot of registered instances in
@@ -249,8 +328,9 @@ func (r *Registry) Instances() []*Instance {
 	if r == nil {
 		return nil
 	}
-	out := make([]*Instance, len(r.instances))
-	copy(out, r.instances)
+	snap := r.snapshot()
+	out := make([]*Instance, len(snap.instances))
+	copy(out, snap.instances)
 	return out
 }
 
@@ -321,7 +401,8 @@ type InterceptInfo struct {
 // flowing unchanged.
 func (r *Registry) IterateBefore(ctx context.Context, req *ParsedRequest) (*ParsedRequest, *InterceptInfo) {
 	cur := req
-	for _, inst := range r.instances {
+	snap := r.snapshot()
+	for _, inst := range snap.instances {
 		if !inst.Enabled || inst.before == nil {
 			continue
 		}
@@ -354,7 +435,8 @@ func (r *Registry) IterateBefore(ctx context.Context, req *ParsedRequest) (*Pars
 // Returns InterceptInfo when any plugin intercepts; nil otherwise.
 // ActionMutate replaces ac.Response in the non-streaming branch.
 func (r *Registry) IterateAfter(ctx context.Context, req *ParsedRequest, ac *AfterContext) *InterceptInfo {
-	for _, inst := range r.instances {
+	snap := r.snapshot()
+	for _, inst := range snap.instances {
 		if !inst.Enabled || inst.after == nil {
 			continue
 		}
@@ -412,7 +494,8 @@ func (r *Registry) Close() error {
 	}
 	type closer interface{ Close() error }
 	var firstErr error
-	for _, inst := range r.instances {
+	snap := r.snapshot()
+	for _, inst := range snap.instances {
 		if c, ok := inst.before.(closer); ok && c != nil {
 			if err := c.Close(); err != nil && firstErr == nil {
 				firstErr = fmt.Errorf("plugin %q close (before): %w", inst.ID, err)

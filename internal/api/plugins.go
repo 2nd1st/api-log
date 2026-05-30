@@ -9,16 +9,19 @@ package api
 //	PUT  /api/config/plugins         → full-list replace (spec §3.3.2)
 //	PUT  /api/config/plugins/{id}    → single-instance patch
 //
-// Truth model differs slightly from media:
+// Truth model:
 //
-//   - There is no atomic in-memory effective list (yet) — W3 only
-//     persists. The "live registry rebuild + atomic.Pointer swap" is
-//     spec §3.4 and lands when main.go is wired (out of W3 scope).
 //   - GET reports what's on disk: if `<DataDir>/runtime_overrides.json`
 //     carries a non-nil plugins block, that's the effective list and
 //     source="override"; otherwise we report an empty list with
-//     source="yaml". Wiring YAML defaults through Deps is the explicit
-//     follow-up.
+//     source="yaml".
+//   - PUT / DELETE write through runtime.SaveOverride AND, when
+//     Deps.PluginV2Reg is wired, call Reload to atomically swap the
+//     live in-memory registry (W4.2 — spec §3.4 / §4.4). If Reload
+//     reports an Init error the persisted file is rolled back to the
+//     previous Plugins block and the response is 500 with the Init
+//     error in the body; the old registry stays live so in-flight
+//     traffic is unaffected.
 //
 // PUT semantics:
 //
@@ -28,22 +31,21 @@ package api
 //     slice so reload doesn't collapse to "no override."
 //   - PUT /api/config/plugins/{id} patches one instance in place:
 //       * if no override exists, 404 — operator must seed via PUT
-//         full-list first (the YAML→override migration path is a
-//         main.go follow-up).
+//         full-list first.
 //       * if the id is not in the override list, 404.
 //       * missing fields preserve current values. {enabled:false}
 //         alone toggles without touching config.
 //
-// The handlers do NOT invoke a plugin-registry rebuild; that wiring is
-// the main.go follow-up. `errors: []` in PUT responses is a fixed shape
-// per spec §8.5 — present so the future rebuild path can populate it
-// without breaking clients written against W3.
+// `errors: []` in PUT responses carries Reload init failures when one
+// occurs after the persist step succeeded but before rollback — in v1
+// rollback always succeeds and the array stays empty.
 
 import (
 	"encoding/json"
 	"net/http"
 	"strconv"
 
+	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
 	"github.com/leoyun/api-log/internal/runtime"
 )
 
@@ -103,9 +105,11 @@ type pluginsConfigPutJSON struct {
 	Ok        bool                 `json:"ok"`
 	Instances []pluginInstanceJSON `json:"instances"`
 	// Errors is always present (possibly empty) so the wire shape is
-	// stable across the W3-vs-future-rebuild boundary. When the
-	// registry rebuild lands (main.go follow-up), Init failures from
-	// new instances populate this slice.
+	// stable. With W4.2 hot-reload, the policy on Init failure is
+	// rollback-and-500: the file is restored to its previous Plugins
+	// block and the handler returns an error response (not 200 with a
+	// populated Errors array). The field stays in the shape so clients
+	// can future-proof against a softer policy without a wire break.
 	Errors []string `json:"errors"`
 }
 
@@ -238,12 +242,32 @@ func putConfigPlugins(deps Deps) http.Handler {
 			persisted = []runtime.PluginInstanceOverride{}
 		}
 
+		// Snapshot the previous Plugins block before writing so a
+		// post-write Reload failure can roll back to exactly what was
+		// on disk a moment ago (W4.2 — spec §4.4).
+		prev, lerr := runtime.LoadOverrides(deps.DataDir)
+		if lerr != nil {
+			writeError(w, http.StatusInternalServerError, "override_read_failed",
+				map[string]string{"detail": lerr.Error()})
+			return
+		}
+
 		err := runtime.SaveOverride(deps.DataDir, func(ov *runtime.Overrides) {
 			ov.Plugins = &runtime.PluginsOverride{Instances: persisted}
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "override_write_failed",
 				map[string]string{"detail": err.Error()})
+			return
+		}
+
+		// Hot-reload: swap the live registry atomically. On Init
+		// failure roll back the file and surface the error; the old
+		// registry stays live so in-flight requests are unaffected.
+		if rerr := reloadPluginRegistry(deps, &runtime.PluginsOverride{Instances: persisted}); rerr != nil {
+			rollbackPluginsOverride(deps, prev.Plugins)
+			writeError(w, http.StatusInternalServerError, "reload_failed",
+				map[string]string{"detail": rerr.Error()})
 			return
 		}
 
@@ -265,12 +289,27 @@ func putConfigPlugins(deps Deps) http.Handler {
 // of whether one exists.
 func deleteConfigPlugins(deps Deps) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prev, lerr := runtime.LoadOverrides(deps.DataDir)
+		if lerr != nil {
+			writeError(w, http.StatusInternalServerError, "override_read_failed",
+				map[string]string{"detail": lerr.Error()})
+			return
+		}
 		err := runtime.SaveOverride(deps.DataDir, func(ov *runtime.Overrides) {
 			ov.Plugins = nil
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "override_write_failed",
 				map[string]string{"detail": err.Error()})
+			return
+		}
+		// Reload with nil override → registry falls back to YAML
+		// defaults (deps.YAMLPlugins). Rollback restores prev on
+		// failure so the live registry and on-disk state agree.
+		if rerr := reloadPluginRegistry(deps, nil); rerr != nil {
+			rollbackPluginsOverride(deps, prev.Plugins)
+			writeError(w, http.StatusInternalServerError, "reload_failed",
+				map[string]string{"detail": rerr.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -356,6 +395,17 @@ func putConfigPluginInstance(deps Deps) http.Handler {
 
 		patched := ov.Plugins.Instances[idx]
 
+		// Snapshot the pre-write Plugins block for rollback. SaveOverride
+		// does its own LoadOverrides → mutate → write, so we grab the
+		// authoritative state before that race window — if reload fails
+		// after the file changed, we restore exactly this.
+		prev, lerr := runtime.LoadOverrides(deps.DataDir)
+		if lerr != nil {
+			writeError(w, http.StatusInternalServerError, "override_read_failed",
+				map[string]string{"detail": lerr.Error()})
+			return
+		}
+
 		// SaveOverride does its own LoadOverrides → mutate → write.
 		// Re-find the instance in that fresh snapshot and replace it.
 		// If a concurrent full-list PUT removed the instance between
@@ -377,6 +427,25 @@ func putConfigPluginInstance(deps Deps) http.Handler {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "override_write_failed",
 				map[string]string{"detail": err.Error()})
+			return
+		}
+
+		// Hot-reload uses the post-save authoritative state, not the
+		// in-handler ov — SaveOverride's read-modify-write may have
+		// observed a concurrent edit and our patched copy is no longer
+		// guaranteed to match disk. Load the freshest snapshot for the
+		// swap input.
+		fresh, ferr := runtime.LoadOverrides(deps.DataDir)
+		if ferr != nil {
+			rollbackPluginsOverride(deps, prev.Plugins)
+			writeError(w, http.StatusInternalServerError, "override_read_failed",
+				map[string]string{"detail": ferr.Error()})
+			return
+		}
+		if rerr := reloadPluginRegistry(deps, fresh.Plugins); rerr != nil {
+			rollbackPluginsOverride(deps, prev.Plugins)
+			writeError(w, http.StatusInternalServerError, "reload_failed",
+				map[string]string{"detail": rerr.Error()})
 			return
 		}
 
@@ -413,4 +482,55 @@ func instanceToJSON(inst runtime.PluginInstanceOverride) pluginInstanceJSON {
 		Enabled: enabled,
 		Config:  cfg,
 	}
+}
+
+// reloadPluginRegistry asks Deps.PluginV2Reg to swap to a fresh build
+// of (YAML defaults × the supplied override). Nil-safe: when no
+// registry is wired (the persistence-only test harness) this is a
+// no-op so PUT / DELETE remain pure persistence calls. The override
+// arg comes from the freshest LoadOverrides snapshot so the live
+// registry tracks exactly what's on disk.
+func reloadPluginRegistry(deps Deps, ov *runtime.PluginsOverride) error {
+	if deps.PluginV2Reg == nil {
+		return nil
+	}
+	return deps.PluginV2Reg.Reload(deps.YAMLPlugins, runtimeOverrideToV2(ov))
+}
+
+// rollbackPluginsOverride restores the persisted Plugins block to
+// `prev` after a failed Reload. Best-effort: a secondary write error
+// (disk full, permission flip mid-handler) is swallowed because the
+// primary error is already on its way back to the operator and a
+// rollback failure has nowhere useful to surface. The handler's job
+// here is to leave the on-disk state matching the live registry so a
+// subsequent GET reports the truth.
+func rollbackPluginsOverride(deps Deps, prev *runtime.PluginsOverride) {
+	_ = runtime.SaveOverride(deps.DataDir, func(o *runtime.Overrides) {
+		o.Plugins = prev
+	})
+}
+
+// runtimeOverrideToV2 adapts the runtime persistence shape to the v2
+// hook layer's OverrideList. Nil propagates (no override → fall through
+// to YAML defaults); a non-nil PluginsOverride with a nil/empty
+// Instances slice means "all plugins off" and is preserved as a
+// non-nil OverrideList with an empty Instances slice so v2.Load's
+// merge semantics match.
+func runtimeOverrideToV2(ov *runtime.PluginsOverride) *pluginv2.OverrideList {
+	if ov == nil {
+		return nil
+	}
+	out := make([]pluginv2.InstanceConfig, 0, len(ov.Instances))
+	for _, inst := range ov.Instances {
+		ic := pluginv2.InstanceConfig{
+			Type:   inst.Type,
+			ID:     inst.ID,
+			Config: inst.Config,
+		}
+		if inst.Enabled != nil {
+			ic.Enabled = *inst.Enabled
+		}
+		out = append(out, ic)
+	}
+	return &pluginv2.OverrideList{Instances: out}
 }

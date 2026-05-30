@@ -168,9 +168,15 @@ func run() error {
 	// PHILOSOPHY §2 (amended): explicit operator-configured plugins MAY
 	// interfere through BEFORE/AFTER hooks; the capture path itself
 	// still never independently rewrites or routes.
+	//
+	// yamlV2Plugins is the pre-override YAML default list. Today the v0
+	// config carries no v2 entries, so it stays nil; the API layer's
+	// Reload feeds this as the YAML base on every hot-reload so override
+	// merges don't double-apply.
+	var yamlV2Plugins []pluginv2.InstanceConfig
 	var v2InstanceConfigs []pluginv2.InstanceConfig
 	if runtimeOverrides.Plugins != nil {
-		v2InstanceConfigs = pluginv2.Load(nil, &pluginv2.OverrideList{
+		v2InstanceConfigs = pluginv2.Load(yamlV2Plugins, &pluginv2.OverrideList{
 			Instances: buildEffectivePluginInstances(runtimeOverrides.Plugins),
 		})
 	}
@@ -179,9 +185,10 @@ func run() error {
 		slog.Warn("v2 plugin init", "err", e)
 	}
 	// Process-start convention (spec §4.4): Init failures are fatal.
-	// Runtime config edits via the API never swap on Init failure; the
-	// old registry stays live. main() does not do hot-swap in v1 — that
-	// lands once the viewer Settings UI lights up.
+	// Runtime config edits via the API call Registry.Reload, which
+	// applies all-or-nothing semantics and keeps the old snapshot live
+	// on Init error — the API handler then rolls back the persisted
+	// override file (W4.2).
 	if len(v2Errs) > 0 {
 		return fmt.Errorf("v2 plugin init failed: %d error(s)", len(v2Errs))
 	}
@@ -424,6 +431,12 @@ func run() error {
 		DataDir:      cfg.Storage.DataDir,
 		MediaEnabled: mediaEnabled,
 		PluginTypes:  pluginTypeCatalogue,
+		// W4.2 hot-reload: pass the SAME *Registry main captured for
+		// the proxy + makeModifyResponse closures. Reload mutates the
+		// snapshot pointer inside the struct, so all of those callers
+		// pick up the new instance list on their next call.
+		PluginV2Reg: pluginV2Reg,
+		YAMLPlugins: yamlV2Plugins,
 	})
 	apiSrv := &http.Server{
 		Addr:              cfg.API.Listen,
