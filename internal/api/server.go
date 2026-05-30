@@ -109,7 +109,7 @@ func NewMux(deps Deps) http.Handler {
 // repo without needing to read the README first.
 func rootPointer(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
-		"viewer":  "https://github.com/leoyun/api-log-viewer",
+		"viewer":  "https://github.com/xiayangzhang/api-log-viewer",
 		"api":     "/api",
 		"healthz": "/healthz",
 		"docs":    "see PHILOSOPHY.md and ARCHITECTURE.md in this repo",
