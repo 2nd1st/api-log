@@ -11,7 +11,9 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 
@@ -67,13 +69,15 @@ type Deps struct {
 }
 
 // NewMux returns an http.Handler ready to mount on the API listener.
-// /api/* and /healthz require the admin bearer; GET / is unauthenticated
-// so a reverse proxy or operator dashboard can probe liveness without
-// holding a token.
+// /api/* requires the admin bearer; /healthz and GET / are unauthenticated
+// so k8s liveness probes, alertmanager, and reverse-proxy health checks
+// (none of which carry bearer tokens) can probe the binary cheaply.
+// The whole mux is wrapped in recoverMW so a handler panic returns 500
+// instead of taking down the proxy listener that shares this process.
 func NewMux(deps Deps) http.Handler {
 	mux := http.NewServeMux()
 
-	mux.Handle("GET /healthz", authMW(deps.AdminToken, healthz(deps)))
+	mux.Handle("GET /healthz", healthz(deps))
 	mux.Handle("GET /api/traces", authMW(deps.AdminToken, listTraces(deps)))
 	mux.Handle("GET /api/traces/{id}", authMW(deps.AdminToken, getTrace(deps)))
 	mux.Handle("GET /api/traces/{id}/replay", authMW(deps.AdminToken, replayHandler(deps)))
@@ -98,7 +102,27 @@ func NewMux(deps Deps) http.Handler {
 	// output and mount api-log under /api on the same origin.
 	mux.HandleFunc("GET /{$}", rootPointer)
 
-	return mux
+	return recoverMW(mux)
+}
+
+// recoverMW catches handler panics so a nil-deref in a single request
+// cannot kill the binary — which would also kill the proxy listener
+// running on the same process. Logs the panic + stack with slog and
+// returns 500 server_panic to the client. The proxy listener runs on
+// a separate http.Server and is untouched by this middleware.
+func recoverMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("api handler panic",
+					"path", r.URL.Path,
+					"panic", rec,
+					"stack", string(debug.Stack()))
+				writeError(w, http.StatusInternalServerError, "server_panic")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // rootPointer answers GET / with a static JSON document pointing at

@@ -8,20 +8,23 @@ import (
 
 // safeBefore wraps a BeforePlugin.OnBefore call in defer recover() so
 // a plugin panic cannot bring down the proxy. On recover, the function
-// returns ActionContinue (request flows unchanged) and records the
-// panic on the registry's plugin_errors breadcrumb list (spec §5.3).
+// returns ActionContinue (request flows unchanged) and logs the panic
+// via slog. Per-trace plugin_errors breadcrumbs are deferred to a
+// future WP when an adopter needs them.
 //
 // This is the only place a panic from plugin code is allowed to be
 // turned into a normal Action — the contract is fail-open per spec
 // §4.2, and only the dispatcher gets to recover.
-func safeBefore(ctx context.Context, r *Registry, inst *Instance, req *ParsedRequest) (res BeforeResult) {
+//
+// The Registry pointer is retained in the signature so the call sites
+// in IterateBefore stay symmetric with future breadcrumb work; today
+// it's unused.
+func safeBefore(ctx context.Context, _ *Registry, inst *Instance, req *ParsedRequest) (res BeforeResult) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			msg := fmt.Sprintf("%v", rec)
-			r.recordError(inst.Type, inst.ID, "before", "panic: "+msg)
 			slog.Warn("plugin panic",
 				"type", inst.Type, "id", inst.ID, "hook", "before",
-				"panic", msg)
+				"panic", fmt.Sprintf("%v", rec))
 			res = BeforeResult{Action: ActionContinue}
 		}
 	}()
@@ -40,14 +43,12 @@ func safeBefore(ctx context.Context, r *Registry, inst *Instance, req *ParsedReq
 // This is a conscious choice: a partial callback registration is
 // still safer than dropping all registrations (which would silently
 // remove watermark/etc. behavior the operator opted into).
-func safeAfter(ctx context.Context, r *Registry, inst *Instance, req *ParsedRequest, ac *AfterContext) (res AfterResult) {
+func safeAfter(ctx context.Context, _ *Registry, inst *Instance, req *ParsedRequest, ac *AfterContext) (res AfterResult) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			msg := fmt.Sprintf("%v", rec)
-			r.recordError(inst.Type, inst.ID, "after", "panic: "+msg)
 			slog.Warn("plugin panic",
 				"type", inst.Type, "id", inst.ID, "hook", "after",
-				"panic", msg)
+				"panic", fmt.Sprintf("%v", rec))
 			res = AfterResult{Action: ActionContinue}
 		}
 	}()

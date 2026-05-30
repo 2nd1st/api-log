@@ -93,9 +93,10 @@ func waitForRows(t *testing.T, store *sqlite.Store, n int64) {
 
 func TestHealthz(t *testing.T) {
 	srv, _, _, _ := newTestServer(t, "tok-test")
-	req, _ := http.NewRequest("GET", srv.URL+"/healthz", nil)
-	req.Header.Set("Authorization", "Bearer tok-test")
-	resp, err := http.DefaultClient.Do(req)
+	// /healthz is intentionally unauthenticated so k8s liveness probes
+	// and alertmanager (neither of which carry bearer tokens) can probe
+	// the binary. See server.go NewMux docstring.
+	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func TestHealthz(t *testing.T) {
 
 func TestAuthRejectsMissingToken(t *testing.T) {
 	srv, _, _, _ := newTestServer(t, "tok-test")
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := http.Get(srv.URL + "/api/traces")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestAuthRejectsMissingToken(t *testing.T) {
 
 func TestAuthRejectsWrongToken(t *testing.T) {
 	srv, _, _, _ := newTestServer(t, "tok-test")
-	req, _ := http.NewRequest("GET", srv.URL+"/healthz", nil)
+	req, _ := http.NewRequest("GET", srv.URL+"/api/traces", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

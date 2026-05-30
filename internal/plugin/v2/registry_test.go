@@ -295,17 +295,10 @@ func TestIterateBefore_PanicFailsOpen(t *testing.T) {
 	if len(p2.beforeLog) != 1 {
 		t.Errorf("p2 should run despite p1 panic: %v", p2.beforeLog)
 	}
-	// Breadcrumb recorded.
-	errs := r.DrainErrors()
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 plugin_error, got %d", len(errs))
-	}
-	if errs[0].Type != "p1" || errs[0].Hook != "before" {
-		t.Errorf("breadcrumb = %+v", errs[0])
-	}
-	if !strings.Contains(errs[0].Msg, "intentional before panic") {
-		t.Errorf("breadcrumb msg = %q", errs[0].Msg)
-	}
+	// Per-trace plugin_errors breadcrumbs were removed in v0.1.0; the
+	// panic is logged via slog instead. A future WP may re-introduce a
+	// per-request collector — until then, fail-open + slog is the
+	// observable contract.
 }
 
 func TestIterateBefore_InterceptWithNilBodyTreatedAsContinue(t *testing.T) {
@@ -326,9 +319,8 @@ func TestIterateBefore_InterceptWithNilBodyTreatedAsContinue(t *testing.T) {
 	if len(p2.beforeLog) != 1 {
 		t.Errorf("p2 should run since p1 was defensively treated as Continue")
 	}
-	if errs := r.DrainErrors(); len(errs) != 1 {
-		t.Errorf("expected breadcrumb for defensive intercept")
-	}
+	// The defensive "treated as Continue" path is logged via slog;
+	// per-trace breadcrumbs were removed in v0.1.0.
 }
 
 // ----- IterateAfter ----------------------------------------------
@@ -407,9 +399,7 @@ func TestIterateAfter_PanicFailsOpen(t *testing.T) {
 	if got := d.After.ContentDeltaTransforms(); len(got) != 1 {
 		t.Errorf("p2 should still register: got %d", len(got))
 	}
-	if errs := r.DrainErrors(); len(errs) != 1 {
-		t.Errorf("expected 1 panic breadcrumb, got %d", len(errs))
-	}
+	// Panic is logged via slog; per-trace breadcrumbs were removed in v0.1.0.
 }
 
 func TestIterateAfter_NonStreamingMutate(t *testing.T) {
@@ -433,30 +423,6 @@ func TestIterateAfter_NonStreamingMutate(t *testing.T) {
 	}
 	if ac.Response.Content != "MUTATED" {
 		t.Errorf("mutation not applied: %q", ac.Response.Content)
-	}
-}
-
-// ----- Error breadcrumb cap --------------------------------------
-
-func TestRegistry_ErrorBreadcrumbCap(t *testing.T) {
-	r := &Registry{}
-	for i := 0; i < maxPluginErrors*2; i++ {
-		r.recordError("x", "x", "before", "msg")
-	}
-	if got := r.Errors(); len(got) != maxPluginErrors {
-		t.Errorf("breadcrumb cap = %d, expected %d", len(got), maxPluginErrors)
-	}
-}
-
-func TestRegistry_DrainResetsErrors(t *testing.T) {
-	r := &Registry{}
-	r.recordError("x", "x", "before", "a")
-	if len(r.Errors()) != 1 {
-		t.Fatal("expected 1 error")
-	}
-	r.DrainErrors()
-	if len(r.Errors()) != 0 {
-		t.Errorf("drain should reset")
 	}
 }
 

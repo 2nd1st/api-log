@@ -49,6 +49,13 @@ import (
 	"github.com/leoyun/api-log/internal/runtime"
 )
 
+// pluginConfigMaxBytes caps the JSON body on the PUT
+// /api/config/plugins[/{id}] handlers. The header is admin-only, but
+// without a cap an authenticated client could OOM the shared process by
+// sending a multi-GB body. 64 KB is generous for any realistic plugin
+// config — operator-authored, small.
+const pluginConfigMaxBytes = 64 * 1024
+
 // PluginTypeDescriptor is one entry in GET /api/plugins/types.
 //
 // Spec §12.4 explicitly hands W3 the wire shape; this is the shape
@@ -185,6 +192,11 @@ func getConfigPlugins(deps Deps) http.Handler {
 // the list (operator picks IDs).
 func putConfigPlugins(deps Deps) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Cap body size so an authenticated client can't OOM the shared
+		// process by sending a multi-GB body. 64 KB is generous for a
+		// plugin config payload — plugin configs are operator-authored
+		// and intentionally small.
+		r.Body = http.MaxBytesReader(w, r.Body, pluginConfigMaxBytes)
 		var body struct {
 			Instances *[]pluginInstanceJSON `json:"instances"`
 		}
@@ -338,6 +350,8 @@ func putConfigPluginInstance(deps Deps) http.Handler {
 			return
 		}
 
+		// Body-size cap mirrors the full-list PUT — see putConfigPlugins.
+		r.Body = http.MaxBytesReader(w, r.Body, pluginConfigMaxBytes)
 		var patch pluginInstancePatchJSON
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()

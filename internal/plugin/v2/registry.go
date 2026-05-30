@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -181,12 +182,6 @@ type Registry struct {
 	// snapshot helper returns an empty snapshot if the pointer is nil so
 	// zero-value Registry literals stay safe (the panic-cap tests use them).
 	set atomic.Pointer[instanceSnapshot]
-
-	// errors accumulates plugin panic / error breadcrumbs that the
-	// finalize layer attaches to the trace's plugin_errors field
-	// (spec §5.3). Bounded to keep trace lines small.
-	errMu  sync.Mutex
-	errors []PluginError
 }
 
 // instanceSnapshot is the atomic value swapped in by Reload. A struct
@@ -209,20 +204,6 @@ func (r *Registry) snapshot() *instanceSnapshot {
 	}
 	return s
 }
-
-// PluginError is one entry in the per-request error breadcrumb list.
-// See spec §5.3.
-type PluginError struct {
-	Type string
-	ID   string
-	Hook string // "before" | "after"
-	Msg  string
-}
-
-// maxPluginErrors is the cap on the per-request breadcrumb list. Spec
-// §12.4 leaves the cap up to W1; 4 entries is enough to cover a chain
-// of cascading failures without bloating disk usage.
-const maxPluginErrors = 4
 
 // NewRegistry constructs a Registry from an ordered slice of instance
 // configs. Each entry's Type is looked up in the builtin registry; if
@@ -334,46 +315,6 @@ func (r *Registry) Instances() []*Instance {
 	return out
 }
 
-// Errors returns the accumulated plugin error breadcrumbs, capped at
-// maxPluginErrors. Caller (finalize) drains via DrainErrors after the
-// trace is built so the next request starts fresh.
-//
-// NOTE: in the dispatcher-per-request model (W3), errors are collected
-// per *call* not per *registry*. v1 of the registry uses a single
-// slice with a mutex; W3 will replace this with a per-request
-// collector passed through ctx.
-func (r *Registry) Errors() []PluginError {
-	r.errMu.Lock()
-	defer r.errMu.Unlock()
-	out := make([]PluginError, len(r.errors))
-	copy(out, r.errors)
-	return out
-}
-
-// DrainErrors returns the current error list and clears it. Used by
-// the finalize block after the trace is built.
-func (r *Registry) DrainErrors() []PluginError {
-	r.errMu.Lock()
-	defer r.errMu.Unlock()
-	out := r.errors
-	r.errors = nil
-	return out
-}
-
-// recordError appends one error, dropping the oldest if the cap is
-// already reached. Bounded to keep JSONL lines small.
-func (r *Registry) recordError(typeName, id, hook, msg string) {
-	r.errMu.Lock()
-	defer r.errMu.Unlock()
-	if len(r.errors) >= maxPluginErrors {
-		// Drop oldest.
-		copy(r.errors, r.errors[1:])
-		r.errors[len(r.errors)-1] = PluginError{Type: typeName, ID: id, Hook: hook, Msg: msg}
-		return
-	}
-	r.errors = append(r.errors, PluginError{Type: typeName, ID: id, Hook: hook, Msg: msg})
-}
-
 // InterceptInfo identifies which plugin instance produced an intercept,
 // alongside the intercept response itself. Callers use Type / ID / Hook
 // to populate trace.PluginIntercepted (spec §5.2) so operators can tell
@@ -420,9 +361,12 @@ func (r *Registry) IterateBefore(ctx context.Context, req *ParsedRequest) (*Pars
 				}
 			}
 			// Plugin said Intercept but produced no body — treat as
-			// Continue (defensive; recorded as an error for the
-			// trace breadcrumb).
-			r.recordError(inst.Type, inst.ID, "before", "ActionIntercept with nil Intercept body; treated as Continue")
+			// Continue (defensive). Logged via slog; a future WP may
+			// re-introduce per-trace breadcrumbs when an adopter needs
+			// them.
+			slog.Warn("plugin defensive continue",
+				"type", inst.Type, "id", inst.ID, "hook", "before",
+				"reason", "ActionIntercept with nil Intercept body")
 		}
 	}
 	return cur, nil
@@ -453,7 +397,9 @@ func (r *Registry) IterateAfter(ctx context.Context, req *ParsedRequest, ac *Aft
 					Response: res.Intercept,
 				}
 			}
-			r.recordError(inst.Type, inst.ID, "after", "ActionIntercept with nil Intercept body; treated as Continue")
+			slog.Warn("plugin defensive continue",
+				"type", inst.Type, "id", inst.ID, "hook", "after",
+				"reason", "ActionIntercept with nil Intercept body")
 		}
 	}
 	return nil

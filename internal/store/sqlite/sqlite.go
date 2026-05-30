@@ -35,10 +35,13 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite at %s: %w", path, err)
 	}
-	// Writer uses exactly one connection — serializes all writes through
-	// a single SQLite connection, which is the simplest correct semantics
-	// for WAL + a single writer goroutine.
-	db.SetMaxOpenConns(1)
+	// WAL mode is enabled below at Open(); 8 conns lets the read API and
+	// writer proceed in parallel. SQLite WAL serializes writes internally,
+	// so we don't need a single-conn writer lock at the database/sql layer
+	// — and capping at 1 forced every /api/traces read to queue behind the
+	// writer's finalize transaction. Idle cap stays modest.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
 
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
