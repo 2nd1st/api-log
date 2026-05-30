@@ -315,10 +315,12 @@ func run() error {
 
 	finalize:
 
-		// FINALIZE — close capture channels, join drainers (bounded).
+		// FINALIZE — close capture channels, join drainers (drainers own
+		// their tmp files; receiving on the done channels guarantees Close
+		// happens-before buildTrace's os.Open below).
 		state.watchdog.Stop()
 		drainStart := time.Now()
-		state.finalize(cfg.Timeouts.DrainerJoin())
+		state.finalize()
 		ctrs.DrainHist.Observe(time.Since(drainStart).Milliseconds())
 		watchdogFired := state.watchdog.Fired()
 
@@ -541,15 +543,17 @@ func run() error {
 // --- per-trace state ---
 
 type traceState struct {
-	// Capture-side
-	reqSink   *capture.Sink
-	respSink  *capture.Sink
-	reqDone   chan capture.DrainResult
-	respDone  chan capture.DrainResult
-	reqFile   *os.File
-	respFile  *os.File
-	reqPath   string
-	respPath  string
+	// Capture-side. The tmp *os.File handles are intentionally NOT held
+	// here: each drainer goroutine owns its file for the file's full
+	// lifetime and closes it before publishing the DrainResult. finalize
+	// reads from reqDone/respDone, which sequences-after the close, so
+	// buildTrace can safely os.Open(reqPath/respPath) on completion.
+	reqSink  *capture.Sink
+	respSink *capture.Sink
+	reqDone  chan capture.DrainResult
+	respDone chan capture.DrainResult
+	reqPath  string
+	respPath string
 
 	// Set by handler when accepting the request.
 	tsStart    time.Time
@@ -589,11 +593,22 @@ func startTrace(traceID string, tmpDir *capture.TmpDir, chanSize int, maxBodyByt
 
 	reqDone := make(chan capture.DrainResult, 1)
 	respDone := make(chan capture.DrainResult, 1)
+	// Drainer goroutines own their tmp file's lifetime: Close runs AFTER
+	// Drain returns and BEFORE the result is sent. Receiving from reqDone /
+	// respDone is therefore the synchronization point that guarantees the
+	// file is closed and all writes are flushed before any reader (finalize
+	// + buildTrace) touches the path. Closing in finalize while the drainer
+	// was still writing would produce torn JSONL bytes; see v0.1.0 review
+	// finding #4.
 	go func() {
-		reqDone <- capture.Drain(reqCh, reqFile, maxBodyBytes)
+		res := capture.Drain(reqCh, reqFile, maxBodyBytes)
+		_ = reqFile.Close()
+		reqDone <- res
 	}()
 	go func() {
-		respDone <- capture.Drain(respCh, respFile, maxBodyBytes)
+		res := capture.Drain(respCh, respFile, maxBodyBytes)
+		_ = respFile.Close()
+		respDone <- res
 	}()
 
 	return &traceState{
@@ -601,44 +616,36 @@ func startTrace(traceID string, tmpDir *capture.TmpDir, chanSize int, maxBodyByt
 		respSink: respSink,
 		reqDone:  reqDone,
 		respDone: respDone,
-		reqFile:  reqFile,
-		respFile: respFile,
 		reqPath:  reqFile.Name(),
 		respPath: respFile.Name(),
 	}, nil
 }
 
-// finalize closes the capture channels and waits for drainers (bounded by
-// joinTimeout). Safe to call multiple times. If either drainer join
-// times out, the corresponding direction is marked Truncated so the
-// JSONL line records the loss per ARCHITECTURE § 7.1 step 7.
-func (t *traceState) finalize(joinTimeout time.Duration) {
+// finalize closes the capture channels and waits unconditionally for both
+// drainers to finish. Safe to call multiple times.
+//
+// Receiving from reqDone / respDone is the synchronization point that
+// guarantees each drainer has returned from its loop AND closed its tmp
+// file (the close runs inside the goroutine before the result is sent).
+// buildTrace's subsequent os.Open therefore sees a complete, no-longer-
+// being-written file.
+//
+// The previous implementation bounded the wait with a join timeout and
+// abandoned the file on timeout, but that raced the drainer's still-live
+// writes against finalize's Close and buildTrace's open — see v0.1.0
+// review finding #4. Drainers cannot block indefinitely: producers send
+// non-blockingly via Sink.Write, and once the channel is closed the
+// `for range` loop terminates after consuming pending chunks.
+func (t *traceState) finalize() {
 	t.once.Do(func() {
 		close(t.reqSink.Ch)
 		close(t.respSink.Ch)
 
-		t.reqResult = drainWithTimeout(t.reqDone, joinTimeout, "req")
-		t.respResult = drainWithTimeout(t.respDone, joinTimeout, "resp")
+		t.reqResult = <-t.reqDone
+		t.respResult = <-t.respDone
 
-		_ = t.reqFile.Close()
-		_ = t.respFile.Close()
 		t.tsEnd = time.Now().UTC()
 	})
-}
-
-// drainWithTimeout waits for one drainer's result, bounded. On timeout
-// returns a DrainResult with Truncated=true so the JSONL line records
-// the loss (and the truncated_*_total counter increments).
-func drainWithTimeout(ch chan capture.DrainResult, timeout time.Duration, label string) capture.DrainResult {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case r := <-ch:
-		return r
-	case <-timer.C:
-		slog.Warn("drainer join timeout", "side", label, "timeout", timeout)
-		return capture.DrainResult{Truncated: true}
-	}
 }
 
 // buildTrace assembles the JSONL line from per-trace state after finalize.

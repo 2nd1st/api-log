@@ -79,10 +79,9 @@ type StorageConfig struct {
 
 type TimeoutsConfig struct {
 	ReadHeaderSeconds      int `yaml:"read_header_seconds"`
-	IdleSeconds            int `yaml:"idle_seconds"`
-	StreamIdleSeconds      int `yaml:"stream_idle_seconds"`
-	ReqBodyCaptureSeconds  int `yaml:"req_body_capture_seconds"`
-	DrainerJoinSeconds     int `yaml:"drainer_join_seconds"`
+	IdleSeconds           int `yaml:"idle_seconds"`
+	StreamIdleSeconds     int `yaml:"stream_idle_seconds"`
+	ReqBodyCaptureSeconds int `yaml:"req_body_capture_seconds"`
 
 	// End-to-end traces this slow trigger a WARN log + slow_traces++.
 	// 0 disables (no WARN). Default 30s.
@@ -128,7 +127,6 @@ func Defaults() Config {
 			IdleSeconds:           120,
 			StreamIdleSeconds:     600,
 			ReqBodyCaptureSeconds: 60,
-			DrainerJoinSeconds:    2,
 			SlowTraceSeconds:      30,
 		},
 		Shutdown: ShutdownConfig{
@@ -250,14 +248,6 @@ func applyEnv(cfg *Config) error {
 			c.Timeouts.ReqBodyCaptureSeconds = n
 			return nil
 		}},
-		{"APILOG_TIMEOUTS_DRAINER_JOIN_SECONDS", func(c *Config, v string) error {
-			n, err := envInt(v)
-			if err != nil {
-				return err
-			}
-			c.Timeouts.DrainerJoinSeconds = n
-			return nil
-		}},
 		{"APILOG_TIMEOUTS_SLOW_TRACE_SECONDS", func(c *Config, v string) error {
 			n, err := envInt(v)
 			if err != nil {
@@ -342,9 +332,6 @@ func (c TimeoutsConfig) Idle() time.Duration        { return time.Duration(c.Idl
 func (c TimeoutsConfig) StreamIdle() time.Duration  { return time.Duration(c.StreamIdleSeconds) * time.Second }
 func (c TimeoutsConfig) ReqBodyCapture() time.Duration {
 	return time.Duration(c.ReqBodyCaptureSeconds) * time.Second
-}
-func (c TimeoutsConfig) DrainerJoin() time.Duration {
-	return time.Duration(c.DrainerJoinSeconds) * time.Second
 }
 func (c TimeoutsConfig) SlowTrace() time.Duration {
 	return time.Duration(c.SlowTraceSeconds) * time.Second
