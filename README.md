@@ -14,11 +14,9 @@ What you do with the recordings — token accounting, eval pipelines, skill extr
 
 ## Status
 
-**Design phase; v0 implementation pending.** This repository currently contains the design documents only. Implementation has not started.
+**Pre-release.** v0 (capture path + session inference + read API) and v0.1 work (frontend viewer in a separate repo, plugin system, hot-reload) are shipped and running against live traffic. A v0.1.0 tag is being prepared; until then the API contract is stable but commit history may still rebase.
 
-The design is validated end-to-end: the session inference algorithm has been tested against real traffic on both OpenAI Chat Completions and Anthropic Messages protocols via sub2api. See [`experiments/session-inference/`](./experiments/session-inference/) for the test harness and results.
-
-Read [PHILOSOPHY.md](./PHILOSOPHY.md) first, [ARCHITECTURE.md](./ARCHITECTURE.md) second.
+Read [PHILOSOPHY.md](./PHILOSOPHY.md) first, [ARCHITECTURE.md](./ARCHITECTURE.md) second. [ROADMAP.md](./ROADMAP.md) tracks what's done and what's queued.
 
 ---
 
@@ -160,7 +158,7 @@ GET  /healthz                        # liveness + in-memory drop / overflow coun
 
 `/api/traces` hits SQLite for millisecond response times. `/api/traces/:id` joins SQLite with one seeked read into the JSONL file. AI agents doing batch analysis can bypass the API entirely and read JSONL files directly off disk.
 
-v0 ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the separate `api-log-viewer` project; the binary contains zero HTML. This is deliberate (PHILOSOPHY § principles 4 and 5).
+api-log ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the separate `api-log-viewer` project; the binary contains zero HTML. This is deliberate (PHILOSOPHY § principles 4 and 5).
 
 ---
 
@@ -173,8 +171,9 @@ v0 ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the sepa
 
 ## Roadmap
 
-- [ ] **v0** — capture path (parse + JSONL write + SQLite mirror), session inference, minimal read API.
-- [ ] **v0.1** — `api-log-viewer` (separate project) — multi-instance aggregation, session-tree visualization, tool-call rendering, SSE replay rendering, AI-assisted ad-hoc analysis.
+- [x] **v0** — capture path (parse + JSONL write + SQLite mirror), session inference, minimal read API.
+- [x] **v0.1** — `api-log-viewer` (separate project) — multi-instance aggregation, session-tree visualization, tool-call rendering, SSE replay rendering, AI-assisted ad-hoc analysis.
+- [x] **v0.1 plugins** — `text-replace` / `text-append` / `path-filter` with hot-reload via `PUT /api/config/plugins`. Off by default; opt-in via YAML or runtime API. See [PHILOSOPHY § 2 amendment](./PHILOSOPHY.md) for the operator-mutation boundary.
 - [ ] **v0.2** — optional per-gateway **bridge adapters** (separate projects) — join external data (CPA's Redis usage queue, new-api's MySQL log table) into api-log traces by `key_hash`. The core proxy stays gateway-agnostic.
 
 ---
@@ -192,4 +191,4 @@ The architecture borrows ideas from:
 
 ## License
 
-TBD.
+[MIT](./LICENSE) — © 2026 Leo Yun.
