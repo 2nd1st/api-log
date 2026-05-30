@@ -36,12 +36,42 @@ operator must understand and manage. Reports about these will be closed.
 
 - **Bearer tokens and API keys land on disk in plaintext.** The JSONL
   files contain `Authorization` / `x-api-key` headers exactly as the
-  client sent them. api-log does not redact and will not gain a
-  configurable redaction filter (see PHILOSOPHY.md § no-list). Treat
-  the `data/` directory the way you would treat a file holding
-  production API keys: file-system permissions, disk encryption, and
-  log-pipeline policy are the operator's responsibility. If you need
-  redaction, run a downstream sidecar over the JSONL files.
+  client sent them. The capture path itself performs no redaction:
+  the forwarding goroutine is byte-faithful, and the JSONL line
+  records the upstream request bytes and the client-received response
+  bytes exactly as they flowed across the wire. Treat the `data/`
+  directory the way you would treat a file holding production API
+  keys: file-system permissions, disk encryption, and log-pipeline
+  policy are the operator's responsibility. If you need redaction,
+  run a downstream sidecar over the JSONL files.
+
+  Operator-opt-in plugins MAY mutate the response stream. AFTER-class
+  plugins registered in `config.yaml` or `runtime_overrides.json` can
+  rewrite `ParsedResponse.Content` and `ParsedResponse.Reasoning` text
+  deltas; when they do, the JSONL line records the post-mutation
+  bytes — the bytes the client actually received — per the
+  mutation-recording rule in `docs/specs/plugin-b-c-spec.md` § 5.
+  This is not redaction-at-capture: nothing runs unless the operator
+  declared the instance in config, and the recorded line is the
+  honest record of what the client received.
+
+  Currently shipped plugins do not touch headers. `text-replace` and
+  `text-append` operate on response body content (and the BEFORE-side
+  request body) only. No shipped or planned plugin strips
+  `Authorization` / `x-api-key` from captured JSONL — header
+  protection on disk remains the operator's filesystem-permissions
+  responsibility.
+
+  If a future plugin adds header mutation, it must follow the same
+  post-mutation recording discipline: the JSONL line records what
+  actually flowed after the plugin chain ran. Silent header rewrites
+  — mutating headers on the wire while recording the pre-mutation
+  bytes, or vice versa — are not accepted into this repo.
+
+  A plugin that bypasses these rules is in scope for security
+  reports. Specifically: mutating without recording the post-mutation
+  state, accessing storage paths outside its declared scope, or
+  leaking per-request state across requests.
 - **No client authentication on the proxy listener.** Any client that
   can reach the listener can submit traffic, exactly as if they could
   reach the gateway directly. Restrict network access at the operator
