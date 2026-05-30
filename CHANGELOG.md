@@ -10,6 +10,16 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [0.1.0] - 2026-05-31
+
+### Added
 - **W4.1 Phase 2 — client_project extraction** (2026-05-31, commit
   `3c6503d`): new `internal/parser/project.go` exports
   `ExtractProjectContext(systemPrompt string) *ProjectInfo` mirroring
@@ -42,7 +52,7 @@ append-only / new-format-key migration discipline documented in
   under `-race`; PUT / PATCH / DELETE integration tests verify
   live-registry mutation + rollback path.
 - **Plugin Phase B + C — contract + PHILOSOPHY amendments** (2026-05-30,
-  commit TBD): `uiux-research/plugin-b-c-spec.md` frozen as the BUILD
+  commit `39690f1`): `docs/specs/plugin-b-c-spec.md` frozen as the BUILD
   contract for the interfere-class hook surface (BEFORE / AFTER) layered
   on top of the Phase A.1 Observer scaffold. This commit is docs-only
   (no Go file touched) — it ships the PHILOSOPHY amendments the
@@ -142,6 +152,3 @@ append-only / new-format-key migration discipline documented in
 - **M6**: production hardening. Stream-idle watchdog (`internal/proxy.StreamWatchdog`) cancels the request context if no response byte arrives for `stream_idle_seconds` (default 600s); fired traces are marked `disconnected: true`. `capture.Sink.OnByte` callback pulses the watchdog without coupling proxy code to the watchdog itself. Drainer-join timeout now marks the affected direction `truncated_*: true` (instead of just logging) so the JSONL line records the loss and `truncated_*_total` counters increment. Graceful shutdown ordering fixed: proxy.Shutdown → api.Shutdown → stopWriter (drains channel + waits gzip workers) → store.Close (explicit, no defer LIFO games) so the writer never sees a closed *sql.DB during its final flush. Chaos test verifies 500 concurrent producers against a wedged writer never block (max TrySend = 100ms on any goroutine).
 - **M7**: shippable artifact + demo. Multi-stage `Dockerfile` produces a static distroless image; container runs as nonroot UID 65532 and pre-creates `/data` so the mount inherits ownership. New `tools/mockup` is a tiny LLM gateway that speaks all three protocols (non-streaming Chat, streaming Chat / Anthropic Messages / OpenAI Responses) — used to drive integration tests without an upstream key. `deploy/dev-stack/docker-compose.yml` brings up api-log + mockup against a bind-mounted data dir; `deploy/demo/docker-compose.yml` is the operator-facing layout (api-log fronting sub2api). `tests/integration/run.sh` exercises 16 assertions through the dev-stack: forwarding, JSONL persistence, SQLite list/cursor/detail, `/healthz` counters, cross-key isolation, session inference fires across two chat completions of the same key, replay pacing honors `speed`/`nodelay`, and the read API rejects unauth / wrong-token requests. GH Actions: a `release` job builds + pushes the image to `ghcr.io` on `v*` tags after the unit + integration suites pass.
 
-## [0.0.0] - TBD
-
-- v0 implementation in progress; no release tagged yet.

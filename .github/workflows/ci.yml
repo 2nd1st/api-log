@@ -26,9 +26,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      # golangci-lint-action v7 is the first major that parses the v2
+      # config schema declared in .golangci.yml. v6 + v1.x silently
+      # fails on `version: "2"`.
+      - uses: golangci/golangci-lint-action@v7
         with:
-          version: v1.61
+          version: v2.0
 
   build:
     runs-on: ubuntu-latest

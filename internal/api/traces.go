@@ -213,7 +213,7 @@ type rowJSON struct {
 	FinishReason        *string `json:"finish_reason"`
 	ClientKind          *string `json:"client_kind"`
 	ClientVersion       *string `json:"client_version"`
-	ClientProject       *string `json:"client_project,omitempty"`
+	ClientProject       *string `json:"client_project"`
 	KeyHash             string  `json:"key_hash"`
 	ParentID            *string `json:"parent_id"`
 	SessionRootID       string  `json:"session_root_id"`

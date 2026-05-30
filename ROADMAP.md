@@ -311,7 +311,7 @@ commit `db49249`). Generate uses `authFetch → Blob → synthesized <a download
 rather than `location.href` because navigation can't attach the Bearer
 header `/api/export` requires.
 
-Contract: `uiux-research/phase-i-export-contract.md`.
+Contract: `docs/specs/phase-i-export-contract.md`.
 
 ### 🟡 2. Operator config knobs (PARTIAL)
 
@@ -414,15 +414,15 @@ patterns. PHILOSOPHY §1 tension acknowledged — the plugin form makes the
 ### 5. Plugin / hook system (strategic, larger)
 
 **Phase B + C status (in flight 2026-05-30): contract frozen in
-`uiux-research/plugin-b-c-spec.md`; build underway. Adds the
+`docs/specs/plugin-b-c-spec.md`; build underway. Adds the
 interfere-class BEFORE / AFTER hooks alongside the Phase A Observer
 class. See §11 below for the in-flight entry and the supersession
-note: the original five-hook sketch in `uiux-research/plugin.md` is
+note: the original five-hook sketch in `docs/specs/plugin.md` is
 OBSOLETE for greenfield work.**
 
 **Phase A.1 status (2026-05-30, commit `4500a7d`): scaffold + wiring shipped.**
 
-Design lives in `uiux-research/plugin.md` (the contract). Phase A
+Design lives in `docs/specs/plugin.md` (the contract). Phase A
 (commit `35acd7c`) landed the scaffold — `internal/plugin/` (Plugin +
 ObserveBeforeRecord + ObserveAfterRecord + Registry) plus the first
 concrete plugin `internal/plugin/builtin/pathfilter/` plus the
@@ -449,7 +449,7 @@ through `path-filter` instead of a bespoke `capture.skip_paths` knob.
 
 The original sketch below remains the long-form record of what hooks
 are designed (interfere-class included) and how mutation-recording
-would work — none of it ships in Phase A. See `uiux-research/plugin.md`
+would work — none of it ships in Phase A. See `docs/specs/plugin.md`
 §§ 7.2, 7.3 for the Phase B (`key-redactor`) and Phase C (`rate-limit`)
 designs, and §§ 8 Phase B / Phase C for the PHILOSOPHY amendments each
 phase requires.
@@ -476,20 +476,18 @@ Sketch of hook points (in order of trace lifecycle):
 | `mutate_resp(resp)` ⚠️ | strip PII from output; rewrite refusals; transform formats | silently lie about what came back — see "mutation-recording rule" below |
 | `after_record(trace)` | push to external sinks; emit alerts; update operator dashboards | retroactively edit recorded JSONL |
 
-**Mutation-recording rule (load-bearing):**
+**Mutation-recording rule — SUPERSEDED:**
 
-If a plugin runs in `mutate_req` or `mutate_resp` and changes the
-bytes, the JSONL line MUST carry BOTH the original and the mutated
-form (e.g. a `mutations: [{plugin: "secret-redactor", before: <orig>,
-after: <new>}]` block) — otherwise the recorder is lying about what
-actually flowed, which breaks PHILOSOPHY § 6 ("filesystem is truth").
-The default `req.body` / `resp.body` fields stay as **what reached
-the upstream** / **what the upstream returned**; the original is
-preserved in the mutations log.
-
-This costs disk (we keep both versions for any mutated trace) but
-it's the only honest implementation. Alternative — "just record the
-mutated version" — would silently rewrite history and is rejected.
+The original sketch above (keep BOTH original and mutated form in a
+`mutations: [...]` block, reject "just record the mutated version")
+has been overturned. See the PHILOSOPHY §6 amendment + `docs/specs/plugin-b-c-spec.md`
+§5: plugin mutations are recorded **post-mutation only**, with no
+separate pre/post diff retained. The JSONL line carries what actually
+flowed; the operator opted in to the mutation and accepts the
+post-mutation recording as the trace of record. Intercepted traces
+carry a `plugin_intercepted` marker; plugin errors carry an optional
+`plugin_errors` breadcrumb. The pre/post `mutations[]` block is not
+shipped and is not on the roadmap.
 
 Likely-useful plugin categories (operator notes 2026-05-28):
 
@@ -596,7 +594,7 @@ runs AFTER JSONL is on disk; failure logs WARN, never blocks forwarding.
 §6 — JSONL still carries the b64; extracted files are a derived
 filesystem cache.
 
-Contract: `uiux-research/phase-k-media-contract.md`.
+Contract: `docs/specs/phase-k-media-contract.md`.
 
 ### ✅ 8. Usage extraction (DONE — T3, 2026-05-30, commit `49e55bb`)
 
@@ -710,7 +708,7 @@ ARCHITECTURE §5.5 Status callout. No code change.
 
 Adds the interfere-class hook surface on top of the Phase A.1 observer
 scaffold. Contract is frozen in
-`uiux-research/plugin-b-c-spec.md` — read that first.
+`docs/specs/plugin-b-c-spec.md` — read that first.
 
 Two hot-path hook points only: **BEFORE** (post-receive, pre-forward)
 and **AFTER** (post-upstream-response, pre-client-send). Each hook
@@ -790,7 +788,7 @@ in-tree consumer — single-commit migration per spec §12.5), W6 docs.
 This commit is W5 — the docs amendments themselves. Go code lands in
 subsequent commits.
 
-Supersedes the original `uiux-research/plugin.md` five-hook sketch for
+Supersedes the original `docs/specs/plugin.md` five-hook sketch for
 greenfield work. Cross-link from §5 above.
 
 ---

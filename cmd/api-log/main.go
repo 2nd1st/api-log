@@ -46,6 +46,11 @@ import (
 	"github.com/leoyun/api-log/internal/writer"
 )
 
+// version is the binary version string. Overridden at build time via
+// `-ldflags "-X main.version=<tag>"` (see Dockerfile + release CI).
+// The default keeps `go run` / unstamped builds identifiable.
+var version = "0.0.0-dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "api-log: %v\n", err)
@@ -68,7 +73,7 @@ func run() error {
 
 	logging.SetupDefault(cfg.Logging.Level)
 	slog.Info("api-log starting",
-		"version", "0.0.0-dev",
+		"version", version,
 		"proxy.listen", cfg.Proxy.Listen,
 		"proxy.upstream", cfg.Proxy.Upstream,
 		"data_dir", cfg.Storage.DataDir,
@@ -426,7 +431,7 @@ func run() error {
 		Store:        store,
 		Counters:     ctrs,
 		AdminToken:   adminToken,
-		Version:      "0.0.0-dev",
+		Version:      version,
 		StartedAt:    time.Now().UTC(),
 		DataDir:      cfg.Storage.DataDir,
 		MediaEnabled: mediaEnabled,

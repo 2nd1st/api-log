@@ -539,7 +539,7 @@ Counters are cumulative since process start. `/healthz` itself does not check di
 Returns a JSON pointer to the separate viewer project:
 
 ```json
-{"name":"api-log","viewer":"https://github.com/<org>/api-log-viewer","version":"0.x.y"}
+{"name":"api-log","viewer":"https://github.com/xiayangzhang/api-log-viewer","version":"0.x.y"}
 ```
 
 The binary contains zero HTML. Frontends are separate consumers of the read API.
@@ -1076,7 +1076,7 @@ First plugin proposal that needs them will trigger the work.
 ### 13.4 AFTER-hook tool_call argument mutation — deferred to Phase D
 
 Plugin Phase B + C v1 (contract frozen 2026-05-30 in
-`uiux-research/plugin-b-c-spec.md`) ships AFTER-hook mutation for
+[docs/specs/plugin-b-c-spec.md](./docs/specs/plugin-b-c-spec.md)) ships AFTER-hook mutation for
 `ParsedResponse.Content` and `ParsedResponse.Reasoning` only.
 Mutation of streaming `tool_call` argument fragments on the AFTER hook
 is deferred to Phase D per spec §10.6.

@@ -119,7 +119,7 @@ services:
     expose: ["7860"]                        # move 7860 from "ports" to "expose"
 
   api-log:                                  # ← new
-    image: ghcr.io/<org>/api-log:latest
+    image: ghcr.io/xiayangzhang/api-log:latest
     ports:
       - "7861:7861"                         # proxy listener (clients connect here)
       - "7862:7862"                         # read API
@@ -145,14 +145,7 @@ The JSONL files contain the **unredacted** `Authorization` / `x-api-key` headers
 
 ## Read API
 
-Four endpoints. Full contract in [ARCHITECTURE.md § 6](./ARCHITECTURE.md).
-
-```
-GET  /api/traces?since=&until=&status=&model=&key_hash=&session_root_id=&limit=&cursor=
-GET  /api/traces/:id
-GET  /api/traces/:id/replay          # visual SSE replay at original pacing
-GET  /healthz                        # liveness + in-memory drop / overflow counters
-```
+See [ARCHITECTURE.md § 6](./ARCHITECTURE.md) for the full read API surface (current count: 13+ endpoints; `/api/export` is the primary download surface).
 
 `/api/traces/:id/replay` is the differentiator vs. SDK-based observability tools — it re-emits the recorded SSE stream at original per-chunk pacing using captured `t_delta_ms`. Replay is **to the API caller** (a viewer), never back to the upstream LLM.
 
