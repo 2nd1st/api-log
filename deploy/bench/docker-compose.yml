@@ -1,7 +1,7 @@
 # Bench stack: api-log only, pointed at a real upstream supplied via env.
 #
 # Use:
-#   APILOG_PROXY_UPSTREAM=http://cpa.homelab.lan \
+#   APILOG_PROXY_UPSTREAM=http://your-gateway:7860 \
 #     docker compose -f deploy/bench/docker-compose.yml up -d --build
 #
 # The orchestrator at tests/bench/run.sh wraps this. Data lives in

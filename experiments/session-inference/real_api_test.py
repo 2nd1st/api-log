@@ -19,9 +19,17 @@ import urllib.error
 from dataclasses import dataclass, field
 from typing import Optional
 
-SUB2API = "http://sub2api.homelab.lan"
-OPENAI_KEY = "sk-REDACTED"
-ANTHROPIC_KEY = "sk-REDACTED"
+import os
+
+SUB2API = os.environ.get("APILOG_TEST_GATEWAY", "http://localhost:8080")
+OPENAI_KEY = os.environ.get("APILOG_TEST_OPENAI_KEY", "")
+ANTHROPIC_KEY = os.environ.get("APILOG_TEST_ANTHROPIC_KEY", "")
+if not OPENAI_KEY or not ANTHROPIC_KEY:
+    raise SystemExit(
+        "Set APILOG_TEST_OPENAI_KEY + APILOG_TEST_ANTHROPIC_KEY before running. "
+        "These point at an OpenAI-compatible gateway you control; they are NOT "
+        "vendor production credentials."
+    )
 
 OAI_MODEL = "gpt-5.4-mini"
 ANT_MODEL = "claude-haiku-4-5-20251001"
