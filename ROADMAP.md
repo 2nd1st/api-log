@@ -349,6 +349,12 @@ read-side contract is unchanged.
   prompt-source detector), CONTENT SHAPE (block-type chips, tool
   inventory, response shape), MODEL BEHAVIOR (stop reason translation
   + reasoning count + tool count + first-reply latency) — Phase H.
+  MODEL BEHAVIOR's cache + reasoning token fields and the SQLite-backed
+  Dashboard TOP MODEL card became populatable with real data after
+  T3 (2026-05-30, commit `49e55bb`) extracted `usage` from response
+  bodies at finalize. Pre-T3 the columns were declared on the Row
+  schema but never populated; Dashboard rendered `—` for model
+  permanently. See §8 below for the protocol field paths.
 - ✅ Reasoning tombstones (no "encrypted_content — plaintext not
   available" placeholder wording; the absence of body communicates the
   redacted-by-upstream state) — Phase F+H polish.
@@ -383,14 +389,14 @@ string (`/api/v1/auth/me?timezone=...`). For UI grouping this could
 be split — `path` = bare URL path, separate `query` field. Defer to
 the recorder schema bump pass.
 
-**~~Capture-time skip~~ (SUPERSEDED 2026-05-30 by Plugin Phase A.1)**
+**~~Capture-time skip~~ (✅ DONE — Plugin Phase A.1, 2026-05-30, commit `4500a7d`)**
 
 Originally proposed as `capture.skip_paths` config knob. The Plugin Phase A
 scaffold (§5) added `internal/plugin/builtin/pathfilter/` which implements
-the same semantic via the `ObserveBeforeRecord` hook. Once Phase A.1
-lands (separate commit, wires `Registry` into `cmd/api-log/main.go`
-finalize block, gated on `config.Plugins.PathFilter.Patterns` non-empty),
-operators get path-skip via the plugin config block instead of a bespoke
+the same semantic via the `ObserveBeforeRecord` hook. Phase A.1 (this
+commit) wires `Registry` into `cmd/api-log/main.go` finalize block, gated
+on `config.Plugins.PathFilter.Patterns` non-empty — operators now get
+path-skip via the plugin config block instead of a bespoke
 `capture.skip_paths` knob:
 
 ```yaml
@@ -407,29 +413,32 @@ patterns. PHILOSOPHY §1 tension acknowledged — the plugin form makes the
 
 ### 5. Plugin / hook system (strategic, larger)
 
-**Phase A status (2026-05-30): scaffold landed; wiring deferred.**
+**Phase A.1 status (2026-05-30, commit `4500a7d`): scaffold + wiring shipped.**
 
-Design lives in `uiux-research/plugin.md` (the contract). The Phase A
-scaffold — `internal/plugin/` (Plugin + ObserveBeforeRecord +
-ObserveAfterRecord + Registry) plus the first concrete plugin
-`internal/plugin/builtin/pathfilter/` plus the `plugins:` config block
-— is in tree as of this commit. The Phase A scaffold is **observe-class
-only**: no `mutate_req`, no `before_forward`, no gate behavior. Those
-are the gate-position phases (B and C in plugin.md § 8) and remain
-designed-but-not-built per `project_gate_position`.
+Design lives in `uiux-research/plugin.md` (the contract). Phase A
+(commit `35acd7c`) landed the scaffold — `internal/plugin/` (Plugin +
+ObserveBeforeRecord + ObserveAfterRecord + Registry) plus the first
+concrete plugin `internal/plugin/builtin/pathfilter/` plus the
+`plugins:` config block. Phase A.1 (commit `4500a7d`) wired the
+Registry into `cmd/api-log/main.go` — pathfilter patterns from
+`config.Plugins.PathFilter.Patterns` now actually drop matched traces
+from JSONL + SQLite at finalize, via `IterateBeforeRecord` between
+`buildTrace` and `writer.TrySend`. Startup logs the active patterns
+(operator visibility per PHILOSOPHY §2). Plugin errors fail-open
+(slog.Warn, capture continues); the registry closes inline after
+`stopWriter()` in the shutdown sequence.
 
-**Behavior shipped today is unchanged.** The Registry is not constructed
-in `cmd/api-log/main.go` yet; the path-filter plugin builds and has
-tests but does not run on the trace path. Phase A.1 is a separate
-commit that wires the Registry into the finalize block, gated on
-`config.Plugins.PathFilter.Patterns` being non-empty. Splitting the
-scaffold from the wiring honors the operator's stance of "leverage via
-plugins, never bake into capture path" — the wiring commit can be
-reviewed against the now-stable contract.
+Phase A is **observe-class only**: no `mutate_req`, no `before_forward`,
+no gate behavior. Those are the gate-position phases (B and C in
+plugin.md § 8) and remain designed-but-not-built per
+`project_gate_position`. Known Phase A.1 follow-ups (forward-looking,
+non-blocking): no `drop_plugin_error` counter on /healthz; no
+`defer recover()` around plugin calls (a panicking third-party plugin
+would leak tmp files but the upstream response IS already forwarded so
+PHILOSOPHY §2 is honored); no example yaml stanza in `deploy/dev-stack/`.
 
-Once Phase A.1 lands, the planned ROADMAP § 4 "capture-time skip" TODO
-above resolves through `path-filter` instead of a bespoke
-`capture.skip_paths` knob.
+Phase A.1 closes the planned ROADMAP § 4 "capture-time skip" TODO
+through `path-filter` instead of a bespoke `capture.skip_paths` knob.
 
 The original sketch below remains the long-form record of what hooks
 are designed (interfere-class included) and how mutation-recording
@@ -539,6 +548,16 @@ aggregation endpoint added; the viewer aggregates client-side.
 `total_media_files` (Phase K) joins `total_bytes` as a healthz cumulative
 counter; both surface in the Landing STATUS strip.
 
+T3 (2026-05-30, commit `49e55bb`) added five further cumulative counters —
+`total_prompt_tokens`, `total_completion_tokens`, `total_cached_tokens`,
+`total_cache_creation_tokens`, `total_reasoning_tokens` — sourced from
+the per-trace usage extraction at finalize. These power the Landing
+"recent token activity" KPIs whose values were previously hardcoded to
+0 because writer didn't extract usage. (Subject to the §6 healthz
+endpoint policy decision — counters live in memory regardless of
+whether `/healthz` surfaces them; the Landing data source may shift to
+SQLite aggregates over the new columns.)
+
 ### ✅ 7. Media extraction (DONE — Phase K, 2026-05-30, backend `67142f9` + viewer `77fd9ca`)
 
 A late post-v0 addition discovered while building the Export page.
@@ -571,6 +590,73 @@ runs AFTER JSONL is on disk; failure logs WARN, never blocks forwarding.
 filesystem cache.
 
 Contract: `uiux-research/phase-k-media-contract.md`.
+
+### ✅ 8. Usage extraction (DONE — T3, 2026-05-30, commit `49e55bb`)
+
+Closes a gap noticed by the operator 2026-05-30: Row.Model /
+Row.PromptTokens / Row.CompletionTokens were declared on the SQLite
+schema but never populated, so Dashboard TOP MODEL rendered `—`
+permanently and Overview MODEL BEHAVIOR carried no token data despite
+the upstream returning a usage block on every trace.
+
+New `parser.ExtractUsage(t trace.Trace) UsageInfo` extracts named
+protocol fields (PHILOSOPHY §1 carve-out 1: deterministic copy, no
+synthesis):
+
+- **Chat** (`/v1/chat/completions`):
+  `usage.{prompt_tokens, completion_tokens, total_tokens,
+  prompt_tokens_details.cached_tokens,
+  completion_tokens_details.reasoning_tokens}`; model from resp body
+  (fallback req body); finish_reason from `choices[0]`.
+- **Messages** (`/v1/messages`, Anthropic):
+  `usage.{input_tokens, output_tokens, cache_read_input_tokens,
+  cache_creation_input_tokens}`; model from resp body; `stop_reason` as
+  finish_reason. The Anthropic cache split is preserved as two distinct
+  SQLite columns (`cache_read` = hit, `cache_creation` = miss sent for
+  caching) — collapsing them would synthesize information PHILOSOPHY
+  forbids.
+- **Responses** (`/v1/responses`, OpenAI): both streaming
+  (`events[-1].data.response.usage`) and non-streaming
+  (`resp.body.usage`) shapes;
+  `input_tokens_details.cached_tokens` +
+  `output_tokens_details.reasoning_tokens`; model from req body
+  (resp echoes resolved upstream names like `gpt-4o-2024-11-20` which
+  would silently diverge from the contract).
+- **Gemini** (`/v1beta/models/<NAME>:generateContent`):
+  `usageMetadata.{promptTokenCount, candidatesTokenCount,
+  cachedContentTokenCount}`; model from path regex; finishReason from
+  `candidates[0]`. No reasoning tokens (protocol doesn't expose them).
+
+SQLite gains three nullable INTEGER columns via idempotent ALTER TABLE
+(same pattern as Phase K media_count): `cached_tokens`,
+`cache_creation_tokens`, `reasoning_tokens`. Existing `model`,
+`prompt_tokens`, `completion_tokens`, `total_tokens`, `finish_reason`
+columns finally get populated.
+
+`Counters` gains five cumulative atomics — `total_prompt_tokens`,
+`total_completion_tokens`, `total_cached_tokens`,
+`total_cache_creation_tokens`, `total_reasoning_tokens` — bumped at the
+same finalize callsite where Row fields are filled (one ExtractUsage
+call serves both). Surfaced on `/healthz` today; subject to §6's
+healthz endpoint policy decision.
+
+**Documented out-of-scope (PHILOSOPHY §1):** Anthropic Messages SSE and
+Gemini `:streamGenerateContent` streaming bodies. The contract names
+body field paths, not event paths, for those two protocols.
+Token totals on streaming Claude traffic will be NULL until a
+philosophy amendment names event paths — tracked as a forward-looking
+follow-up, not v0 blocking. Operators querying SQLite for tokens on
+streaming Claude traces should be aware.
+
+Tests: 21 parser table cases (incl. zero-vs-absent, body_b64 fallback,
+Responses dual-shape, model-comes-from-request-not-response for
+Responses); SQLite round-trip (populated + absent branches); writer
+integration smoke. go test -race ./... green across 19 packages.
+
+PHILOSOPHY adherence: §1 named-field-only extraction; §2 finalize-time
+work never blocks forwarding (parser failures log WARN, traces still
+land); §6 columns are rebuildable from JSONL by replaying the same
+ExtractUsage function.
 
 ---
 

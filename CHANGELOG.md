@@ -10,11 +10,46 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
-- **Phase H** (2026-05-30, commit `492f1ad`): `total_bytes` cumulative counter on `/healthz` — bumped at JSONL append time so the read API can answer "how much have we recorded so far" without walking the data dir. Token cumulative counters NOT shipped (writer doesn't yet extract `usage` from response bodies into `Row.PromptTokens` / `Row.CompletionTokens` — separate gap tracked in plan curried-juggling-treehouse.md as track T3).
+- **Phase H** (2026-05-30, commit `492f1ad`): `total_bytes` cumulative counter on `/healthz` — bumped at JSONL append time so the read API can answer "how much have we recorded so far" without walking the data dir. (Token cumulative counters shipped subsequently in T3, commit `49e55bb`, below.)
 - **Phase H** (2026-05-30, commit `96cf41a`): `clientAddrOf()` extracts the real client IP from `X-Forwarded-For` (leftmost = original client, RFC 7239) → `X-Real-IP` → `r.RemoteAddr` chain. Effective on traces where XFF actually reaches the backend; in the current homelab topology the placeholder evaluates to `127.0.0.1` because external HTTP is forwarded into the Caddy LXC via host loopback (incus port-forwarder / docker stack) — recovering the real IP needs PROXY protocol on the listener, separate infra task.
 - **Phase I** (2026-05-29, commit `6294be2`): `internal/exporter` package + `GET /api/export` endpoint streaming a zip of matching JSONL lines bundled with `agent/CLAUDE.md` + `agent/jq-cheatsheet.md` + `README.md`. New `Store.AllMatching(filters, hardCap)` walks rows chronologically (ts_start ASC, id ASC) past the List() page limit — extracted `buildListConds` helper so the filter pipeline is single-sourced. `Deps.DataDir` added.
 - **Phase J** (2026-05-30, commit `35acd7c`): Plugin Phase A scaffold — `internal/plugin/` package with the `Plugin` interface, `ObserveBeforeRecord` (shouldRecord gate) + `ObserveAfterRecord` (side-effect hook) discriminants, and `Registry`. First concrete plugin `internal/plugin/builtin/pathfilter/` matches `trace.Path` against glob patterns from `config.Plugins.PathFilter.Patterns` and drops matched traces. Scaffold-only — `cmd/api-log/main.go` does NOT construct the Registry yet; wiring is Phase A.1 (deliberate separation per `project_gate_position` memory + PHILOSOPHY §2 carve-out). `Config.Plugins.PathFilter` block + env binding added. Tests: table tests for the Registry's `IterateBeforeRecord` ordering invariant + pathfilter's glob behavior.
 - **Phase J** (2026-05-30, commit `35acd7c`): export 5000-row cap removed end-to-end. `internal/exporter/exporter.go` dropped the `HardCap = 5000` const; `WriteZip` forwards the caller's `limit` straight to `AllMatching`. `Store.AllMatching` emits `LIMIT ?` conditionally — `hardCap=0` / negative means unlimited. `internal/api/export.go` `parseExportFilters` lifts the ceiling check on `limit` (only rejects `n < 1`).
+- **T3 — usage extraction** (2026-05-30, commit `49e55bb`): new
+  `internal/parser/usage.go` exports `ExtractUsage(trace.Trace) UsageInfo`
+  with per-protocol field paths for Chat / Messages / Responses / Gemini;
+  pointer fields throughout (nil != zero). Writer calls it once per
+  `appendOne` at finalize; result populates Row.Model + Row.FinishReason
+  + 5 token totals + Anthropic cache split, and bumps 5 new cumulative
+  atomic counters (`total_prompt_tokens`, `total_completion_tokens`,
+  `total_cached_tokens`, `total_cache_creation_tokens`,
+  `total_reasoning_tokens`) surfaced on `/healthz`. SQLite gains
+  3 nullable INTEGER columns via idempotent ALTER TABLE: `cached_tokens`,
+  `cache_creation_tokens`, `reasoning_tokens`. INSERT extended from 25
+  to 28 columns; `selectColumns` + `scanRow` extended in lockstep.
+  Closes the gap where Row.Model / Row.PromptTokens / Row.CompletionTokens
+  were declared but never populated — Dashboard TOP MODEL rendered `—`
+  permanently and Overview MODEL BEHAVIOR carried no token data despite
+  the upstream returning usage on every trace. Documented out-of-scope:
+  Anthropic Messages SSE + Gemini `:streamGenerateContent` streaming bodies
+  (contract names body paths only; event-path coverage would need a
+  PHILOSOPHY §1 amendment).
+- **T2 — Plugin Phase A.1 wiring** (2026-05-30, commit `4500a7d`):
+  `cmd/api-log/main.go` constructs `plugin.NewRegistry()` alongside
+  `mediaExt`; pathfilter registered + Init'd only when
+  `cfg.Plugins.PathFilter.Patterns` is non-empty (startup INFO log
+  prints active patterns — operator visibility per PHILOSOPHY §2);
+  `IterateBeforeRecord` runs in finalize block immediately before
+  `keyHash` compute + `writer.TrySend`; `shouldRecord=false` skips both
+  TrySend and SQLite, cleans tmp files via
+  `tmpDir.RemoveTraceFiles(traceID)`. Plugin errors log WARN but do not
+  by themselves drop the trace (PHILOSOPHY §3 fail-open).
+  `pluginReg.Close()` runs inline after `stopWriter()` in shutdown.
+  Supersedes ROADMAP §4 "capture-time skip_paths" knob — the plugin
+  carve-out makes the §2 boundary explicit. Known forward-looking
+  follow-ups (non-blocking): no `drop_plugin_error` counter on /healthz;
+  no `defer recover()` around plugin calls; no example yaml stanza in
+  `deploy/dev-stack/`.
 - **Phase K** (2026-05-30, commit `67142f9`): media extraction end-to-end. New `internal/media/` package walks parsed JSON bodies per protocol (chat / messages / responses / gemini); extracted images / audio / video / files write to `<DataDir>/<YYYY-MM-DD>/<keyhash[:8]>/media/<trace_id>/<idx>.<ext>`. `body_b64` explicitly NOT touched (operator clarification: unparseable JSON fallback is not an attachment). New `internal/runtime/` package persists operator-toggleable runtime overrides at `<DataDir>/runtime_overrides.json` (load order: hardcoded default → YAML → env → file → `PUT /api/config/media`). New `Config.Media.SaveAttachments` (default `true`). `internal/writer/writer.go` gains optional `mediaExt` + `mediaEnabled` params on `writer.New`; finalize calls `mediaExt.Extract` when the atomic flag reads `true` after the JSONL write succeeds. SQLite gains `media_count INTEGER DEFAULT 0` column (idempotent ALTER TABLE catching "duplicate column" specifically). `Counters.total_media_files` cumulative atomic surfaced on `/healthz`. New read API: `GET /api/media/{trace_id}/{idx}` streams the file with Content-Type from extension; `GET /api/config/media` returns `{save_attachments, source}`; `PUT /api/config/media` flips the atomic + atomic-renames the override file. `internal/exporter` bundles each row's media directory at `media/<trace_id>/<filename>` inside the zip. `agent/CLAUDE.md` + `agent/jq-cheatsheet.md` templates updated to mention the media/ layout.
 - Initial design documents (PHILOSOPHY, ARCHITECTURE, README) — six review rounds.
 - Verification experiments: X-Forwarded-For Go test, session-inference Python harness with synthetic + real-API scenarios.
