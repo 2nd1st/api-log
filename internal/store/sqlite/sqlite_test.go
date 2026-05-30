@@ -350,6 +350,72 @@ func TestAppendTraceClientColumnsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAppendTraceClientProjectRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ts := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
+
+	// Populated branch: writer fills ClientProject from the parser
+	// (W4.1 Phase 2). Verifies the new client_project column added by
+	// migration round-trips through INSERT + SELECT, AND that the
+	// ListFilters.Project filter selects only matching rows.
+	rA := mkRow("01H_proj_a", ts)
+	projA := "api-log"
+	rA.ClientProject = &projA
+	if err := s.AppendTrace(rA, nil); err != nil {
+		t.Fatalf("AppendTrace rA: %v", err)
+	}
+
+	rB := mkRow("01H_proj_b", ts.Add(time.Second))
+	projB := "agentic"
+	rB.ClientProject = &projB
+	if err := s.AppendTrace(rB, nil); err != nil {
+		t.Fatalf("AppendTrace rB: %v", err)
+	}
+
+	// Absent branch: a row with no project set must come back nil.
+	rEmpty := mkRow("01H_proj_none", ts.Add(2*time.Second))
+	if err := s.AppendTrace(rEmpty, nil); err != nil {
+		t.Fatalf("AppendTrace empty: %v", err)
+	}
+
+	// Round-trip via GetByID.
+	gotA, err := s.GetByID("01H_proj_a")
+	if err != nil {
+		t.Fatalf("GetByID A: %v", err)
+	}
+	if gotA.ClientProject == nil || *gotA.ClientProject != "api-log" {
+		t.Errorf("ClientProject round-trip = %v, want api-log", gotA.ClientProject)
+	}
+	gotEmpty, err := s.GetByID("01H_proj_none")
+	if err != nil {
+		t.Fatalf("GetByID empty: %v", err)
+	}
+	if gotEmpty.ClientProject != nil {
+		t.Errorf("ClientProject should be nil when absent, got %q", *gotEmpty.ClientProject)
+	}
+
+	// Filter via ListFilters.Project: returns only the matching row.
+	page, err := s.List(ListFilters{Project: "api-log"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(page.Rows) != 1 {
+		t.Fatalf("filter len = %d, want 1", len(page.Rows))
+	}
+	if page.Rows[0].ID != "01H_proj_a" {
+		t.Errorf("filtered id = %q, want 01H_proj_a", page.Rows[0].ID)
+	}
+
+	// Empty Project filter returns all rows.
+	page, err = s.List(ListFilters{})
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	if len(page.Rows) != 3 {
+		t.Errorf("unfiltered len = %d, want 3", len(page.Rows))
+	}
+}
+
 func TestMigrateIdempotentOnReopen(t *testing.T) {
 	// Open + close + re-open the same file. The ALTER TABLE on the second
 	// migrate() pass must NOT error (PHILOSOPHY § 6: schema is append-only,

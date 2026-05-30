@@ -419,5 +419,93 @@ func TestPaginationCursor(t *testing.T) {
 	}
 }
 
+// enqueueTraceWithSystem builds a /v1/messages trace with a system
+// prompt that the parser will resolve to a known project name. Mirrors
+// enqueueTrace's signature but takes an explicit project name string —
+// the helper wraps it in a `# <name>` heading so
+// parser.ExtractProjectContext picks "first-heading".
+func enqueueTraceWithSystem(t *testing.T, w *writer.Writer, id, keyHash, projectName string) {
+	t.Helper()
+	reqBytes, _ := json.Marshal(map[string]any{
+		"model":    "test-model",
+		"system":   "# " + projectName + "\n\nbody",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	tr := trace.Trace{
+		ID:       id,
+		TsStart:  time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC),
+		TsEnd:    time.Date(2026, 5, 27, 12, 0, 1, 0, time.UTC),
+		Client:   "127.0.0.1:1",
+		Method:   "POST",
+		Path:     "/v1/messages",
+		Upstream: "http://gw",
+		Status:   200,
+		Req: trace.Body{
+			Headers: trace.Headers{"Content-Type": {"application/json"}},
+			Body:    json.RawMessage(reqBytes),
+		},
+		Resp: trace.Body{
+			Headers: trace.Headers{"Content-Type": {"application/json"}},
+			Body:    json.RawMessage(`{"id":"x"}`),
+		},
+	}
+	if !w.TrySend(writer.Record{Trace: tr, KeyHash: keyHash}) {
+		t.Fatal("TrySend dropped")
+	}
+}
+
+// TestListFiltersByProject verifies W4.1 Phase 2's project filter end
+// to end: the writer extracts the project name from the request body's
+// system text, stores it in client_project, and ?project=X returns only
+// the matching rows.
+func TestListFiltersByProject(t *testing.T) {
+	srv, store, w, _ := newTestServer(t, "tok-test")
+	enqueueTraceWithSystem(t, w, "p-alpha", "aaaaaaaa11111111", "alpha")
+	enqueueTraceWithSystem(t, w, "p-beta", "bbbbbbbb22222222", "beta")
+	enqueueTraceWithSystem(t, w, "p-alpha-2", "cccccccc33333333", "alpha")
+	waitForRows(t, store, 3)
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/traces?project=alpha", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	tr := got["traces"].([]any)
+	if len(tr) != 2 {
+		t.Fatalf("filter len = %d, want 2 (only alpha rows). body=%s", len(tr), body)
+	}
+	for _, row := range tr {
+		m := row.(map[string]any)
+		// rowJSON.ClientProject is omitempty, so a populated row carries
+		// the field as a string; missing rows wouldn't show up here.
+		if m["client_project"] != "alpha" {
+			t.Errorf("filtered row %v has client_project = %v, want alpha",
+				m["id"], m["client_project"])
+		}
+	}
+
+	// No filter returns all three rows.
+	req2, _ := http.NewRequest("GET", srv.URL+"/api/traces", nil)
+	req2.Header.Set("Authorization", "Bearer tok-test")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	body2, _ := io.ReadAll(resp2.Body)
+	var got2 map[string]any
+	_ = json.Unmarshal(body2, &got2)
+	if len(got2["traces"].([]any)) != 3 {
+		t.Errorf("unfiltered len = %d, want 3", len(got2["traces"].([]any)))
+	}
+}
+
 // Avoid unused imports in this file when iterating.
 var _ = os.Open

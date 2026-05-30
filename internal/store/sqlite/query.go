@@ -23,6 +23,7 @@ type ListFilters struct {
 	PathPrefix    string    // matched as `LIKE <prefix>%`; mutually exclusive with Path
 	KeyHashPrefix string    // accepts 8- or 16-char prefix; matches by LIKE
 	SessionRootID string    // exact match if set
+	Project       string    // exact match on client_project if set
 	Limit         int       // 1..500; <=0 means default 100
 
 	// Cursor is opaque base64 of "<ts_start_ms>:<id>"; rows strictly older
@@ -225,7 +226,8 @@ const selectColumns = `
 	jsonl_path, jsonl_offset,
 	media_count,
 	cached_tokens, cache_creation_tokens, reasoning_tokens,
-	client_kind, client_version
+	client_kind, client_version,
+	client_project
 `
 
 func scanRow(rs rowScanner) (Row, error) {
@@ -251,6 +253,7 @@ func scanRow(rs rowScanner) (Row, error) {
 		reasoningTokens     sql.NullInt64
 		clientKind          sql.NullString
 		clientVersion       sql.NullString
+		clientProject       sql.NullString
 	)
 	err := rs.Scan(
 		&r.ID, &tsStartMs, &tsEndMs, &r.Client, &r.Method, &r.Path, &r.Upstream, &r.Status,
@@ -262,6 +265,7 @@ func scanRow(rs rowScanner) (Row, error) {
 		&mediaCount,
 		&cachedTokens, &cacheCreationTokens, &reasoningTokens,
 		&clientKind, &clientVersion,
+		&clientProject,
 	)
 	if err != nil {
 		return Row{}, err
@@ -329,6 +333,10 @@ func scanRow(rs rowScanner) (Row, error) {
 	if clientVersion.Valid {
 		v := clientVersion.String
 		r.ClientVersion = &v
+	}
+	if clientProject.Valid {
+		v := clientProject.String
+		r.ClientProject = &v
 	}
 	return r, nil
 }

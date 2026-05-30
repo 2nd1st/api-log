@@ -264,6 +264,15 @@ func (w *Writer) appendOne(rec Record) {
 	// need forces more surface area.
 	client := parser.ExtractClient(rec.Trace.Req.Headers)
 
+	// W4.1 Phase 2 — project-context extraction. PHILOSOPHY §1 carve-out:
+	// deterministic copy of an operator-authored field (the L2 project
+	// name parsed out of req.body's system / instructions text). Same
+	// discipline as the client + usage extractors above: runs after JSONL
+	// is on disk, never blocks the writer, rebuildable from JSONL by
+	// replaying the same parser. PHILOSOPHY §7: no counter — the SQLite
+	// column alone is the surface, mirroring the R5a discipline.
+	project := parser.ExtractProjectContext(parser.ExtractSystemPrompt(rec.Trace))
+
 	// Phase K — media extraction. PHILOSOPHY §2: runs AFTER JSONL is on
 	// disk, so any failure here doesn't affect what was captured. The
 	// extractor itself logs WARN on per-file errors and returns whatever
@@ -313,6 +322,13 @@ func (w *Writer) appendOne(rec Record) {
 	// from "field present and empty" per PHILOSOPHY §1.
 	row.ClientKind = client.Kind
 	row.ClientVersion = client.Version
+	// W4.1 Phase 2 — project name from the same finalize-time parse.
+	// Empty Name (zero ProjectContext) leaves row.ClientProject nil so
+	// "no project signal" stays distinct from a real empty string.
+	if project.Name != "" {
+		name := project.Name
+		row.ClientProject = &name
+	}
 	prefix, _ := session.Build(rec.Trace.Path, sessionPrefixBody(rec.Trace))
 	sqlStart := time.Now()
 	if err := w.store.AppendTrace(row, prefix); err != nil {

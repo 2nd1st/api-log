@@ -145,6 +145,12 @@ func parseListFilters(r *http.Request) (sqlite.ListFilters, string, string) {
 	if v := q.Get("session_root_id"); v != "" {
 		f.SessionRootID = v
 	}
+	if v := q.Get("project"); v != "" {
+		// Exact match on client_project. W4.1 Phase 2: lets the viewer
+		// scope a list to one project (e.g. ?project=api-log) once the
+		// finalize-time extractor has populated the column.
+		f.Project = v
+	}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 500 {
@@ -207,6 +213,7 @@ type rowJSON struct {
 	FinishReason        *string `json:"finish_reason"`
 	ClientKind          *string `json:"client_kind"`
 	ClientVersion       *string `json:"client_version"`
+	ClientProject       *string `json:"client_project,omitempty"`
 	KeyHash             string  `json:"key_hash"`
 	ParentID            *string `json:"parent_id"`
 	SessionRootID       string  `json:"session_root_id"`
@@ -239,6 +246,7 @@ func rowToJSON(r sqlite.Row) rowJSON {
 		FinishReason:        r.FinishReason,
 		ClientKind:          r.ClientKind,
 		ClientVersion:       r.ClientVersion,
+		ClientProject:       r.ClientProject,
 		KeyHash:             r.KeyHash,
 		ParentID:            r.ParentID,
 		SessionRootID:       r.SessionRootID,

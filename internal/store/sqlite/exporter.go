@@ -101,5 +101,12 @@ func buildListConds(filters ListFilters) ([]string, []any) {
 		conds = append(conds, "session_root_id = ?")
 		args = append(args, filters.SessionRootID)
 	}
+	if filters.Project != "" {
+		// Exact match — operators pass a known project name (no glob),
+		// so a column equality keeps the SQLite plan trivial. Empty
+		// filter (the default) skips this branch entirely.
+		conds = append(conds, "client_project = ?")
+		args = append(args, filters.Project)
+	}
 	return conds, args
 }

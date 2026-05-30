@@ -52,6 +52,12 @@ type Row struct {
 	ClientKind    *string // taxonomy row key (e.g. "claude-code-desktop")
 	ClientVersion *string // version string from the matching header (if any)
 
+	// Project-context field (W4.1 Phase 2). Deterministic copy of the L2
+	// project name parsed out of the request body's system / instructions
+	// text by parser.ExtractProjectContext. PHILOSOPHY § 1: nil when the
+	// trace carried no project signal (distinct from a real empty string).
+	ClientProject *string // project name (e.g. "my-repo" from `# my-repo` heading)
+
 	// Identifiers.
 	KeyHash string
 
@@ -154,7 +160,8 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		jsonl_path, jsonl_offset,
 		media_count,
 		cached_tokens, cache_creation_tokens, reasoning_tokens,
-		client_kind, client_version
+		client_kind, client_version,
+		client_project
 	) VALUES (
 		?, ?, ?, ?, ?, ?, ?, ?,
 		?, ?, ?,
@@ -164,7 +171,8 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		?, ?,
 		?,
 		?, ?, ?,
-		?, ?
+		?, ?,
+		?
 	)`
 	_, err = tx.Exec(q,
 		r.ID, unixMs(r.TsStart), unixMs(r.TsEnd), r.Client, r.Method, r.Path, r.Upstream, r.Status,
@@ -176,6 +184,7 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		r.MediaCount,
 		nullInt64(r.CachedTokens), nullInt64(r.CacheCreationTokens), nullInt64(r.ReasoningTokens),
 		nullStr(r.ClientKind), nullStr(r.ClientVersion),
+		nullStr(r.ClientProject),
 	)
 	if err != nil {
 		return fmt.Errorf("insert %s: %w", r.ID, err)

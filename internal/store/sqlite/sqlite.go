@@ -177,6 +177,22 @@ CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonic
 			}
 		}
 	}
+
+	// Additive migration: project-context column (W4.1 Phase 2).
+	//
+	// PHILOSOPHY § 1 carve-out 1: deterministic copy of an operator-authored
+	// L2 system-prompt field — the project name parsed by
+	// parser.ExtractProjectContext from the request body's system / instructions
+	// text. Nullable TEXT so a trace with no project signal stays NULL (distinct
+	// from a real empty string). Mirror of the viewer's promptSource.ts so the
+	// derived column matches what the UI used to compute at render time.
+	// Idempotent ALTER pattern matches the R5a + T3 + media_count blocks above.
+	if _, err := db.Exec("ALTER TABLE traces ADD COLUMN client_project TEXT"); err != nil {
+		msg := err.Error()
+		if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+			return fmt.Errorf("alter add client_project: %w", err)
+		}
+	}
 	return nil
 }
 
