@@ -10,6 +10,37 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+- **W4.1 Phase 2 — client_project extraction** (2026-05-31, commit
+  `3c6503d`): new `internal/parser/project.go` exports
+  `ExtractProjectContext(systemPrompt string) *ProjectInfo` mirroring
+  the viewer's `promptSource.extractProjectContext` (3 matchers in
+  priority order: AGENTS.md injection ref + heading / CLAUDE.md
+  injection ref + heading / first-heading-at-start). Writer calls it
+  once at finalize on the extracted system prompt; populates
+  `Row.ClientProject`. SQLite gains a nullable TEXT column
+  `client_project` via idempotent ALTER TABLE; INSERT / select /
+  exporter follow in lockstep (28 → 30 columns, the second column
+  being W4.2's `client_version`). New `/api/traces?project=` filter
+  joins the table for the viewer to scope a list to one project.
+  rowJSON uses `omitempty` on ClientProject — the absence is the
+  common case and the JSON stays tight when extraction yields nothing.
+- **W4.2 — Plugin hot-reload** (2026-05-31, commit `e2212cf`):
+  `PUT` / `PATCH` / `DELETE` on `/api/config/plugins` swap the live
+  Registry atomically via `atomic.Pointer[instanceSnapshot]` —
+  the operator no longer needs to restart `api-log` after editing
+  plugin config. Reload is all-or-nothing (rollback on init error);
+  startup tolerates a single bad instance (collect-and-continue) —
+  shared `buildInstances` helper, different policies. Per-Iterate-call
+  snapshot granularity is documented as accepted behavior: a Reload
+  landing between a request's BEFORE and AFTER chain means BEFORE
+  runs on the old config and AFTER on the new. Old instances are NOT
+  Close()d on swap (a new instance might reference the same external
+  resource as an old one; Close runs only on graceful shutdown).
+  Rollback uses the pre-write LoadOverrides snapshot, not the
+  handler's in-memory copy (SaveOverride does its own RMW). Tests:
+  TestRegistry_AtomicReload exercises tight reader-loop + Reload
+  under `-race`; PUT / PATCH / DELETE integration tests verify
+  live-registry mutation + rollback path.
 - **Plugin Phase B + C — contract + PHILOSOPHY amendments** (2026-05-30,
   commit TBD): `uiux-research/plugin-b-c-spec.md` frozen as the BUILD
   contract for the interfere-class hook surface (BEFORE / AFTER) layered
