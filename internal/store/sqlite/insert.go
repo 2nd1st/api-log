@@ -45,6 +45,13 @@ type Row struct {
 	CacheCreationTokens *int64 // Anthropic cache_creation_input_tokens (cache miss writes)
 	ReasoningTokens     *int64 // OpenAI Responses reasoning tokens from output
 
+	// Client-identity fields (R5a). Deterministic copies of named request-
+	// header fields routed through the taxonomy table in ExtractClient.
+	// PHILOSOPHY § 1 + § 7: no heuristic UA parsing — nil when the header
+	// doesn't match a known taxonomy row.
+	ClientKind    *string // taxonomy row key (e.g. "claude-code-desktop")
+	ClientVersion *string // version string from the matching header (if any)
+
 	// Identifiers.
 	KeyHash string
 
@@ -146,7 +153,8 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		parent_id, session_root_id,
 		jsonl_path, jsonl_offset,
 		media_count,
-		cached_tokens, cache_creation_tokens, reasoning_tokens
+		cached_tokens, cache_creation_tokens, reasoning_tokens,
+		client_kind, client_version
 	) VALUES (
 		?, ?, ?, ?, ?, ?, ?, ?,
 		?, ?, ?,
@@ -155,7 +163,8 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		?, ?,
 		?, ?,
 		?,
-		?, ?, ?
+		?, ?, ?,
+		?, ?
 	)`
 	_, err = tx.Exec(q,
 		r.ID, unixMs(r.TsStart), unixMs(r.TsEnd), r.Client, r.Method, r.Path, r.Upstream, r.Status,
@@ -166,6 +175,7 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		r.JSONLPath, r.JSONLOffset,
 		r.MediaCount,
 		nullInt64(r.CachedTokens), nullInt64(r.CacheCreationTokens), nullInt64(r.ReasoningTokens),
+		nullStr(r.ClientKind), nullStr(r.ClientVersion),
 	)
 	if err != nil {
 		return fmt.Errorf("insert %s: %w", r.ID, err)

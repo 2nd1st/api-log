@@ -252,6 +252,18 @@ func (w *Writer) appendOne(rec Record) {
 		}
 	}
 
+	// R5a — client extraction. PHILOSOPHY §1 carve-out: deterministic copy
+	// of named protocol/header fields (User-Agent / x-stainless-* etc.); no
+	// general-purpose UA parsing, no body sniff. PHILOSOPHY §2: runs AFTER
+	// JSONL is on disk and never blocks the writer — the unknown path is
+	// non-allocating, so cost on miss is negligible. PHILOSOPHY §6: the
+	// derived Row.ClientKind / ClientVersion are rebuildable by replaying
+	// ExtractClient over req.headers from the JSONL. Per the design
+	// discipline note: NO per-kind counters in this commit; the SQLite
+	// columns alone are enough to drive viewer/group-by until a concrete
+	// need forces more surface area.
+	client := parser.ExtractClient(rec.Trace.Req.Headers)
+
 	// Phase K — media extraction. PHILOSOPHY §2: runs AFTER JSONL is on
 	// disk, so any failure here doesn't affect what was captured. The
 	// extractor itself logs WARN on per-file errors and returns whatever
@@ -296,6 +308,11 @@ func (w *Writer) appendOne(rec Record) {
 	row.CachedTokens = usage.CachedTokens
 	row.CacheCreationTokens = usage.CacheCreationTokens
 	row.ReasoningTokens = usage.ReasoningTokens
+	// R5a — client kind/version sourced from the same finalize-time parse
+	// as the usage block; nil stays nil so "field absent" remains distinct
+	// from "field present and empty" per PHILOSOPHY §1.
+	row.ClientKind = client.Kind
+	row.ClientVersion = client.Version
 	prefix, _ := session.Build(rec.Trace.Path, sessionPrefixBody(rec.Trace))
 	sqlStart := time.Now()
 	if err := w.store.AppendTrace(row, prefix); err != nil {

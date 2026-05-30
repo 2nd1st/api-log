@@ -224,7 +224,8 @@ const selectColumns = `
 	parent_id, session_root_id,
 	jsonl_path, jsonl_offset,
 	media_count,
-	cached_tokens, cache_creation_tokens, reasoning_tokens
+	cached_tokens, cache_creation_tokens, reasoning_tokens,
+	client_kind, client_version
 `
 
 func scanRow(rs rowScanner) (Row, error) {
@@ -248,6 +249,8 @@ func scanRow(rs rowScanner) (Row, error) {
 		cachedTokens        sql.NullInt64
 		cacheCreationTokens sql.NullInt64
 		reasoningTokens     sql.NullInt64
+		clientKind          sql.NullString
+		clientVersion       sql.NullString
 	)
 	err := rs.Scan(
 		&r.ID, &tsStartMs, &tsEndMs, &r.Client, &r.Method, &r.Path, &r.Upstream, &r.Status,
@@ -258,6 +261,7 @@ func scanRow(rs rowScanner) (Row, error) {
 		&r.JSONLPath, &r.JSONLOffset,
 		&mediaCount,
 		&cachedTokens, &cacheCreationTokens, &reasoningTokens,
+		&clientKind, &clientVersion,
 	)
 	if err != nil {
 		return Row{}, err
@@ -317,6 +321,14 @@ func scanRow(rs rowScanner) (Row, error) {
 	if reasoningTokens.Valid {
 		v := reasoningTokens.Int64
 		r.ReasoningTokens = &v
+	}
+	if clientKind.Valid {
+		v := clientKind.String
+		r.ClientKind = &v
+	}
+	if clientVersion.Valid {
+		v := clientVersion.String
+		r.ClientVersion = &v
 	}
 	return r, nil
 }

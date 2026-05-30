@@ -158,6 +158,25 @@ CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonic
 			}
 		}
 	}
+
+	// Additive migration: client-identity columns (R5a).
+	//
+	// PHILOSOPHY § 1 + § 7: deterministic copies of named request-header fields
+	// (e.g. user-agent → "claude-code-desktop" / "1.9659.2") emitted by the
+	// taxonomy-driven ExtractClient at finalize time. Nullable TEXT so absence
+	// stays absent — PHILOSOPHY § 1: no heuristic synthesis. Idempotent ALTER
+	// pattern matches media_count + the T3 usage columns above.
+	for _, alter := range []string{
+		"ALTER TABLE traces ADD COLUMN client_kind TEXT",
+		"ALTER TABLE traces ADD COLUMN client_version TEXT",
+	} {
+		if _, err := db.Exec(alter); err != nil {
+			msg := err.Error()
+			if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+				return fmt.Errorf("alter add: %w", err)
+			}
+		}
+	}
 	return nil
 }
 

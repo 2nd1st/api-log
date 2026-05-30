@@ -304,6 +304,52 @@ func TestAppendTraceUsageFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAppendTraceClientColumnsRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ts := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
+
+	// Populated branch: writer fills ClientKind + ClientVersion from the
+	// taxonomy-driven ExtractClient (PHILOSOPHY § 1 + § 7). Verifies the R5a
+	// columns added by the new migration round-trip through INSERT + SELECT.
+	r := mkRow("01H_client", ts)
+	kind := "claude-code-desktop"
+	r.ClientKind = &kind
+	ver := "1.9659.2"
+	r.ClientVersion = &ver
+
+	if err := s.AppendTrace(r, nil); err != nil {
+		t.Fatalf("AppendTrace: %v", err)
+	}
+
+	got, err := s.GetByID("01H_client")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.ClientKind == nil || *got.ClientKind != "claude-code-desktop" {
+		t.Errorf("ClientKind round-trip = %v, want claude-code-desktop", got.ClientKind)
+	}
+	if got.ClientVersion == nil || *got.ClientVersion != "1.9659.2" {
+		t.Errorf("ClientVersion round-trip = %v, want 1.9659.2", got.ClientVersion)
+	}
+
+	// Absent branch: a row with no client fields set must come back with nil
+	// pointers (not zero-valued empty strings). PHILOSOPHY § 1: absence ≠ "".
+	rEmpty := mkRow("01H_no_client", ts.Add(time.Second))
+	if err := s.AppendTrace(rEmpty, nil); err != nil {
+		t.Fatalf("AppendTrace empty: %v", err)
+	}
+	gotEmpty, err := s.GetByID("01H_no_client")
+	if err != nil {
+		t.Fatalf("GetByID empty: %v", err)
+	}
+	if gotEmpty.ClientKind != nil {
+		t.Errorf("ClientKind should be nil when absent, got %q", *gotEmpty.ClientKind)
+	}
+	if gotEmpty.ClientVersion != nil {
+		t.Errorf("ClientVersion should be nil when absent, got %q", *gotEmpty.ClientVersion)
+	}
+}
+
 func TestMigrateIdempotentOnReopen(t *testing.T) {
 	// Open + close + re-open the same file. The ALTER TABLE on the second
 	// migrate() pass must NOT error (PHILOSOPHY § 6: schema is append-only,

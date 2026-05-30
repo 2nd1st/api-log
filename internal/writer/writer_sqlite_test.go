@@ -124,11 +124,14 @@ func TestWriterSessionInferenceAcrossTraces(t *testing.T) {
 }
 
 // chatTraceWithUsage builds a /v1/chat/completions trace whose Resp.Body
-// carries an OpenAI-shaped usage block + finish_reason. Used to verify
-// T3's writer-side wiring: parser.ExtractUsage runs at finalize, fills
-// Row.Model / FinishReason / *Tokens, and those land in SQLite columns
-// that insert.go binds. (Per PHILOSOPHY §1 the writer only copies named
-// protocol fields; this fixture matches the canonical OpenAI shape.)
+// carries an OpenAI-shaped usage block + finish_reason. The Req.Headers
+// also carries a User-Agent so R5a's parser.ExtractClient finds a kind +
+// version at finalize. Used to verify both T3's usage wiring and R5a's
+// client wiring in a single fixture — both extractors run off the same
+// trace and feed the same Row, so co-locating keeps the writer test
+// surface tight. (Per PHILOSOPHY §1 the writer only copies named
+// protocol / header fields; this fixture matches the canonical OpenAI
+// shape on the body and a CLI-shape on the header.)
 func chatTraceWithUsage(id string) trace.Trace {
 	reqBytes, _ := json.Marshal(map[string]any{
 		"model":    "test-model",
@@ -156,8 +159,11 @@ func chatTraceWithUsage(id string) trace.Trace {
 		Upstream: "http://gw",
 		Status:   200,
 		Req: trace.Body{
-			Headers: trace.Headers{"Content-Type": {"application/json"}},
-			Body:    json.RawMessage(reqBytes),
+			Headers: trace.Headers{
+				"Content-Type": {"application/json"},
+				"User-Agent":   {"claude-cli/1.0"},
+			},
+			Body: json.RawMessage(reqBytes),
 		},
 		Resp: trace.Body{
 			Headers: trace.Headers{"Content-Type": {"application/json"}},
@@ -197,10 +203,10 @@ func TestWriterPersistsExtractedUsage(t *testing.T) {
 	}
 	defer db.Close()
 
-	var model, finishReason sql.NullString
+	var model, finishReason, clientKind, clientVersion sql.NullString
 	var promptTokens, completionTokens, totalTokens sql.NullInt64
-	row := db.QueryRow(`SELECT model, finish_reason, prompt_tokens, completion_tokens, total_tokens FROM traces WHERE id = 'tu1'`)
-	if err := row.Scan(&model, &finishReason, &promptTokens, &completionTokens, &totalTokens); err != nil {
+	row := db.QueryRow(`SELECT model, finish_reason, prompt_tokens, completion_tokens, total_tokens, client_kind, client_version FROM traces WHERE id = 'tu1'`)
+	if err := row.Scan(&model, &finishReason, &promptTokens, &completionTokens, &totalTokens, &clientKind, &clientVersion); err != nil {
 		t.Fatal(err)
 	}
 	if !model.Valid || model.String != "test-model" {
@@ -217,6 +223,12 @@ func TestWriterPersistsExtractedUsage(t *testing.T) {
 	}
 	if !totalTokens.Valid || totalTokens.Int64 != 33 {
 		t.Errorf("total_tokens = %v, want 33", totalTokens)
+	}
+	if !clientKind.Valid || clientKind.String != "claude-cli" {
+		t.Errorf("client_kind = %v, want claude-cli", clientKind)
+	}
+	if !clientVersion.Valid || clientVersion.String != "1.0" {
+		t.Errorf("client_version = %v, want 1.0", clientVersion)
 	}
 }
 
