@@ -34,9 +34,9 @@ type ListFilters struct {
 
 // ListPage is the paginated result.
 type ListPage struct {
-	Rows            []Row
-	NextCursorMs    int64  // 0 if no next page
-	NextCursorID    string // empty if no next page
+	Rows         []Row
+	NextCursorMs int64  // 0 if no next page
+	NextCursorID string // empty if no next page
 }
 
 // List returns at most filters.Limit (default 100, max 500) rows
@@ -222,7 +222,8 @@ const selectColumns = `
 	model, stream, prompt_tokens, completion_tokens, total_tokens, finish_reason,
 	key_hash, prefix_len, prefix_canonical_hash,
 	parent_id, session_root_id,
-	jsonl_path, jsonl_offset
+	jsonl_path, jsonl_offset,
+	media_count
 `
 
 func scanRow(rs rowScanner) (Row, error) {
@@ -242,6 +243,7 @@ func scanRow(rs rowScanner) (Row, error) {
 		prefixLen      sql.NullInt64
 		prefixHash     sql.NullString
 		parentID       sql.NullString
+		mediaCount     sql.NullInt64
 	)
 	err := rs.Scan(
 		&r.ID, &tsStartMs, &tsEndMs, &r.Client, &r.Method, &r.Path, &r.Upstream, &r.Status,
@@ -250,6 +252,7 @@ func scanRow(rs rowScanner) (Row, error) {
 		&r.KeyHash, &prefixLen, &prefixHash,
 		&parentID, &r.SessionRootID,
 		&r.JSONLPath, &r.JSONLOffset,
+		&mediaCount,
 	)
 	if err != nil {
 		return Row{}, err
@@ -294,6 +297,9 @@ func scanRow(rs rowScanner) (Row, error) {
 	if parentID.Valid {
 		v := parentID.String
 		r.ParentID = &v
+	}
+	if mediaCount.Valid {
+		r.MediaCount = int(mediaCount.Int64)
 	}
 	return r, nil
 }

@@ -20,7 +20,7 @@ func TestWriterChannelSaturationDoesNotBlockProducers(t *testing.T) {
 
 	// Tiny channel + NO writer goroutine consuming → every TrySend after
 	// the first one drops immediately.
-	w := New(dir, 1, nil, ctrs, nil)
+	w := New(dir, 1, nil, ctrs, nil, nil, nil)
 	// Intentionally NOT calling Start — simulates a wedged writer.
 
 	const concurrent = 50

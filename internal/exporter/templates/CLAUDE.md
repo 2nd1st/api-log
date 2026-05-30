@@ -100,6 +100,31 @@ The `path` field shows which API endpoint was called. Common examples:
 - `data/2025-01-15/abc123.jsonl` — All traces for key `abc123` on Jan 15 matched your filter
 - `data/2025-01-15/abc123.partial.jsonl` — Some but not all traces for key `abc123` on Jan 15 matched; this file has only the matching subset
 
+### Attached Media (`media/` directory)
+
+If a trace carried inline binary content — images in `image_url.url` data URIs, Anthropic `source.data` base64, Gemini `inlineData.data`, OpenAI `b64_json` — the bytes are extracted into a sibling `media/` tree at the top level of the export:
+
+```
+media/<trace_id>/<idx>.<ext>
+```
+
+- `<trace_id>` is the same `id` field on the JSONL line.
+- `<idx>` is the 0-based ordinal of the media within the trace, in protocol document order (all request media first, then response media).
+- `<ext>` is derived from the protocol's MIME type (`png`, `jpg`, `pdf`, `wav`, …); never from a filename.
+
+To walk media alongside the JSONL for a given trace, read each line, take `id`, and list `media/<id>/`. Example:
+
+```bash
+# every PNG attached to a successful chat completion
+jq -r 'select(.path=="/v1/chat/completions" and .status==200) | .id' data/**/*.jsonl \
+  | while read id; do ls media/$id/*.png 2>/dev/null; done
+```
+
+Notes:
+- `media/` is only present when at least one matching trace had extractable media. If you don't see it, no trace in this export had attachments (or extraction was disabled at capture time).
+- `req.body_b64` / `resp.body_b64` are NOT attachments — they are an unparseable-body fallback that wraps raw JSON bytes. They stay inside the JSONL line and have no file in `media/`.
+- URL-only references (`https://…`, `gs://…`, `file_id`) are not fetched; only inline base64 content is extracted.
+
 ---
 
 ## Quick Start: jq Recipes

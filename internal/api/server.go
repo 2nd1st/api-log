@@ -11,6 +11,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/leoyun/api-log/internal/counters"
@@ -30,6 +31,11 @@ type Deps struct {
 	// relative to. /api/export reads files from here to stream into the
 	// zip; other handlers seek by absolute JSONLPath and don't need it.
 	DataDir string
+
+	// Phase K — media extraction toggle. Atomic so PUT /api/config/media
+	// can flip it from a different goroutine while the writer reads it
+	// per-trace. Nil = extraction disabled (treat as off).
+	MediaEnabled *atomic.Bool
 }
 
 // NewMux returns an http.Handler ready to mount on the API listener.
@@ -44,6 +50,11 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("GET /api/traces/{id}/replay", authMW(deps.AdminToken, replayHandler(deps)))
 	mux.Handle("GET /api/sessions", authMW(deps.AdminToken, listSessions(deps)))
 	mux.Handle("GET /api/export", authMW(deps.AdminToken, exportHandler(deps)))
+
+	// Phase K media endpoints.
+	mux.Handle("GET /api/media/{trace_id}/{idx}", authMW(deps.AdminToken, mediaHandler(deps)))
+	mux.Handle("GET /api/config/media", authMW(deps.AdminToken, getConfigMedia(deps)))
+	mux.Handle("PUT /api/config/media", authMW(deps.AdminToken, putConfigMedia(deps)))
 
 	// Embedded viewer. Intentionally NOT behind authMW — the page has
 	// to load to prompt the user for their token. All AJAX calls the

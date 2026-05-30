@@ -4,10 +4,12 @@
 // to decide *which* JSONL lines to ship (filesystem is truth; SQLite is
 // the derived index, principle 6).
 //
-// The zip layout matches uiux-research/phase-i-export-contract.md:
+// The zip layout matches uiux-research/phase-i-export-contract.md and
+// uiux-research/phase-k-media-contract.md § 9:
 //
 //	data/<YYYY-MM-DD>/<keyhash8>.jsonl          (all rows on disk matched)
 //	data/<YYYY-MM-DD>/<keyhash8>.partial.jsonl  (subset matched)
+//	media/<trace_id>/<idx>.<ext>                 (extracted attachments, if any)
 //	agent/CLAUDE.md
 //	agent/jq-cheatsheet.md
 //	README.md
@@ -130,6 +132,28 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 		}
 	}
 
+	// Bundle extracted media files alongside the JSONL (phase-k contract
+	// § 9). Per backend PHILOSOPHY § 1 the extractor runs at finalize time
+	// and the files on disk are the source of truth here — exporter only
+	// copies. Failure to read a media dir is silent on purpose: traces
+	// recorded with save_attachments=false legitimately have no dir, and a
+	// missing dir must not abort the export of the JSONL that *is* there.
+	// Iterate rows in deterministic order (sorted trace ID) so two
+	// identical exports stay byte-identical.
+	rowsSorted := make([]sqlite.Row, len(rows))
+	copy(rowsSorted, rows)
+	sort.Slice(rowsSorted, func(i, j int) bool {
+		return rowsSorted[i].ID < rowsSorted[j].ID
+	})
+	mediaIncluded := 0
+	for _, r := range rowsSorted {
+		n, err := writeMediaForTrace(zw, dataDir, r)
+		if err != nil {
+			return fmt.Errorf("bundle media for %s: %w", r.ID, err)
+		}
+		mediaIncluded += n
+	}
+
 	// Embed agent/ templates (always present, even on empty exports per
 	// contract § Empty Export).
 	if err := copyEmbed(zw, "templates/CLAUDE.md", "agent/CLAUDE.md"); err != nil {
@@ -140,10 +164,73 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 	}
 
 	// README — human-readable summary.
-	if err := writeReadme(zw, len(rows), filters, minTs, maxTs, time.Now().UTC()); err != nil {
+	if err := writeReadme(zw, len(rows), mediaIncluded, filters, minTs, maxTs, time.Now().UTC()); err != nil {
 		return err
 	}
 	return nil
+}
+
+// writeMediaForTrace copies every file under
+// `${dataDir}/${date}/${keyhash8}/media/${trace_id}/` into the zip at
+// `media/${trace_id}/${name}`. Returns the number of files added.
+//
+// date and keyhash8 are derived from the row's JSONLPath via the same
+// rule writeGroupEntry uses, so the exporter never invents a path that
+// doesn't match what the writer chose at finalize time.
+//
+// Silently returns (0, nil) when the directory is missing or empty —
+// traces recorded with media.save_attachments=false legitimately have
+// no extracted files and the export must remain useful for them.
+func writeMediaForTrace(zw *zip.Writer, dataDir string, r sqlite.Row) (int, error) {
+	date, keyhash8 := splitJSONLPath(dataDir, r.JSONLPath)
+	mediaDir := filepath.Join(dataDir, date, keyhash8, "media", r.ID)
+	entries, err := os.ReadDir(mediaDir)
+	if err != nil {
+		// Directory missing (most traces) or unreadable — skip silently.
+		// PHILOSOPHY § 2: extraction is best-effort, not load-bearing.
+		return 0, nil
+	}
+	// Deterministic order — os.ReadDir sorts by name on most platforms
+	// but the docs do not guarantee it across the board, so we sort
+	// explicitly.
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+	added := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		srcPath := filepath.Join(mediaDir, e.Name())
+		dstName := filepath.ToSlash(filepath.Join("media", r.ID, e.Name()))
+		if err := copyFileToZip(zw, srcPath, dstName, r.TsStart); err != nil {
+			return added, err
+		}
+		added++
+	}
+	return added, nil
+}
+
+// copyFileToZip streams srcPath into the zip at dstName. mtime is used
+// for the zip entry's Modified field so two exports of the same media
+// produce byte-identical archives (zip stores mtime in the header).
+func copyFileToZip(zw *zip.Writer, srcPath, dstName string, mtime time.Time) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	hdr := &zip.FileHeader{
+		Name:     dstName,
+		Method:   zip.Deflate,
+		Modified: mtime,
+	}
+	zf, err := zw.CreateHeader(hdr)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(zf, src)
+	return err
 }
 
 // writeGroupEntry reads the source JSONL file (plain or .gz fallback),
@@ -274,7 +361,7 @@ func copyEmbed(zw *zip.Writer, embedPath, zipName string) error {
 	return err
 }
 
-func writeReadme(zw *zip.Writer, count int, filters sqlite.ListFilters, minTs, maxTs, now time.Time) error {
+func writeReadme(zw *zip.Writer, count, mediaCount int, filters sqlite.ListFilters, minTs, maxTs, now time.Time) error {
 	zf, err := zw.Create("README.md")
 	if err != nil {
 		return err
@@ -284,6 +371,9 @@ func writeReadme(zw *zip.Writer, count int, filters sqlite.ListFilters, minTs, m
 	fmt.Fprintf(&b, "Generated at: %s\n\n", now.Format(time.RFC3339))
 	fmt.Fprintf(&b, "## Summary\n\n")
 	fmt.Fprintf(&b, "- Traces matched: %d\n", count)
+	if mediaCount > 0 {
+		fmt.Fprintf(&b, "- Media files bundled: %d\n", mediaCount)
+	}
 	if count > 0 {
 		fmt.Fprintf(&b, "- Time range: %s -> %s\n", minTs.Format(time.RFC3339), maxTs.Format(time.RFC3339))
 	} else {
@@ -294,6 +384,9 @@ func writeReadme(zw *zip.Writer, count int, filters sqlite.ListFilters, minTs, m
 	fmt.Fprintf(&b, "\n## Layout\n\n")
 	fmt.Fprintf(&b, "- `data/<date>/<keyhash8>.jsonl` — every line in that day's file matched the filter.\n")
 	fmt.Fprintf(&b, "- `data/<date>/<keyhash8>.partial.jsonl` — only the matching subset of that day's file is included.\n")
+	if mediaCount > 0 {
+		fmt.Fprintf(&b, "- `media/<trace_id>/<idx>.<ext>` — attachments (images, PDFs, audio) extracted from the matching traces; names match the per-trace ordinal recorded in SQLite.\n")
+	}
 	fmt.Fprintf(&b, "- `agent/CLAUDE.md` — instructions for an offline agent analyzing this export.\n")
 	fmt.Fprintf(&b, "- `agent/jq-cheatsheet.md` — copy-paste jq recipes for common questions.\n")
 	fmt.Fprintf(&b, "\n## Quick start\n\n")

@@ -20,17 +20,17 @@ func openTestStore(t *testing.T) *Store {
 
 func mkRow(id string, ts time.Time) Row {
 	return Row{
-		ID:            id,
-		TsStart:       ts,
-		TsEnd:         ts.Add(time.Second),
-		Client:        "127.0.0.1:1234",
-		Method:        "POST",
-		Path:          "/v1/messages",
-		Upstream:      "http://gw",
-		Status:        200,
-		KeyHash:       "abcd1234abcd1234",
-		JSONLPath:     "data/2026-05-27/abcd1234.jsonl",
-		JSONLOffset:   0,
+		ID:          id,
+		TsStart:     ts,
+		TsEnd:       ts.Add(time.Second),
+		Client:      "127.0.0.1:1234",
+		Method:      "POST",
+		Path:        "/v1/messages",
+		Upstream:    "http://gw",
+		Status:      200,
+		KeyHash:     "abcd1234abcd1234",
+		JSONLPath:   "data/2026-05-27/abcd1234.jsonl",
+		JSONLOffset: 0,
 	}
 }
 
@@ -194,6 +194,59 @@ func TestAppendTraceSessionForkSiblings(t *testing.T) {
 			t.Errorf("%s session_root = %q, want 01H_root", id, root)
 		}
 	}
+}
+
+func TestAppendTraceMediaCountRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ts := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
+
+	// Row with a non-zero media_count — mirrors what the writer fills in
+	// after the Phase K extractor returns the count of extracted files.
+	r := mkRow("01H_media", ts)
+	r.MediaCount = 3
+	if err := s.AppendTrace(r, nil); err != nil {
+		t.Fatalf("AppendTrace: %v", err)
+	}
+
+	got, err := s.GetByID("01H_media")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.MediaCount != 3 {
+		t.Errorf("MediaCount round-trip = %d, want 3", got.MediaCount)
+	}
+
+	// Row without an explicit MediaCount should default to 0.
+	r0 := mkRow("01H_no_media", ts.Add(time.Second))
+	if err := s.AppendTrace(r0, nil); err != nil {
+		t.Fatalf("AppendTrace zero: %v", err)
+	}
+	got0, err := s.GetByID("01H_no_media")
+	if err != nil {
+		t.Fatalf("GetByID zero: %v", err)
+	}
+	if got0.MediaCount != 0 {
+		t.Errorf("default MediaCount = %d, want 0", got0.MediaCount)
+	}
+}
+
+func TestMigrateIdempotentOnReopen(t *testing.T) {
+	// Open + close + re-open the same file. The ALTER TABLE on the second
+	// migrate() pass must NOT error (PHILOSOPHY § 6: schema is append-only,
+	// migrations must be idempotent).
+	path := filepath.Join(t.TempDir(), "reopen.sqlite")
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("re-open (idempotent migrate failed): %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
 }
 
 func TestAppendTraceIdempotentByID(t *testing.T) {

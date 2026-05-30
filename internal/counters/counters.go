@@ -39,6 +39,12 @@ type Counters struct {
 	// writer doesn't extract usage from response bodies yet — deferred.
 	totalBytes atomic.Int64
 
+	// Cumulative count of extracted media files (Phase K). Bumped at trace
+	// finalize time, after JSONL is on disk, when media extraction is on.
+	// Lets /healthz answer "are we actually pulling out images" without
+	// walking the media tree.
+	totalMediaFiles atomic.Int64
+
 	// Per-stage timing histograms. Drain = sink-close → drainer-join.
 	// Parse = JSON unmarshal + SSE event walk + decompression. SQLite =
 	// AppendTrace (one tx covering JSONL append + UPSERT + session-
@@ -105,6 +111,12 @@ func (c *Counters) IncSlowTrace() { c.slowTraces.Add(1) }
 // expose total recorded bytes on /healthz without walking the data dir.
 func (c *Counters) AddBytes(n int64) { c.totalBytes.Add(n) }
 
+// AddMediaFiles records the number of media files extracted from a
+// single trace. Called once per finalize when media extraction is on,
+// with the count of files written for that trace (zero is a valid value
+// but is skipped by callers to avoid a no-op atomic add).
+func (c *Counters) AddMediaFiles(n int64) { c.totalMediaFiles.Add(n) }
+
 // ObserveWriterChanLen records the current writer channel length;
 // keeps the running max in writerChanHighWater.
 func (c *Counters) ObserveWriterChanLen(n int) {
@@ -140,6 +152,10 @@ type Snapshot struct {
 	// Cumulative on-disk resource total (since process start).
 	TotalBytes int64 `json:"total_bytes"`
 
+	// Cumulative count of extracted media files (since process start).
+	// Phase K. Zero when media extraction is disabled or has never run.
+	TotalMediaFiles int64 `json:"total_media_files"`
+
 	Timings struct {
 		DrainMs  HistogramSnapshot `json:"drain_ms"`
 		ParseMs  HistogramSnapshot `json:"parse_ms"`
@@ -163,7 +179,8 @@ func (c *Counters) Snapshot() Snapshot {
 		UpstreamDialErr:     c.upstreamDialErr.Load(),
 		SlowTraces:          c.slowTraces.Load(),
 
-		TotalBytes: c.totalBytes.Load(),
+		TotalBytes:      c.totalBytes.Load(),
+		TotalMediaFiles: c.totalMediaFiles.Load(),
 	}
 	s.Timings.DrainMs = c.DrainHist.Snapshot()
 	s.Timings.ParseMs = c.ParseHist.Snapshot()

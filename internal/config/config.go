@@ -27,6 +27,24 @@ type Config struct {
 	Logging     LoggingConfig     `yaml:"logging"`
 	Diagnostics DiagnosticsConfig `yaml:"diagnostics"`
 	Plugins     PluginsConfig     `yaml:"plugins"`
+	Media       MediaConfig       `yaml:"media"`
+}
+
+// MediaConfig governs per-trace media extraction (see phase-k-media-contract.md).
+//
+// SaveAttachments=true makes the writer-side extractor walk request/response
+// bodies for named base64 fields (image_url.url, source.data, inlineData,
+// b64_json) and persist each as a derived file under
+// <data_dir>/<YYYY-MM-DD>/<keyhash>/media/<trace_id>/<idx>.<ext>. The JSONL
+// remains the source of truth (Backend §6); these files are a fast-read
+// cache + export-bundling target.
+//
+// Default is true (operator decision 2026-05-30). The runtime-overrides
+// layer (internal/runtime) can flip this without a restart via
+// PUT /api/config/media, and that override takes precedence over both
+// yaml and env per contract § 6.
+type MediaConfig struct {
+	SaveAttachments bool `yaml:"save_attachments"`
 }
 
 // PluginsConfig holds per-plugin config subtrees for the Phase A
@@ -122,6 +140,13 @@ func Defaults() Config {
 		Diagnostics: DiagnosticsConfig{
 			SnapshotIntervalSeconds: 60,
 		},
+		Media: MediaConfig{
+			// On by default per Phase K operator decision (2026-05-30).
+			// Disable via APILOG_MEDIA_SAVE_ATTACHMENTS=false, the
+			// yaml `media.save_attachments: false`, or runtime
+			// PUT /api/config/media.
+			SaveAttachments: true,
+		},
 	}
 }
 
@@ -157,6 +182,11 @@ type envBinding struct {
 func envInt(s string) (int, error) { return strconv.Atoi(strings.TrimSpace(s)) }
 
 func envInt64(s string) (int64, error) { return strconv.ParseInt(strings.TrimSpace(s), 10, 64) }
+
+// envBool parses the same forms strconv.ParseBool accepts ("1","t","T",
+// "true","TRUE","True","0","f","F","false","FALSE","False"). We trim
+// whitespace first to be forgiving of `FOO= true` in shell exports.
+func envBool(s string) (bool, error) { return strconv.ParseBool(strings.TrimSpace(s)) }
 
 func applyEnv(cfg *Config) error {
 	bindings := []envBinding{
@@ -253,6 +283,14 @@ func applyEnv(cfg *Config) error {
 			return nil
 		}},
 		{"APILOG_LOGGING_LEVEL", func(c *Config, v string) error { c.Logging.Level = v; return nil }},
+		{"APILOG_MEDIA_SAVE_ATTACHMENTS", func(c *Config, v string) error {
+			b, err := envBool(v)
+			if err != nil {
+				return err
+			}
+			c.Media.SaveAttachments = b
+			return nil
+		}},
 	}
 
 	for _, b := range bindings {

@@ -126,6 +126,19 @@ CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonic
 			return fmt.Errorf("exec %q: %w", firstLine(stmt), err)
 		}
 	}
+
+	// Additive migration: media_count column (Phase K).
+	//
+	// PHILOSOPHY § 6: schema is append-only — we never rename / drop, only add.
+	// ALTER TABLE ... ADD COLUMN has no IF NOT EXISTS in SQLite, so we run it
+	// unconditionally and swallow the specific "duplicate column" error that
+	// occurs on re-open. Any other error propagates.
+	if _, err := db.Exec(`ALTER TABLE traces ADD COLUMN media_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+		msg := err.Error()
+		if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+			return fmt.Errorf("alter add media_count: %w", err)
+		}
+	}
 	return nil
 }
 

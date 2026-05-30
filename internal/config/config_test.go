@@ -104,3 +104,47 @@ func TestValidateRejectsZeroChan(t *testing.T) {
 	}
 }
 
+func TestMediaDefaultsOn(t *testing.T) {
+	// Phase K operator decision 2026-05-30: extraction ON by default.
+	c := Defaults()
+	if !c.Media.SaveAttachments {
+		t.Errorf("Media.SaveAttachments default = false, want true")
+	}
+}
+
+func TestMediaYAMLOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api-log.yaml")
+	if err := os.WriteFile(path, []byte(`
+media:
+  save_attachments: false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Media.SaveAttachments {
+		t.Errorf("Media.SaveAttachments = true, want false (yaml override)")
+	}
+}
+
+func TestMediaEnvOverride(t *testing.T) {
+	t.Setenv("APILOG_MEDIA_SAVE_ATTACHMENTS", "false")
+	c, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Media.SaveAttachments {
+		t.Errorf("Media.SaveAttachments = true, want false (env override)")
+	}
+}
+
+func TestMediaEnvOverrideInvalid(t *testing.T) {
+	t.Setenv("APILOG_MEDIA_SAVE_ATTACHMENTS", "notabool")
+	if _, err := Load(""); err == nil {
+		t.Fatal("Load() with bad media env should error, got nil")
+	}
+}
+

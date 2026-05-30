@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,8 +33,10 @@ import (
 	"github.com/leoyun/api-log/internal/counters"
 	"github.com/leoyun/api-log/internal/ids"
 	"github.com/leoyun/api-log/internal/logging"
+	"github.com/leoyun/api-log/internal/media"
 	"github.com/leoyun/api-log/internal/parser"
 	"github.com/leoyun/api-log/internal/proxy"
+	"github.com/leoyun/api-log/internal/runtime"
 	"github.com/leoyun/api-log/internal/store/sqlite"
 	"github.com/leoyun/api-log/internal/trace"
 	"github.com/leoyun/api-log/internal/writer"
@@ -104,9 +107,21 @@ func run() error {
 	// Shared atomic counters surfaced on /healthz.
 	ctrs := counters.New()
 
+	// Phase K — media extraction + runtime toggle.
+	mediaEnabled := &atomic.Bool{}
+	mediaEnabled.Store(cfg.Media.SaveAttachments)
+	if ovr, err := runtime.LoadOverrides(cfg.Storage.DataDir); err == nil {
+		if ovr.Media.SaveAttachments != nil {
+			mediaEnabled.Store(*ovr.Media.SaveAttachments)
+		}
+	} else {
+		slog.Warn("runtime overrides load failed", "err", err)
+	}
+	mediaExt := media.New(media.Config{DataDir: cfg.Storage.DataDir})
+
 	// Single-writer goroutine for JSONL append + SQLite upsert. Both
 	// run in the same goroutine in one transaction per trace.
-	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, ctrs, nil)
+	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, ctrs, mediaExt, mediaEnabled, nil)
 	stopWriter := wrtr.Start()
 	// NOTE: stopWriter is NOT deferred here — graceful shutdown calls it
 	// in the right order (after proxy + API listeners are drained).
@@ -242,12 +257,13 @@ func run() error {
 	// API server (port from cfg.API.Listen). Same process; separate
 	// listener so a slow read API can't impact proxy traffic.
 	apiHandler := api.NewMux(api.Deps{
-		Store:      store,
-		Counters:   ctrs,
-		AdminToken: adminToken,
-		Version:    "0.0.0-dev",
-		StartedAt:  time.Now().UTC(),
-		DataDir:    cfg.Storage.DataDir,
+		Store:        store,
+		Counters:     ctrs,
+		AdminToken:   adminToken,
+		Version:      "0.0.0-dev",
+		StartedAt:    time.Now().UTC(),
+		DataDir:      cfg.Storage.DataDir,
+		MediaEnabled: mediaEnabled,
 	})
 	apiSrv := &http.Server{
 		Addr:              cfg.API.Listen,

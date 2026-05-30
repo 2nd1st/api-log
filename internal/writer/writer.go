@@ -16,10 +16,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/leoyun/api-log/internal/counters"
 	"github.com/leoyun/api-log/internal/ids"
+	"github.com/leoyun/api-log/internal/media"
 	"github.com/leoyun/api-log/internal/session"
 	"github.com/leoyun/api-log/internal/store/sqlite"
 	"github.com/leoyun/api-log/internal/trace"
@@ -50,6 +52,14 @@ type Writer struct {
 	in       chan Record
 	store    *sqlite.Store     // optional; nil = JSONL-only mode (used in tests / M2 mode)
 	counters *counters.Counters // optional; nil = no counter wiring (tests can omit)
+
+	// Phase K — media extraction. Both fields optional; either nil means
+	// "extraction disabled" and the writer behaves exactly as before. The
+	// toggle is *atomic.Bool (not a plain bool) because PUT /api/config/media
+	// can flip it at runtime from a different goroutine; the writer goroutine
+	// reads it on every trace finalize.
+	mediaExtractor *media.Extractor
+	mediaEnabled   *atomic.Bool
 
 	// gzip workers run in the background when files rotate. We wait for
 	// them on Close so a shutdown doesn't leave a half-gzipped file behind.
@@ -83,17 +93,26 @@ type Stats struct {
 // store may be nil; tests and pure-JSONL deployments leave it nil.
 // ctrs may be nil; counters skipped if so.
 // clock may be nil; defaults to time.Now.
-func New(dataDir string, chanCap int, store *sqlite.Store, ctrs *counters.Counters, clock func() time.Time) *Writer {
+//
+// mediaExt and mediaEnabled (Phase K) may both be nil; either nil means
+// "no extraction." When both are non-nil, the writer reads mediaEnabled
+// on each finalize and, if true, invokes mediaExt.Extract on the trace
+// after the JSONL line is on disk. Extraction failures log WARN inside
+// the extractor and never block the writer or affect MediaCount past the
+// returned slice length (PHILOSOPHY §2: capture never interferes).
+func New(dataDir string, chanCap int, store *sqlite.Store, ctrs *counters.Counters, mediaExt *media.Extractor, mediaEnabled *atomic.Bool, clock func() time.Time) *Writer {
 	if clock == nil {
 		clock = time.Now
 	}
 	return &Writer{
-		dataDir:  dataDir,
-		clock:    clock,
-		in:       make(chan Record, chanCap),
-		store:    store,
-		counters: ctrs,
-		files:    make(map[string]*openFile),
+		dataDir:        dataDir,
+		clock:          clock,
+		in:             make(chan Record, chanCap),
+		store:          store,
+		counters:       ctrs,
+		mediaExtractor: mediaExt,
+		mediaEnabled:   mediaEnabled,
+		files:          make(map[string]*openFile),
 	}
 }
 
@@ -203,6 +222,28 @@ func (w *Writer) appendOne(rec Record) {
 		w.counters.AddBytes(int64(len(line)))
 	}
 
+	// Phase K — media extraction. PHILOSOPHY §2: runs AFTER JSONL is on
+	// disk, so any failure here doesn't affect what was captured. The
+	// extractor itself logs WARN on per-file errors and returns whatever
+	// it managed to write; we never block on it.
+	//
+	// PHILOSOPHY §6: JSONL is truth; extracted media files are a derived
+	// copy + cache for fast read / export bundling. The base64 stays
+	// inline in the JSONL line that's already been flushed.
+	//
+	// Placed BEFORE the store == nil return so JSONL-only deployments
+	// (used in tests + plain-file recording mode) still extract media —
+	// the SQLite mirror is just a query index, not a precondition for
+	// extraction.
+	var mediaCount int
+	if w.mediaExtractor != nil && w.mediaEnabled != nil && w.mediaEnabled.Load() {
+		files := w.mediaExtractor.Extract(rec.Trace)
+		mediaCount = len(files)
+		if w.counters != nil && mediaCount > 0 {
+			w.counters.AddMediaFiles(int64(mediaCount))
+		}
+	}
+
 	if w.store == nil {
 		return
 	}
@@ -211,6 +252,7 @@ func (w *Writer) appendOne(rec Record) {
 	// not two). Failure here doesn't roll back the JSONL — the JSONL is
 	// already on disk and a startup rebuild will recover.
 	row := sqlite.FromTrace(rec.Trace, keyHash, of.path, offset)
+	row.MediaCount = mediaCount
 	prefix, _ := session.Build(rec.Trace.Path, sessionPrefixBody(rec.Trace))
 	sqlStart := time.Now()
 	if err := w.store.AppendTrace(row, prefix); err != nil {

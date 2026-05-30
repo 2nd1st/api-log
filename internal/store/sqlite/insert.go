@@ -16,14 +16,14 @@ import (
 // columns (PrefixLen, PrefixCanonicalHash, ParentID, SessionRootID)
 // are filled by AppendTrace, not by the caller — pass them empty.
 type Row struct {
-	ID            string
-	TsStart       time.Time
-	TsEnd         time.Time
-	Client        string
-	Method        string
-	Path          string
-	Upstream      string
-	Status        int
+	ID       string
+	TsStart  time.Time
+	TsEnd    time.Time
+	Client   string
+	Method   string
+	Path     string
+	Upstream string
+	Status   int
 
 	Disconnected  bool
 	TruncatedReq  bool
@@ -52,6 +52,12 @@ type Row struct {
 	// JSONL location.
 	JSONLPath   string
 	JSONLOffset int64
+
+	// MediaCount is the number of extracted media files for this trace
+	// (Phase K). Filled by the writer after extraction runs; default 0
+	// when extraction is disabled or the trace has no extractable media.
+	// PHILOSOPHY § 1: deterministic count of named protocol fields only.
+	MediaCount int
 }
 
 // FromTrace builds a Row from a trace.Trace plus the writer's known
@@ -131,14 +137,16 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		model, stream, prompt_tokens, completion_tokens, total_tokens, finish_reason,
 		key_hash, prefix_len, prefix_canonical_hash,
 		parent_id, session_root_id,
-		jsonl_path, jsonl_offset
+		jsonl_path, jsonl_offset,
+		media_count
 	) VALUES (
 		?, ?, ?, ?, ?, ?, ?, ?,
 		?, ?, ?,
 		?, ?, ?, ?, ?, ?,
 		?, ?, ?,
 		?, ?,
-		?, ?
+		?, ?,
+		?
 	)`
 	_, err = tx.Exec(q,
 		r.ID, unixMs(r.TsStart), unixMs(r.TsEnd), r.Client, r.Method, r.Path, r.Upstream, r.Status,
@@ -147,6 +155,7 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		r.KeyHash, nullInt(prefixLen), nullStr(prefixCanonicalHash),
 		nullStr(parentID), sessionRootID,
 		r.JSONLPath, r.JSONLOffset,
+		r.MediaCount,
 	)
 	if err != nil {
 		return fmt.Errorf("insert %s: %w", r.ID, err)
