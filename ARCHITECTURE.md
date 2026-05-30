@@ -282,6 +282,20 @@ CREATE INDEX idx_session_root   ON traces(session_root_id);
 CREATE INDEX idx_prefix_hash    ON traces(key_hash, prefix_canonical_hash);  -- enables parent lookup without loading JSONL
 ```
 
+**Additive schema changes after v0** (per PHILOSOPHY §6 — schema is append-only; new optional columns added via idempotent `ALTER TABLE ADD COLUMN`):
+
+```sql
+-- Phase K (2026-05-30): media extraction. Count of extracted media files
+-- per trace; 0 when save_attachments is off or the trace has no media
+-- fields. Populated by the writer goroutine post-JSONL-append from the
+-- length of internal/media.Extract()'s returned slice.
+ALTER TABLE traces ADD COLUMN media_count INTEGER DEFAULT 0;
+```
+
+The migration runner catches `duplicate column` errors specifically so
+re-startup against an existing database is idempotent. Other errors
+propagate.
+
 Indexes deferred to a future when a query justifies them:
 - `idx_status_ts`, `idx_model_ts`, `idx_parent` — currently no read-API path requires them.
 
@@ -525,9 +539,19 @@ The binary contains zero HTML. Frontends are separate consumers of the read API.
 
 - No `/req`, no `/resp`. `/api/traces/:id` returns the full parsed line including both.
 - **No replay-to-LLM.** The §6.4 `/replay` endpoint emits the recorded response back to the *API caller* (a viewer); it never re-contacts the upstream gateway. Re-sending a recorded request to an LLM on a user's behalf remains in the philosophy "no" list.
-- No `/stats`, no `/api/sessions/:root_id/tree`, no aggregate endpoints. Aggregates are SQL the consumer runs against `index.sqlite` (read-only, multiple concurrent readers under WAL).
-- **No server-streamed read endpoints other than `/replay`.** `/replay` is the one server-streamed response (SSE) by design — it has to be, to reproduce original chunk pacing. All other read endpoints (`/api/traces`, `/api/traces/:id`, `/healthz`, `/`) return a single JSON body in a single response.
-- No write-side endpoints. There is no `POST` / `PUT` / `DELETE` anywhere in the read API. The proxy listener accepts writes (forwarding); the read API is read-only.
+- No `/stats`, no `/api/sessions/:root_id/tree`, no aggregate endpoints. Aggregates are SQL the consumer runs against `index.sqlite` (read-only, multiple concurrent readers under WAL). (`/api/sessions` lists root-id-grouped session summaries — see §6.8 — but is intentionally NOT a tree-walking endpoint.)
+
+### 6.8 Post-v0 endpoint additions
+
+Surface that grew after v0 shipped. Each addition is justified against the §6.7 boundary and PHILOSOPHY.
+
+| Endpoint | Method | Phase | Notes |
+|---|---|---|---|
+| `/api/sessions` | GET | M3 / post-v0 | Lists session summaries grouped by `session_root_id`. Row-level aggregation only (n_turns, first_ts, last_ts, distinct_keys, ok_count, err_count). NOT a tree walk — consumers traverse parent_id themselves via `/api/traces/:id`. |
+| `/api/export` | GET | I (2026-05-29) | Streams a zip of matching JSONL lines + bundled `agent/CLAUDE.md` + `agent/jq-cheatsheet.md` + `README.md`. Same filter set as `/api/traces`. Per §6.7 server-stream rule: the response is *stream-shaped* (Content-Type: application/zip) but it is NOT SSE — it's an HTTP/1.1 response with chunked transfer-encoding that the archive/zip writer emits to. This is justified: zip is a byte-level streaming format that lets the server keep memory bounded for large filter results. |
+| `/api/media/{trace_id}/{idx}` | GET | K (2026-05-30) | Streams a single extracted media file from disk with Content-Type derived from the extension via `mime.TypeByExtension`. 404 when the trace has no extracted media at that idx (the trace was recorded with `save_attachments=false`, or the field exists in the body but extraction was skipped per §protocol-skip-list). |
+| `/api/config/media` | GET | K | Returns `{save_attachments: bool, source: "default"\|"yaml"\|"env"\|"override"}`. Read-only view of the effective runtime configuration. |
+| `/api/config/media` | **PUT** | K | This is the **single write-side endpoint in the read API** as of this writing. The §6.7 blanket "no write-side endpoints" is amended here for the narrow case of operator-toggleable runtime overrides: the operator flips an atomic boolean, the handler atomically write-temp + renames `<DataDir>/runtime_overrides.json`, and the writer goroutine reads the new value on its next trace finalize. Body: `{"save_attachments": bool}`. The amendment is justified because: (a) the alternative is a process restart per toggle, which loses in-flight traces; (b) the override is persisted to a separate file from `config.yaml`, so YAML stays the declarative truth and runtime overrides are explicit deviations; (c) the contract is intentionally narrow — only flags that can be safely flipped during a running trace are eligible (no schema fields, no listener ports, no plugin enable lists). The plugin enable list, if it later gains a runtime toggle, will pattern-match this design. |
 
 ---
 

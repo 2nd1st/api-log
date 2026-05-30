@@ -289,62 +289,74 @@ counter snapshot at INFO every 60s.
 
 These came out of operator feedback after sub2gpt + sub2api went live.
 
-### 1. Export (highest priority)
+### ✅ 1. Export (DONE — Phase I, 2026-05-29, commits `6294be2` backend + `db49249` viewer)
 
-- Batch export by filter (status / model / key_hash / session_root_id /
-  time range — same surface as the viewer's filter sidebar).
-- Output: a single `.zip` containing the matching JSONL line(s) at their
-  original `data/<date>/<keyhash>.jsonl` paths.
-- **The zip also bundles**:
-  - `agent/CLAUDE.md` — operating instructions for a Claude agent who
-    receives the zip ("here is what these JSONL lines mean, here is
-    how to enumerate sessions, etc.").
-  - Tiny helper scripts (jq snippets / Python one-liners) that index the
-    bundled data for follow-up questions without needing to re-implement
-    the read API.
-- Implementation surface: new `internal/exporter` package + read API
-  endpoint `GET /api/export?...` that streams the zip.
-- Why it's #1: makes the recorded traffic actually useful for offline
-  agentic analysis (skill-usage frequency, prompt clustering, regressions
-  across model versions).
+Backend `internal/exporter` package + `GET /api/export` endpoint stream a
+zip of matching JSONL lines bundled with `agent/CLAUDE.md` + `agent/jq-cheatsheet.md`
++ `README.md`. Filter pipeline reuses `ListFilters` from
+`internal/store/sqlite`. The 5000-row safety cap (Phase I) was removed in
+Phase J (commit `35acd7c`) — `Store.AllMatching(filters, hardCap)` with
+`hardCap=0` means unlimited. Files whose source JSONL contained both
+matching + non-matching lines land as `<keyhash>.partial.jsonl` so the
+recipient can tell the file isn't a complete day.
 
-### 2. Operator config knobs
+Phase K (2026-05-30, commit `67142f9`) extended the zip with
+`media/<trace_id>/<idx>.<ext>` directories alongside each row when the
+trace's extracted media files exist on disk — see §7 below.
 
-We have config plumbing already (`Config` struct + env + YAML). Need to
-add a few surface-level toggles for production posture:
+Viewer Export page at `#/export` mirrors the FilterSidebar field shapes;
+filter inputs include datalist autocomplete for path/model/key_hash
+populated from a one-shot `/api/traces?limit=200` sample (Phase J,
+commit `db49249`). Generate uses `authFetch → Blob → synthesized <a download>`
+rather than `location.href` because navigation can't attach the Bearer
+header `/api/export` requires.
 
-- `storage.archive_after_days` — gzip+move JSONLs older than N to a cold
+Contract: `uiux-research/phase-i-export-contract.md`.
+
+### 🟡 2. Operator config knobs (PARTIAL)
+
+- ✅ **`media.save_attachments`** — Phase K (2026-05-30, commit `67142f9`).
+  YAML default `true`; runtime override via `PUT /api/config/media` persisted
+  to `<DataDir>/runtime_overrides.json` (loaded at startup AFTER yaml/env).
+- ✅ **`viewer.default_filters`** — Partial: viewer reads
+  `localStorage['apilog.default_path']` (default `/v1/*`) since Phase F.
+  Viewer Settings page (Phase I, 2026-05-29) exposes the edit; backend
+  doesn't push defaults to the viewer (operator preference, see
+  api-log-viewer/PHILOSOPHY.md §6 — composable, not authoritative).
+- ⏳ **`storage.archive_after_days`** — gzip+move JSONLs older than N to a cold
   subdir; current behavior is "gzip on next-day rotation, then never
-  touch", which is fine for now but won't be forever.
-- `viewer.default_filters` — what the trace list shows when a fresh
-  browser opens the viewer (e.g. exclude `/api/v1/*` admin UI noise on
-  sub2 deployments).
-- `api.public_query_enabled` — explicit toggle for "allow third-party
+  touch", which is fine for now but won't be forever. Not built.
+- ⏳ **`api.public_query_enabled`** — explicit toggle for "allow third-party
   clients to hit `/api/traces` with their own bearer". Default off.
   Today the admin token gates everything; this lets us hand out
-  read-only tokens later.
+  read-only tokens later. Not built.
 - Other knobs go here as they're identified.
 
-### 3. Detail-panel insight redesign
+### ✅ 3. Detail-panel insight redesign (DONE — Phase F → H, 2026-05-29/30)
 
-The current right panel shows raw views (overview / headers / body /
-events / session / replay). They're faithful to the captured bytes but
-**hard for humans to read** — they're optimized for "prove the recorder
-worked", not for "help the operator understand what happened".
+Largely shipped on the viewer side (api-log-viewer repo) — the backend's
+read-side contract is unchanged.
 
-Discuss separately what the human-useful insights are. Candidates:
+- ✅ Block-native conversation (text / reasoning / tool_call / tool_result /
+  media / error / unknown) — Phase F, commit `f6cb518` (viewer).
+- ✅ Per-block renderers and tool_call ↔ tool_result pairing by id —
+  Phase F.
+- ✅ Tab strip slimmed from 7 → 4 → 3 (Phase F → G → H): conversation /
+  overview / raw; events / session / replay UI surfaces retired (backend
+  `/api/traces/:id/replay` endpoint preserved for scripting). Phase H
+  commit `4688137` (viewer).
+- ✅ Overview enriched — CLIENT & SOURCE (UA classification +
+  prompt-source detector), CONTENT SHAPE (block-type chips, tool
+  inventory, response shape), MODEL BEHAVIOR (stop reason translation
+  + reasoning count + tool count + first-reply latency) — Phase H.
+- ✅ Reasoning tombstones (no "encrypted_content — plaintext not
+  available" placeholder wording; the absence of body communicates the
+  redacted-by-upstream state) — Phase F+H polish.
+- ✅ XML-structured prompt rendering (codex `<personality>` etc;
+  Anthropic system prompts) — Phase H.
 
-- "What did this request actually ask for?" → conversation summary
-  with prompt + final answer + token cost + total duration on one line
-- "Was this a retry / continuation?" → session position + parent diff
-- "Why was it slow?" → first-byte vs total time vs upstream timings
-- "What tools did the model use?" → tool_use blocks pulled to the
-  surface
-- "Did anything go weird?" → flag truncation, watchdog-fired, parse
-  error, content-encoding mismatches inline
-
-The current overview / headers / body tabs become a "raw" tab,
-preserved for debugging; the new default tab is opinionated.
+The current overview / headers / body tabs became a single "raw" tab,
+preserved for debugging; the new default tab is opinionated (overview).
 
 ### 4. Path noise filter (small, useful immediately)
 
@@ -371,20 +383,27 @@ string (`/api/v1/auth/me?timezone=...`). For UI grouping this could
 be split — `path` = bare URL path, separate `query` field. Defer to
 the recorder schema bump pass.
 
-**Capture-time skip (medium, opt-in, still TODO)**
+**~~Capture-time skip~~ (SUPERSEDED 2026-05-30 by Plugin Phase A.1)**
 
-- New config: `capture.skip_paths: ["/api/v1/*"]` (default empty).
-  Patterns matched against `req.URL.Path` before drainers are wired
-  up; matched requests get forwarded normally but with a no-op sink,
-  no JSONL line written, no SQLite row inserted.
-- Tension with PHILOSOPHY principle 1 ("capture raw, derive
-  structurally") — by skipping at capture time we're making a
-  policy call. Mitigation: default empty + log a startup INFO line
-  listing the active skip patterns so operators see exactly what
-  isn't being recorded.
-- Saves disk + SQLite churn on high-volume admin UIs; worth doing
-  once a deployment has measurable noise (sub2api admin polls every
-  60s per browser tab open).
+Originally proposed as `capture.skip_paths` config knob. The Plugin Phase A
+scaffold (§5) added `internal/plugin/builtin/pathfilter/` which implements
+the same semantic via the `ObserveBeforeRecord` hook. Once Phase A.1
+lands (separate commit, wires `Registry` into `cmd/api-log/main.go`
+finalize block, gated on `config.Plugins.PathFilter.Patterns` non-empty),
+operators get path-skip via the plugin config block instead of a bespoke
+`capture.skip_paths` knob:
+
+```yaml
+plugins:
+  path_filter:
+    patterns:
+      - /api/v1/*
+      - /health
+```
+
+Same mitigation story: default empty + startup INFO line listing active
+patterns. PHILOSOPHY §1 tension acknowledged — the plugin form makes the
+"capture never interferes" carve-out explicit + reviewable.
 
 ### 5. Plugin / hook system (strategic, larger)
 
@@ -493,22 +512,65 @@ position is sensitive (a buggy plugin breaks the LLM path). We want
 review + tests for each plugin we ship. Operators get behavior via
 config, not by uploading Go files.
 
-### 6. Unified dashboard
+### ✅ 6. Unified dashboard (DONE — Phase H, 2026-05-30, viewer commit `4688137`)
 
-`Healthz` is one card grid today. It should be the home page of an
-overall **Dashboard** tab that also surfaces:
+Shipped on the viewer side as the **Landing** page (replaces the old
+"Dashboard" name per operator request; route `#/landing`). Reads only the
+existing `/healthz` + `/api/traces?since=...` endpoints — no new
+backend API.
 
-- Volume over time (traces / minute, traces / day)
-- Top models / paths / keys by volume
-- Error rates (4xx, 5xx, dial errors) over time
-- p95 latency trend
-- Session creation rate
-- Storage growth (data/ MB)
-- Anomalies surfaced as cards (e.g. "drop_writer_full > 0 in last 5 min")
+Surfaces (in render order):
+- **STATUS strip** — backend live/stalled, last poll, **data dir total bytes**
+  (from `counters.total_bytes`, Phase H, commit `492f1ad`), uptime,
+  this-week count via paginated `/api/traces?since=monday`.
+- **CAPABILITY strip** — protocols recognized by `adapt()` lit when at
+  least one trace in the last hour exercised them.
+- **NEEDS ATTENTION** — last 30 min of 5xx / slow / truncated / upstream-
+  dial-error rows, clickable to drill in.
+- **VOLUME** — 60-min traces/min SVG sparkline derived client-side from
+  loaded rows (no chart library — restraint memory).
+- **INTERNAL · healthz** — collapsible by default; the old card grid
+  preserved for diagnostic spelunking; auto-expands when any warn/err
+  counter is non-zero.
 
-The existing `/healthz` JSON snapshot is still the source; the new
-view aggregates time-series client-side from periodic polls OR (later)
-a dedicated `/api/metrics?since=...` endpoint.
+Backend kept simple per ARCHITECTURE — no `/api/metrics?since=...`
+aggregation endpoint added; the viewer aggregates client-side.
+
+`total_media_files` (Phase K) joins `total_bytes` as a healthz cumulative
+counter; both surface in the Landing STATUS strip.
+
+### ✅ 7. Media extraction (DONE — Phase K, 2026-05-30, backend `67142f9` + viewer `77fd9ca`)
+
+A late post-v0 addition discovered while building the Export page.
+
+Backend extracts images / audio / video / files from PARSED JSON bodies
+(`req.body` + `resp.body`) and writes them to disk alongside the JSONL
+line. `body_b64` is explicitly NOT an attachment (operator clarification
+2026-05-30 — unparseable JSON fallback container, not a user file).
+Default `media.save_attachments: true`.
+
+- `internal/media/` package: per-protocol walkers (chat / messages /
+  responses / gemini) → MediaFile metadata + file written to
+  `<DataDir>/<YYYY-MM-DD>/<keyhash[:8]>/media/<trace_id>/<idx>.<ext>`.
+- `internal/runtime/` package: `Overrides` JSON persisted at
+  `<DataDir>/runtime_overrides.json`. Load order: hardcoded default →
+  YAML → env → runtime_overrides.json → `PUT /api/config/media`.
+- SQLite gains `media_count INTEGER DEFAULT 0` column (idempotent ALTER
+  TABLE).
+- `Counters.total_media_files` cumulative atomic, surfaced on `/healthz`.
+- Read API gains `GET /api/media/{trace_id}/{idx}` (streams the file),
+  `GET /api/config/media` (returns current value + source), `PUT
+  /api/config/media` (flips the atomic + persists).
+- Exporter bundles each row's `media/<trace_id>/` directory at
+  `media/<trace_id>/<filename>` inside the zip.
+
+PHILOSOPHY adherence: §1 carve-out 1 — extracting named protocol fields
+is a deterministic transform, no heuristic synthesis. §2 — extraction
+runs AFTER JSONL is on disk; failure logs WARN, never blocks forwarding.
+§6 — JSONL still carries the b64; extracted files are a derived
+filesystem cache.
+
+Contract: `uiux-research/phase-k-media-contract.md`.
 
 ---
 
