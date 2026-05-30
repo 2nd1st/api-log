@@ -35,6 +35,8 @@ import (
 	"github.com/leoyun/api-log/internal/logging"
 	"github.com/leoyun/api-log/internal/media"
 	"github.com/leoyun/api-log/internal/parser"
+	"github.com/leoyun/api-log/internal/plugin"
+	"github.com/leoyun/api-log/internal/plugin/builtin/pathfilter"
 	"github.com/leoyun/api-log/internal/proxy"
 	"github.com/leoyun/api-log/internal/runtime"
 	"github.com/leoyun/api-log/internal/store/sqlite"
@@ -118,6 +120,40 @@ func run() error {
 		slog.Warn("runtime overrides load failed", "err", err)
 	}
 	mediaExt := media.New(media.Config{DataDir: cfg.Storage.DataDir})
+
+	// Plugin registry — Phase A.1 wiring. Constructed BEFORE the writer
+	// goroutine starts so it is visible to the proxyHandler closure. Only
+	// observe-class plugins (ObserveBeforeRecord) are wired today; see
+	// internal/plugin/plugin.go for the contract. Operators control the
+	// enabled set via cfg.Plugins; an empty block (zero value) registers
+	// nothing and the proxy behaves exactly as before this commit.
+	//
+	// PHILOSOPHY §2 — capture never interferes: BeforeRecord runs AFTER
+	// the response has fully reached the client. It can drop a trace from
+	// recording but cannot affect forwarding.
+	pluginReg := plugin.NewRegistry()
+	if patterns := cfg.Plugins.PathFilter.Patterns; len(patterns) > 0 {
+		pf := pathfilter.New()
+		if err := pluginReg.Register(pf); err != nil {
+			return fmt.Errorf("register %s: %w", pathfilter.Name, err)
+		}
+		// pathfilter.Init takes the raw YAML-map shape ([]any of strings),
+		// so convert the typed []string from config here. Doing the
+		// conversion in main keeps the plugin's Init contract honest
+		// (it can be called from any source that produces a map[string]any).
+		raw := make([]any, len(patterns))
+		for i, p := range patterns {
+			raw[i] = p
+		}
+		if err := pluginReg.Init(map[string]map[string]any{
+			pathfilter.Name: {"patterns": raw},
+		}); err != nil {
+			return fmt.Errorf("plugin init: %w", err)
+		}
+		// Operators MUST be able to see what's NOT being recorded at
+		// startup — silently dropping traces would violate PHILOSOPHY §2.
+		slog.Info("plugin enabled", "name", pf.Name(), "patterns", patterns)
+	}
 
 	// Single-writer goroutine for JSONL append + SQLite upsert. Both
 	// run in the same goroutine in one transaction per trace.
@@ -237,6 +273,30 @@ func run() error {
 			}
 		}
 
+		// Plugin BeforeRecord hooks — runs AFTER the response fully
+		// reached the client (rp.ServeHTTP returned) but BEFORE the
+		// writer goroutine sees the trace. A plugin returning
+		// shouldRecord=false drops the trace from JSONL + SQLite; the
+		// upstream forward is untouched. Per PHILOSOPHY §3 ("fail open
+		// on capture"), plugin errors are logged but do not by
+		// themselves drop the trace — the plugin must explicitly say
+		// "drop." We use context.Background() rather than the inbound
+		// ctx: that ctx may have already been cancelled by the
+		// stream-idle watchdog, and the recording decision is
+		// decoupled from the forward lifecycle.
+		shouldRecord, errs := pluginReg.IterateBeforeRecord(context.Background(), tr)
+		for _, e := range errs {
+			slog.Warn("plugin BeforeRecord error",
+				"trace_id", traceID, "err", e)
+		}
+		if !shouldRecord {
+			// Trace dropped from recording by an operator-configured
+			// plugin. The client already has its response; we just
+			// don't persist this one.
+			tmpDir.RemoveTraceFiles(traceID)
+			return
+		}
+
 		keyHash := ids.KeyHashFromHeaders(state.reqHeader)
 		if !wrtr.TrySend(writer.Record{Trace: tr, KeyHash: keyHash}) {
 			slog.Warn("writer channel full; trace metadata dropped",
@@ -348,6 +408,13 @@ func run() error {
 		slog.Warn("api graceful shutdown timed out", "err", err)
 	}
 	stopWriter() // drains writer chan + background gzip workers
+	// Plugin Close runs AFTER the writer has drained, per the
+	// plugin.Plugin.Close contract — by this point no BeforeRecord
+	// invocation can still be in flight. Errors are logged but do not
+	// block shutdown (best-effort across all plugins).
+	if err := pluginReg.Close(); err != nil {
+		slog.Warn("plugin close", "err", err)
+	}
 	_ = store.Close()
 	slog.Info("api-log stopped")
 	return nil
