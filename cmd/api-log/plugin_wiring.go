@@ -238,6 +238,85 @@ func serveIntercept(crw http.ResponseWriter, info *pluginv2.InterceptInfo) {
 	}
 }
 
+// runAfterChainOnIntercept synthesizes a ParsedResponse from a
+// BEFORE-intercept's payload and runs the AFTER chain on it (spec
+// §2.2 / §2.4: "the FULL AFTER chain still runs on the synthesized
+// response so watermark etc. still decorates it").
+//
+// The returned InterceptInfo is what should be written to the client.
+// Semantics:
+//
+//   - AFTER plugin returns Continue or Mutate (text-append etc.): the
+//     plugin's mutated ParsedResponse is re-serialized into the
+//     original intercept's protocol shape and the intercept body is
+//     replaced. Status / headers preserved from the source intercept
+//     (the BEFORE plugin "owns" the wire envelope).
+//
+//   - AFTER plugin returns Intercept: the AFTER intercept fully
+//     replaces the BEFORE intercept; the trace marker also updates so
+//     buildTrace records the later (more specific) source.
+//
+// If the synthesized ParsedResponse cannot be built (no upstream
+// protocol identified, body not JSON-shaped), the AFTER chain still
+// runs but plugins see an empty Content / Reasoning view. Mutations
+// to those fields silently no-op when BuildResponseBody can't
+// re-serialize; the original intercept body is returned.
+func runAfterChainOnIntercept(
+	ctx context.Context,
+	reg *pluginv2.Registry,
+	req *pluginv2.ParsedRequest,
+	src *pluginv2.InterceptInfo,
+) *pluginv2.InterceptInfo {
+	if src == nil || src.Response == nil {
+		return src
+	}
+	if reg == nil || req == nil {
+		return src
+	}
+	// Build the synthesized ParsedResponse. Use the request's protocol
+	// (the intercept body usually mirrors what the upstream would have
+	// returned) and the intercept's status / headers / body.
+	status := src.Response.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	parsedResp := pluginv2.ParsedResponseFromBody(req.Protocol, status, src.Response.Headers, src.Response.Body)
+	ac := &pluginv2.AfterContext{Response: &parsedResp}
+	afterInfo := reg.IterateAfter(ctx, req, ac)
+	if afterInfo != nil {
+		// AFTER plugin intercepted on top of the BEFORE intercept.
+		// The AFTER intercept wins; later trace marker reflects it.
+		return afterInfo
+	}
+	// No further intercept. If a plugin mutated the response, try to
+	// re-serialize back into the protocol wire shape and replace the
+	// body. Failure keeps the original intercept body — operators see
+	// the source intercept verbatim, which is safer than serving a
+	// broken body.
+	if ac.Response != &parsedResp {
+		out, err := pluginv2.BuildResponseBody(ac.Response)
+		if err == nil && len(out) > 0 {
+			hdrs := src.Response.Headers
+			if hdrs == nil {
+				hdrs = http.Header{}
+			}
+			return &pluginv2.InterceptInfo{
+				Type: src.Type,
+				ID:   src.ID,
+				Hook: src.Hook,
+				Response: &pluginv2.InterceptResponse{
+					Status:  status,
+					Headers: hdrs,
+					Body:    out,
+				},
+			}
+		}
+		slog.Warn("after-on-intercept: build response body failed; serving original intercept",
+			"err", err, "protocol", req.Protocol)
+	}
+	return src
+}
+
 // recordIntercept marks the inbound context's intercept slot so
 // buildTrace can populate trace.PluginIntercepted. Safe to call with a
 // nil slot (the request flowed without an intercept-slot ctx, e.g. in
@@ -364,6 +443,14 @@ func modifyBufferedResponse(
 // upstream body in a goroutine that drives a StreamDispatcher; the
 // returned resp.Body is an io.PipeReader that feeds the
 // reverseproxy → client copy.
+//
+// The R1 amendment removed the "hold-the-terminal-event" choreography
+// the R0 design used to land a synthesized footer before message_stop.
+// With OnLastTextDelta the mutation happens on the buffered last
+// content delta BEFORE the protocol's terminator flows through the
+// dispatcher, so the terminator can pass through Process unmolested.
+// The final EOF flush is still required to cover Chat (no terminator
+// at all) and Gemini.
 func modifyStreamingResponse(
 	ctx context.Context,
 	reg *pluginv2.Registry,
@@ -413,11 +500,6 @@ func modifyStreamingResponse(
 		defer func() { _ = upstream.Close() }()
 
 		scanner := sse.NewScanner(upstream)
-		// Hold the terminal event so EmitBeforeFinish-synthesized
-		// content lands BEFORE message_stop (spec §7.2's "policy
-		// footer" semantics: suffix arrives before the terminator the
-		// client uses to know the stream is done).
-		var heldTerminal *sse.Event
 		for {
 			ev, err := scanner.Next()
 			if err == io.EOF {
@@ -427,12 +509,6 @@ func modifyStreamingResponse(
 				slog.Warn("sse scanner error", "err", err)
 				break
 			}
-			// Capture terminal markers; emit them after FlushBeforeFinish.
-			if ev.Name == "message_stop" || ev.Name == "response.completed" {
-				localEv := ev
-				heldTerminal = &localEv
-				continue
-			}
 			for _, out := range dispatcher.Process(ev) {
 				if werr := sse.WriteEvent(pw, out); werr != nil {
 					_ = pw.CloseWithError(werr)
@@ -440,18 +516,11 @@ func modifyStreamingResponse(
 				}
 			}
 		}
-		// Flush before-finish callbacks (text-append AFTER).
+		// EOF flush: covers Chat (no terminator), Gemini (no
+		// terminator), and is defensive for Messages / Responses
+		// streams that closed without their protocol terminator.
 		for _, out := range dispatcher.FlushBeforeFinish() {
 			if werr := sse.WriteEvent(pw, out); werr != nil {
-				_ = pw.CloseWithError(werr)
-				return
-			}
-		}
-		// Emit the held terminator (if any). Without one, the close
-		// alone signals EOF — Chat's `data:[DONE]` was already eaten by
-		// the scanner; Gemini has no terminator at all.
-		if heldTerminal != nil {
-			if werr := sse.WriteEvent(pw, *heldTerminal); werr != nil {
 				_ = pw.CloseWithError(werr)
 				return
 			}

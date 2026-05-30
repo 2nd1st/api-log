@@ -1,5 +1,6 @@
 // Package textappend implements the BUILD-phase "text-append" plugin
-// described in uiux-research/plugin-b-c-spec.md §7.2.
+// described in uiux-research/plugin-b-c-spec.md §7.2, with the R1
+// streaming redesign (append-to-last-delta, not new-block-synthesis).
 //
 // One plugin instance can serve BOTH directions: Up.Suffix is appended
 // to the last user message (or merged into the system prompt) before
@@ -14,20 +15,39 @@
 //	Down.Target = "content"          → append to ParsedResponse.Content
 //	Down.Target = "reasoning"        → append to ParsedResponse.Reasoning
 //
-// Streaming-AFTER for Down.Target = "content" rides the W1 framework's
-// EmitBeforeFinish hook: one synthesized content-delta event is written
-// at end-of-stream so the suffix lands after the model's final token.
-// Streaming-AFTER for Down.Target = "reasoning" is documented as a v1
-// limitation — the W1 dispatcher has no reasoning-delta synthesizer, so
-// the suffix only lands on non-streaming responses. Operators wanting a
-// reasoning-suffix in streaming should use the non-streaming response
-// path or wait for a follow-up extension.
+// Streaming-AFTER for Down.Target = "content" registers an
+// OnLastTextDelta callback. The framework's StreamDispatcher buffers
+// one event of lookahead per content block and fires the callback on
+// the LAST text_delta of each content block, producing a wire
+// sequence that ends ...text_delta(text+suffix), content_block_stop,
+// ..., message_stop — with no synthesized event after the protocol's
+// terminator. Streaming-AFTER for Down.Target = "reasoning" is a v1
+// no-op (the dispatcher has no reasoning-last-delta hook); operators
+// wanting reasoning suffixes use non-streaming responses.
+//
+// Block-index policy: the callback is registered as index-agnostic
+// (fires on every text content block). The plain "last block only"
+// reading of the task spec was rejected because Anthropic extended-
+// thinking responses put thinking at content_block index 0 and the
+// assistant text at index 1; a strict `idx == 0` gate would skip
+// the suffix on every thinking-enabled response. Consequence:
+// responses that emit MULTIPLE text content blocks (rare but legal —
+// e.g. a tool_use sandwiched between text blocks) get the suffix
+// appended once per text block. Operators who specifically need
+// "only the first text block" gate on their own logic via a chained
+// OnLastTextDelta (the block index is passed to the callback).
+//
+// Probability lets operators dial trigger frequency for easter-egg
+// modes. Absent (nil) means 1.0 ("always"); 0.0 means "never". Each
+// hook call draws a math/rand/v2 float; the suffix lands only when
+// the draw is below Probability.
 package textappend
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 
 	v2 "github.com/leoyun/api-log/internal/plugin/v2"
@@ -58,31 +78,72 @@ type DownRule struct {
 }
 
 // Config is the parsed instance config.
+//
+// Probability is a pointer so absent in JSON is distinguishable from
+// 0.0 (which would mean "never trigger"). Valid range is [0.0, 1.0];
+// values outside the range fail Init.
 type Config struct {
-	Routes []string `json:"routes"`
-	Up     UpRule   `json:"up"`
-	Down   DownRule `json:"down"`
+	Routes      []string `json:"routes"`
+	Up          UpRule   `json:"up"`
+	Down        DownRule `json:"down"`
+	Probability *float64 `json:"probability,omitempty"`
 }
+
+// randFunc is the source of the per-call probability draw. Default
+// math/rand/v2.Float64 is process-global and goroutine-safe; tests
+// inject a deterministic source to make probability=0.5 assertions
+// stable.
+type randFunc func() float64
 
 // Plugin implements both v2.BeforePlugin and v2.AfterPlugin. Either side
 // is a no-op when its Suffix is empty.
 type Plugin struct {
 	cfg    Config
-	routes routeMatcher
+	routes v2.RouteMatcher
+	rand   randFunc
 }
 
 // New parses cfg, applies target defaults, validates enums, and returns
-// a ready Plugin.
+// a ready Plugin. The default RNG is math/rand/v2.Float64; tests use
+// NewWithRand to inject a deterministic source.
 func New(cfg map[string]any) (*Plugin, error) {
+	return NewWithRand(cfg, rand.Float64)
+}
+
+// NewWithRand is the test seam: lets a unit test supply a deterministic
+// rand.Float64 stand-in so probability assertions don't depend on the
+// process-global RNG. Production callers use New.
+func NewWithRand(cfg map[string]any, r randFunc) (*Plugin, error) {
 	parsed, err := decodeConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("text-append: %w", err)
 	}
-	rm, err := compileRoutes(parsed.Routes)
+	rm, err := v2.CompileRoutes(parsed.Routes)
 	if err != nil {
 		return nil, fmt.Errorf("text-append: %w", err)
 	}
-	return &Plugin{cfg: parsed, routes: rm}, nil
+	if r == nil {
+		r = rand.Float64
+	}
+	return &Plugin{cfg: parsed, routes: rm, rand: r}, nil
+}
+
+// shouldFire reports whether this call should mutate. With no
+// Probability set (the default), always returns true. With a pointer
+// set, returns rand() < *Probability — so Probability=0.0 never fires
+// and Probability=1.0 always fires.
+func (p *Plugin) shouldFire() bool {
+	if p.cfg.Probability == nil {
+		return true
+	}
+	pr := *p.cfg.Probability
+	if pr >= 1.0 {
+		return true
+	}
+	if pr <= 0.0 {
+		return false
+	}
+	return p.rand() < pr
 }
 
 // Name returns the stable type identifier.
@@ -94,14 +155,19 @@ func (p *Plugin) Name() string { return Type }
 //   - the route does not match
 //   - Up.Suffix is empty
 //   - target == last_user_message but no user turn carries text content
+//   - the per-call probability draw does not fire (operator-configured
+//     easter-egg mode; default Probability nil = always fires)
 func (p *Plugin) OnBefore(_ context.Context, req *v2.ParsedRequest, _ map[string]any) v2.BeforeResult {
 	if req == nil {
 		return v2.BeforeResult{Action: v2.ActionContinue}
 	}
-	if !p.routes.matches(req.Path) {
+	if !p.routes.Matches(req.Path) {
 		return v2.BeforeResult{Action: v2.ActionContinue}
 	}
 	if p.cfg.Up.Suffix == "" {
+		return v2.BeforeResult{Action: v2.ActionContinue}
+	}
+	if !p.shouldFire() {
 		return v2.BeforeResult{Action: v2.ActionContinue}
 	}
 	switch p.cfg.Up.Target {
@@ -127,44 +193,56 @@ func (p *Plugin) OnBefore(_ context.Context, req *v2.ParsedRequest, _ map[string
 // OnAfter behaves per ac.Response branch:
 //
 //   - Streaming (ac.Response == nil) with Down.Target == "content":
-//     register an EmitBeforeFinish callback that synthesizes one final
-//     content-delta event carrying Down.Suffix. The W1 dispatcher fires
-//     it on stream EOF for all protocols where SynthesizeContentDelta
-//     supports the protocol (Messages, Chat, Responses). On Gemini the
-//     synth is deferred at the framework layer and the callback is
-//     dropped silently — operators see no suffix in Gemini streams.
+//     register an OnLastTextDelta callback. The dispatcher buffers one
+//     event of lookahead per content block and fires the callback on
+//     the LAST text_delta of the first text block (block index 0 by
+//     default). The wire sequence ends with the mutated delta, then
+//     the protocol's per-block terminator, then any tool_use blocks,
+//     then the protocol's overall terminal — no synthesized event
+//     follows the protocol's terminator (this is the R1 fix vs.
+//     EmitBeforeFinish, which appended a new block after the
+//     terminator).
 //
-//   - Streaming with Down.Target == "reasoning": skipped with a no-op
-//     callback registration (no W1 helper for reasoning synth). Operators
-//     wanting reasoning suffixes should rely on non-streaming responses.
+//   - Streaming with Down.Target == "reasoning": no-op (dispatcher
+//     does not expose a reasoning-last-delta hook in v1). Operators
+//     wanting reasoning suffixes use non-streaming responses.
 //
 //   - Non-streaming: append the suffix to ac.Response.Content (or
 //     .Reasoning) and return ActionMutate. Shallow clone is safe — only
 //     string fields move.
 //
-// Returns ActionContinue when the route does not match or Down.Suffix
-// is empty. The non-streaming branch always Mutates when both checks
-// pass — append is unconditional and operators who chain instances see
+// Returns ActionContinue when the route does not match, Down.Suffix
+// is empty, or the per-call probability draw does not fire. The
+// non-streaming branch always Mutates when those checks pass —
+// append is unconditional and operators who chain instances see
 // additive suffixes (idempotence is not promised).
+//
+// Probability note: in the streaming branch the draw happens at hook
+// registration time, not per-event — the callback either runs or
+// doesn't for the whole stream. This matches operator intent for
+// easter-egg mode: a stream either gets the footer or doesn't.
 func (p *Plugin) OnAfter(_ context.Context, req *v2.ParsedRequest, ac *v2.AfterContext, _ map[string]any) v2.AfterResult {
 	if req == nil || ac == nil {
 		return v2.AfterResult{Action: v2.ActionContinue}
 	}
-	if !p.routes.matches(req.Path) {
+	if !p.routes.Matches(req.Path) {
 		return v2.AfterResult{Action: v2.ActionContinue}
 	}
 	if p.cfg.Down.Suffix == "" {
 		return v2.AfterResult{Action: v2.ActionContinue}
 	}
+	if !p.shouldFire() {
+		return v2.AfterResult{Action: v2.ActionContinue}
+	}
 	if ac.Response == nil {
 		// Streaming branch.
 		if p.cfg.Down.Target == TargetReasoning {
-			// No reasoning synth in W1; document and skip.
+			// No reasoning-last-delta hook in v1; document and skip.
 			return v2.AfterResult{Action: v2.ActionContinue}
 		}
 		suffix := p.cfg.Down.Suffix
-		ac.EmitBeforeFinish(func(emit func(text string)) {
-			emit(suffix)
+		ac.OnLastTextDelta(func(_ int, text string) string {
+			return text + suffix
 		})
 		return v2.AfterResult{Action: v2.ActionContinue}
 	}
@@ -273,6 +351,14 @@ func decodeConfig(cfg map[string]any) (Config, error) {
 	if err := validateDownTarget(c.Down.Target); err != nil {
 		return c, err
 	}
+	if c.Probability != nil {
+		v := *c.Probability
+		// NaN fails every numeric comparison; explicit NaN check first
+		// so a config typo doesn't silently coerce to "never fire."
+		if v != v || v < 0.0 || v > 1.0 {
+			return c, fmt.Errorf("probability = %v (must be in [0.0, 1.0])", v)
+		}
+	}
 	return c, nil
 }
 
@@ -330,73 +416,6 @@ func appendLastUserText(msgs []v2.Message, suffix string) (out []v2.Message, ok 
 	parts[lastPart].Text = parts[lastPart].Text + suffix
 	out[lastMsg].Content = parts
 	return out, true
-}
-
-// --- route matching -------------------------------------------------
-//
-// Same semantics as the textreplace package's matcher (and as pathfilter).
-// We duplicate the 30-odd lines rather than introduce a shared sub-package
-// for v1 — when W4 / W5 land we can lift the matcher into v2 or a
-// neighboring helper. Two copies that read identically is preferable to
-// one premature abstraction for the v1 surface.
-
-type routeMatcher struct {
-	all      bool
-	patterns []routePattern
-}
-
-type routePattern struct {
-	raw      string
-	prefix   string
-	isPrefix bool
-}
-
-func compileRoutes(raw []string) (routeMatcher, error) {
-	rm := routeMatcher{}
-	if len(raw) == 0 {
-		rm.all = true
-		return rm, nil
-	}
-	out := make([]routePattern, 0, len(raw))
-	for i, s := range raw {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return rm, fmt.Errorf("routes[%d] is empty", i)
-		}
-		if s == "*" {
-			rm.all = true
-			return rm, nil
-		}
-		if strings.HasSuffix(s, "*") {
-			out = append(out, routePattern{
-				raw:      s,
-				prefix:   strings.TrimSuffix(s, "*"),
-				isPrefix: true,
-			})
-			continue
-		}
-		out = append(out, routePattern{raw: s})
-	}
-	rm.patterns = out
-	return rm, nil
-}
-
-func (rm routeMatcher) matches(path string) bool {
-	if rm.all {
-		return true
-	}
-	for _, p := range rm.patterns {
-		if p.isPrefix {
-			if strings.HasPrefix(path, p.prefix) {
-				return true
-			}
-			continue
-		}
-		if path == p.raw {
-			return true
-		}
-	}
-	return false
 }
 
 // --- registration ---------------------------------------------------

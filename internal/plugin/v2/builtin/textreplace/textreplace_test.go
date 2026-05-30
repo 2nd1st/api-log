@@ -47,8 +47,14 @@ func TestNew_RejectsLoneStarRouteAndEmptyRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lone '*' should compile to all-paths: %v", err)
 	}
-	if !p.routes.all {
-		t.Errorf("lone '*' should set routes.all=true")
+	// The compiled matcher must accept arbitrary paths after the
+	// collapse — the internal `all` flag is package-private; checking
+	// behavior is the contract surface.
+	if !p.routes.Matches("/v1/anything") {
+		t.Errorf("lone '*' should match arbitrary path")
+	}
+	if !p.routes.Matches("/something/else") {
+		t.Errorf("lone '*' should match every path")
 	}
 	// Empty pattern entry is an operator typo.
 	if _, err := New(map[string]any{"routes": []any{""}}); err == nil {
@@ -283,9 +289,13 @@ func TestOnAfter_Streaming_ContentDeltaMutated(t *testing.T) {
 	d := &v2.StreamDispatcher{Protocol: v2.ProtocolMessages, After: ac}
 	ev := sse.Event{Name: "content_block_delta", Data: json.RawMessage(
 		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}`)}
-	out := d.Process(ev)
+	// R1 dispatcher buffers content deltas one event of lookahead per
+	// block; the OnContentDelta transform is applied at buffering time,
+	// the buffered delta surfaces on the next event or on flush.
+	d.Process(ev)
+	out := d.FlushBeforeFinish()
 	if len(out) != 1 {
-		t.Fatalf("out len = %d", len(out))
+		t.Fatalf("flushed len = %d", len(out))
 	}
 	if !strings.Contains(string(out[0].Data), `"Y好"`) {
 		t.Errorf("content delta not mutated: %s", out[0].Data)

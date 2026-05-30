@@ -275,13 +275,21 @@ func run() error {
 				parsedIn.ClientIP = state.clientAddr
 				continued, intercept, mutated := applyBeforeHooks(ctx, pluginV2Reg, r, parsedIn)
 				if !continued {
-					// BEFORE intercept short-circuits forwarding. Serve
-					// the intercept payload to the client; do not call
-					// rp.ServeHTTP. Trace still records (spec §5.2) —
-					// the marker on the slot tells buildTrace what
-					// happened.
+					// BEFORE intercept short-circuits forwarding. Per
+					// spec §2.2 / §2.4 the AFTER chain MUST still run
+					// on the synthesized intercept response so
+					// decorators (watermark / text-append /
+					// text-replace AFTER halves) get to decorate the
+					// short-circuited reply. The plugin-intercepted
+					// marker tracks the ORIGINATING intercept; an
+					// AFTER plugin that re-intercepts on top moves
+					// the marker to itself (later intercept wins).
 					recordIntercept(ctx, intercept)
-					serveIntercept(crw, intercept)
+					finalIntercept := runAfterChainOnIntercept(ctx, pluginV2Reg, &parsedIn, intercept)
+					if finalIntercept != intercept {
+						recordIntercept(ctx, finalIntercept)
+					}
+					serveIntercept(crw, finalIntercept)
 					goto finalize
 				}
 				postChainReq = mutated

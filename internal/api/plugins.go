@@ -255,6 +255,31 @@ func putConfigPlugins(deps Deps) http.Handler {
 	})
 }
 
+// deleteConfigPlugins implements DELETE /api/config/plugins (spec
+// §8.5 row 5). Clears the runtime override block, so subsequent GET
+// reports source="yaml" and the effective registry reverts to the
+// YAML defaults on next reload.
+//
+// Idempotent: deleting a never-saved override is a 200, not 404 —
+// "make the state be no-override" is the operator's intent regardless
+// of whether one exists.
+func deleteConfigPlugins(deps Deps) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := runtime.SaveOverride(deps.DataDir, func(ov *runtime.Overrides) {
+			ov.Plugins = nil
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "override_write_failed",
+				map[string]string{"detail": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":     true,
+			"source": "yaml",
+		})
+	})
+}
+
 // putConfigPluginInstance implements PUT /api/config/plugins/{id}.
 //
 // Single-instance patch: load current override list, locate the entry

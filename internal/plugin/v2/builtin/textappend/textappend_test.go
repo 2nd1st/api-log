@@ -248,11 +248,12 @@ func TestOnAfter_NonStreaming_EmptySuffix(t *testing.T) {
 
 // ----- AFTER streaming -----------------------------------------------
 
-// TestOnAfter_Streaming_ContentSuffixEmitsViaFlush: the W1
-// EmitBeforeFinish callback must produce one synthesized content delta
-// carrying the suffix. We assert on FlushBeforeFinish (the synchronous
-// entry point) so the test does not depend on goroutine scheduling.
-func TestOnAfter_Streaming_ContentSuffixEmitsViaFlush(t *testing.T) {
+// TestOnAfter_Streaming_ContentSuffixMutatesLastDelta: the R1 design
+// appends the suffix to the LAST text_delta of the first content
+// block — there is no new event after content_block_stop /
+// response.output_text.done. We drive a minimal Messages stream
+// through the dispatcher and assert on the wire sequence.
+func TestOnAfter_Streaming_ContentSuffixMutatesLastDelta(t *testing.T) {
 	p, err := New(map[string]any{
 		"down": map[string]any{"suffix": "\n\nthanks", "target": TargetContent},
 	})
@@ -265,23 +266,29 @@ func TestOnAfter_Streaming_ContentSuffixEmitsViaFlush(t *testing.T) {
 	if res.Action != v2.ActionContinue {
 		t.Fatalf("streaming OnAfter should Continue and register; got %v", res.Action)
 	}
+	// The plugin must register ONE OnLastTextDelta callback (not
+	// EmitBeforeFinish).
+	if cbs := ac.LastTextDeltaCallbacks(); len(cbs) != 1 {
+		t.Fatalf("expected 1 OnLastTextDelta registration; got %d", len(cbs))
+	}
+	if cbs := ac.BeforeFinishCallbacks(); len(cbs) != 0 {
+		t.Errorf("plugin should NOT register deprecated EmitBeforeFinish; got %d", len(cbs))
+	}
+
 	d := &v2.StreamDispatcher{Protocol: v2.ProtocolMessages, After: ac}
-	flushed := d.FlushBeforeFinish()
-	if len(flushed) != 1 {
-		t.Fatalf("expected 1 synth event, got %d", len(flushed))
+	// Replay a minimal Anthropic stream: one delta + content_block_stop.
+	d.Process(sse.Event{Name: "content_block_delta", Data: json.RawMessage(
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)})
+	out := d.Process(sse.Event{Name: "content_block_stop", Data: json.RawMessage(
+		`{"type":"content_block_stop","index":0}`)})
+	if len(out) != 2 {
+		t.Fatalf("stop should flush + emit stop; out len = %d", len(out))
 	}
-	if !strings.Contains(string(flushed[0].Data), "thanks") {
-		t.Errorf("synth event missing suffix payload: %s", flushed[0].Data)
+	if !strings.Contains(string(out[0].Data), "hello\\n\\nthanks") {
+		t.Errorf("last delta missing suffix: %s", out[0].Data)
 	}
-	// The synthesized event must use the protocol's text-delta shape so
-	// the W1 stream dispatcher does NOT mis-classify it as something
-	// else when re-read.
-	classified := v2.Classify(v2.ProtocolMessages, flushed[0])
-	if classified.Class != v2.ClassContentDelta {
-		t.Errorf("synth event class = %v, want ClassContentDelta", classified.Class)
-	}
-	if !strings.Contains(classified.Text, "thanks") {
-		t.Errorf("synth event payload = %q", classified.Text)
+	if out[1].Name != "content_block_stop" {
+		t.Errorf("second event should be content_block_stop; got %+v", out[1])
 	}
 }
 
@@ -322,14 +329,15 @@ func TestOnAfter_Streaming_NonMatchRoute_NoRegistration(t *testing.T) {
 	}
 	ac := &v2.AfterContext{}
 	p.OnAfter(context.Background(), &v2.ParsedRequest{Path: "/v1/messages"}, ac, nil)
-	if got := ac.BeforeFinishCallbacks(); len(got) != 0 {
+	if got := ac.LastTextDeltaCallbacks(); len(got) != 0 {
 		t.Errorf("non-match route should not register; got %d callbacks", len(got))
 	}
 }
 
 func TestOnAfter_Streaming_ReasoningTargetSkipped(t *testing.T) {
-	// W1 has no reasoning-delta synthesizer; the plugin documents this
-	// as a v1 limitation by registering NOTHING in this branch.
+	// The dispatcher has no reasoning-last-delta hook; the plugin
+	// documents this as a v1 limitation by registering NOTHING in this
+	// branch.
 	p, err := New(map[string]any{
 		"down": map[string]any{"suffix": "x", "target": TargetReasoning},
 	})
@@ -341,7 +349,7 @@ func TestOnAfter_Streaming_ReasoningTargetSkipped(t *testing.T) {
 	if res.Action != v2.ActionContinue {
 		t.Errorf("reasoning-target streaming should Continue, got %v", res.Action)
 	}
-	if got := ac.BeforeFinishCallbacks(); len(got) != 0 {
+	if got := ac.LastTextDeltaCallbacks(); len(got) != 0 {
 		t.Errorf("reasoning-target streaming should register nothing; got %d", len(got))
 	}
 }
@@ -371,6 +379,104 @@ func TestConfigSchema_HasEnumTargets(t *testing.T) {
 	}
 	if !foundUpTarget || !foundDownTarget {
 		t.Errorf("schema missing target enums: up=%v down=%v", foundUpTarget, foundDownTarget)
+	}
+}
+
+// ----- Probability --------------------------------------------------
+
+func TestProbability_NeverFiresWhenZero(t *testing.T) {
+	zero := 0.0
+	p, err := NewWithRand(map[string]any{
+		"up":          map[string]any{"suffix": "x"},
+		"probability": zero,
+	}, func() float64 { return 0.0 })
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	req := mkReq("/v1/messages", []v2.Message{textTurn("user", "hello")}, "")
+	for i := 0; i < 5; i++ {
+		res := p.OnBefore(context.Background(), req, nil)
+		if res.Action != v2.ActionContinue {
+			t.Errorf("probability=0 should never fire (iter %d): %v", i, res.Action)
+		}
+	}
+}
+
+func TestProbability_AlwaysFiresWhenOne(t *testing.T) {
+	one := 1.0
+	p, err := NewWithRand(map[string]any{
+		"up":          map[string]any{"suffix": "x"},
+		"probability": one,
+	}, func() float64 { return 0.999 })
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	req := mkReq("/v1/messages", []v2.Message{textTurn("user", "hello")}, "")
+	res := p.OnBefore(context.Background(), req, nil)
+	if res.Action != v2.ActionMutate {
+		t.Errorf("probability=1 should always fire; got %v", res.Action)
+	}
+}
+
+func TestProbability_NilDefaultsToAlwaysFire(t *testing.T) {
+	// Absent probability key behaves like 1.0 — operator did not opt
+	// into easter-egg mode.
+	p, err := NewWithRand(map[string]any{
+		"up": map[string]any{"suffix": "x"},
+	}, func() float64 { return 0.999 })
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if p.cfg.Probability != nil {
+		t.Errorf("nil probability config should leave cfg.Probability nil; got %v", *p.cfg.Probability)
+	}
+	req := mkReq("/v1/messages", []v2.Message{textTurn("user", "hello")}, "")
+	res := p.OnBefore(context.Background(), req, nil)
+	if res.Action != v2.ActionMutate {
+		t.Errorf("nil probability should always fire; got %v", res.Action)
+	}
+}
+
+func TestProbability_HalfDeterministicSplit(t *testing.T) {
+	// With probability=0.5 and a deterministic source that flips
+	// between values straddling 0.5, exactly half the calls fire.
+	half := 0.5
+	draws := []float64{0.1, 0.7, 0.2, 0.8, 0.3, 0.9} // 3 < 0.5, 3 >= 0.5
+	i := 0
+	p, err := NewWithRand(map[string]any{
+		"up":          map[string]any{"suffix": "x"},
+		"probability": half,
+	}, func() float64 {
+		v := draws[i%len(draws)]
+		i++
+		return v
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	req := mkReq("/v1/messages", []v2.Message{textTurn("user", "hello")}, "")
+	fires := 0
+	for k := 0; k < len(draws); k++ {
+		res := p.OnBefore(context.Background(), req, nil)
+		if res.Action == v2.ActionMutate {
+			fires++
+		}
+	}
+	if fires != 3 {
+		t.Errorf("expected 3/6 fires with seeded draws, got %d", fires)
+	}
+}
+
+func TestProbability_OutOfRangeRejected(t *testing.T) {
+	cases := []float64{-0.1, 1.1, 2.0}
+	for _, v := range cases {
+		_, err := New(map[string]any{
+			"up":          map[string]any{"suffix": "x"},
+			"probability": v,
+		})
+		if err == nil {
+			t.Errorf("probability=%v should fail Init", v)
+		}
 	}
 }
 

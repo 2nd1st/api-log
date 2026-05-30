@@ -59,7 +59,7 @@ type Config struct {
 // both — empty rule slices make the corresponding direction a no-op.
 type Plugin struct {
 	cfg    Config
-	routes routeMatcher
+	routes v2.RouteMatcher
 }
 
 // New parses cfg, validates it, and returns a ready Plugin. Used by the
@@ -71,7 +71,7 @@ func New(cfg map[string]any) (*Plugin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("text-replace: %w", err)
 	}
-	rm, err := compileRoutes(parsed.Routes)
+	rm, err := v2.CompileRoutes(parsed.Routes)
 	if err != nil {
 		return nil, fmt.Errorf("text-replace: %w", err)
 	}
@@ -94,7 +94,7 @@ func (p *Plugin) OnBefore(_ context.Context, req *v2.ParsedRequest, _ map[string
 	if req == nil {
 		return v2.BeforeResult{Action: v2.ActionContinue}
 	}
-	if !p.routes.matches(req.Path) {
+	if !p.routes.Matches(req.Path) {
 		return v2.BeforeResult{Action: v2.ActionContinue}
 	}
 	if len(p.cfg.Up) == 0 {
@@ -129,7 +129,7 @@ func (p *Plugin) OnAfter(_ context.Context, req *v2.ParsedRequest, ac *v2.AfterC
 	if req == nil || ac == nil {
 		return v2.AfterResult{Action: v2.ActionContinue}
 	}
-	if !p.routes.matches(req.Path) {
+	if !p.routes.Matches(req.Path) {
 		return v2.AfterResult{Action: v2.ActionContinue}
 	}
 	if len(p.cfg.Down) == 0 {
@@ -294,74 +294,6 @@ func rewriteMessages(msgs []v2.Message, rules []Rule) (out []v2.Message, changed
 func anyMatches(text string, rules []Rule) bool {
 	for _, r := range rules {
 		if strings.Contains(text, r.Match) {
-			return true
-		}
-	}
-	return false
-}
-
-// --- route matching -------------------------------------------------
-
-// routeMatcher is a precompiled list of route patterns. Identical
-// semantics to internal/plugin/builtin/pathfilter:
-//   - empty list: match every path
-//   - exact: pattern equals path
-//   - prefix: trailing "*" stripped, HasPrefix against path
-type routeMatcher struct {
-	all      bool
-	patterns []routePattern
-}
-
-type routePattern struct {
-	raw      string
-	prefix   string
-	isPrefix bool
-}
-
-func compileRoutes(raw []string) (routeMatcher, error) {
-	rm := routeMatcher{}
-	if len(raw) == 0 {
-		rm.all = true
-		return rm, nil
-	}
-	out := make([]routePattern, 0, len(raw))
-	for i, s := range raw {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return rm, fmt.Errorf("routes[%d] is empty", i)
-		}
-		if s == "*" {
-			// Lone "*" means "all paths" — same semantic as the empty
-			// list; collapse to avoid a degenerate per-call HasPrefix("").
-			rm.all = true
-			return rm, nil
-		}
-		if strings.HasSuffix(s, "*") {
-			out = append(out, routePattern{
-				raw:      s,
-				prefix:   strings.TrimSuffix(s, "*"),
-				isPrefix: true,
-			})
-			continue
-		}
-		out = append(out, routePattern{raw: s})
-	}
-	rm.patterns = out
-	return rm, nil
-}
-
-func (rm routeMatcher) matches(path string) bool {
-	if rm.all {
-		return true
-	}
-	for _, p := range rm.patterns {
-		if p.isPrefix {
-			if strings.HasPrefix(path, p.prefix) {
-				return true
-			}
-			continue
-		}
-		if path == p.raw {
 			return true
 		}
 	}

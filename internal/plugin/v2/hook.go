@@ -45,7 +45,7 @@ type BeforePlugin interface {
 //
 //   - Streaming. AfterContext.Response is nil. The plugin registers
 //     semantic callbacks on ac (OnContentDelta, OnReasoningDelta,
-//     EmitBeforeFinish) — see AfterContext below — then returns
+//     OnLastTextDelta) — see AfterContext below — then returns
 //     {Action: ActionContinue}. The dispatcher applies the registered
 //     transforms as events flow. ActionMutate is ignored in the
 //     streaming branch (there is no buffered response to replace);
@@ -54,6 +54,22 @@ type BeforePlugin interface {
 //
 // OnAfter is a ONE-SHOT registration call in the streaming branch, not
 // a per-event call. Per-event work happens inside the callbacks.
+//
+// Forward compatibility (spec §10.6): Phase D will add an opt-in
+// ToolCallMutator interface detected via type assertion (Go stdlib's
+// io.WriterTo / io.ReaderFrom evolution pattern). Existing AfterPlugin
+// implementations will NOT need to change. Plugins implementing
+// ToolCallMutator will gain an
+//
+//	OnToolCall(ctx, req, call *ToolCall) ToolCallResult
+//
+// callback for buffered tool-call arguments (Continue / Mutate the
+// args / Intercept the single call). The dispatcher will spin up the
+// buffer-then-expose machinery only when at least one registered
+// plugin opts in via ToolCallMutator. The name "ToolCallMutator" is
+// the verbatim interface identifier Phase D will land in this package;
+// it is referenced here so a search for the name surfaces both the
+// commitment and this note.
 type AfterPlugin interface {
 	Name() string
 	OnAfter(ctx context.Context, req *ParsedRequest, ac *AfterContext, cfg map[string]any) AfterResult
@@ -76,9 +92,25 @@ type AfterContext struct {
 	// onReasoningDelta is the same idea for reasoning/thinking text.
 	onReasoningDelta []func(string) string
 
-	// beforeFinish is the registered set of synthesized-final-delta
-	// emitters; each is called just before the terminal SSE event is
-	// re-emitted. Plugins push via EmitBeforeFinish.
+	// onLastTextDelta is the registered chain applied to the LAST
+	// text-delta of each content block. The dispatcher buffers one
+	// event of lookahead per block; on the block's terminator
+	// (Anthropic content_block_stop, OpenAI Responses
+	// response.output_text.done, or stream EOF for protocols without a
+	// per-block terminator), it fires these callbacks on the buffered
+	// text and re-emits the mutated delta. Plugins push via
+	// OnLastTextDelta.
+	onLastTextDelta []func(blockIndex int, text string) string
+
+	// beforeFinish is preserved as a struct field for source
+	// compatibility with R0 plugins compiled against the synthesize-
+	// new-event design. The framework no longer calls these callbacks
+	// (the R1 amendment replaced the "emit a new content block after
+	// the terminator" model with "mutate the last delta of an existing
+	// block"). New code should use OnLastTextDelta.
+	//
+	// Deprecated: register OnLastTextDelta instead. EmitBeforeFinish
+	// callbacks are accepted but never fired.
 	beforeFinish []func(emit func(text string))
 }
 
@@ -111,15 +143,32 @@ func (ac *AfterContext) OnReasoningDelta(fn func(text string) string) {
 	ac.onReasoningDelta = append(ac.onReasoningDelta, fn)
 }
 
-// EmitBeforeFinish registers a callback fired just before the
-// stream's terminal event is re-emitted to the client. The callback
-// receives an emit closure; calling emit(text) writes one synthesized
-// content-delta event in the upstream's protocol shape with the given
-// text payload.
+// OnLastTextDelta registers a transform that runs on the LAST
+// text-delta of each content block (block index passed in), giving
+// plugins a place to land an "ends-with" mutation that produces a
+// wire-valid sequence: the buffered delta is rewritten in place and
+// followed by the block's protocol-specific terminator
+// (content_block_stop / response.output_text.done) without any
+// synthesized event after the overall stream terminator.
 //
-// Used by text-append AFTER mode to land a "policy footer" after the
-// model's last token. Multiple registered callbacks run in
-// registration order; each emit() call produces one extra event.
+// Used by text-append AFTER mode for the "policy footer" use case.
+// Returning the input unchanged is cheap and safe.
+//
+// IMPORTANT: tool_use input_json_delta events are a distinct classifier
+// class and NEVER reach this chain (spec §10.6 carve-out).
+func (ac *AfterContext) OnLastTextDelta(fn func(blockIndex int, text string) string) {
+	if ac == nil || fn == nil {
+		return
+	}
+	ac.onLastTextDelta = append(ac.onLastTextDelta, fn)
+}
+
+// EmitBeforeFinish is retained as a no-op registration for source
+// compatibility with R0 plugins. Callbacks registered here are NEVER
+// fired by the framework; new code should use OnLastTextDelta.
+//
+// Deprecated: prefer OnLastTextDelta. See AfterContext.beforeFinish
+// docstring for the migration rationale (R1 amendment 2026-05-30).
 func (ac *AfterContext) EmitBeforeFinish(fn func(emit func(text string))) {
 	if ac == nil || fn == nil {
 		return
@@ -150,8 +199,24 @@ func (ac *AfterContext) ReasoningDeltaTransforms() []func(string) string {
 	return out
 }
 
+// LastTextDeltaCallbacks returns the registered last-text-delta
+// transforms in registration order. Exported for the stream dispatcher
+// and tests; plugin authors should use OnLastTextDelta to register.
+func (ac *AfterContext) LastTextDeltaCallbacks() []func(blockIndex int, text string) string {
+	if ac == nil {
+		return nil
+	}
+	out := make([]func(blockIndex int, text string) string, len(ac.onLastTextDelta))
+	copy(out, ac.onLastTextDelta)
+	return out
+}
+
 // BeforeFinishCallbacks returns the registered before-finish callbacks
 // in registration order.
+//
+// Deprecated: the framework no longer invokes these callbacks (R1
+// amendment). Retained so tests and external consumers compiled
+// against R0 still build. Use LastTextDeltaCallbacks instead.
 func (ac *AfterContext) BeforeFinishCallbacks() []func(emit func(text string)) {
 	if ac == nil {
 		return nil

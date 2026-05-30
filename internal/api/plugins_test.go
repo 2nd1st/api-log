@@ -405,6 +405,99 @@ func TestPutConfigPlugins_PreservesSiblingOverrides(t *testing.T) {
 	}
 }
 
+// --- DELETE /api/config/plugins ---
+
+func TestDeleteConfigPlugins_AuthRequired(t *testing.T) {
+	srv, _ := newPluginsTestServer(t, "tok", nil)
+	req, _ := http.NewRequest("DELETE", srv.URL+"/api/config/plugins", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestDeleteConfigPlugins_RevertsToYAML(t *testing.T) {
+	// Seed an override via PUT, then DELETE clears it. GET afterward
+	// reports source="yaml" with an empty instance list.
+	srv, dir := newPluginsTestServer(t, "tok", nil)
+	if _, body := doJSON(t, "PUT", srv.URL+"/api/config/plugins", "tok",
+		map[string]any{
+			"instances": []map[string]any{
+				{"type": "text-replace", "id": "wm", "enabled": true, "config": map[string]any{}},
+			},
+		}); body["ok"] != true {
+		t.Fatalf("seed PUT failed: %+v", body)
+	}
+
+	status, body := doJSON(t, "DELETE", srv.URL+"/api/config/plugins", "tok", nil)
+	if status != http.StatusOK {
+		t.Fatalf("DELETE status = %d, body=%+v", status, body)
+	}
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
+	}
+	if body["source"] != "yaml" {
+		t.Errorf("source = %v, want yaml", body["source"])
+	}
+
+	// GET reports yaml + empty list.
+	status, body = doJSON(t, "GET", srv.URL+"/api/config/plugins", "tok", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET status = %d", status)
+	}
+	if body["source"] != "yaml" {
+		t.Errorf("post-DELETE source = %v, want yaml", body["source"])
+	}
+	inst, ok := body["instances"].([]any)
+	if !ok || len(inst) != 0 {
+		t.Errorf("instances = %+v, want empty array", body["instances"])
+	}
+
+	// Persistence layer reports nil Plugins.
+	ov, err := runtime.LoadOverrides(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ov.Plugins != nil {
+		t.Errorf("disk Plugins after DELETE = %+v, want nil", ov.Plugins)
+	}
+}
+
+func TestDeleteConfigPlugins_IdempotentWhenNoOverride(t *testing.T) {
+	srv, _ := newPluginsTestServer(t, "tok", nil)
+	status, body := doJSON(t, "DELETE", srv.URL+"/api/config/plugins", "tok", nil)
+	if status != http.StatusOK {
+		t.Fatalf("DELETE on virgin store should be 200; got %d body=%+v", status, body)
+	}
+	if body["source"] != "yaml" {
+		t.Errorf("source = %v, want yaml", body["source"])
+	}
+}
+
+func TestDeleteConfigPlugins_PreservesSiblingOverrides(t *testing.T) {
+	srv, dir := newPluginsTestServer(t, "tok", nil)
+	if err := runtime.SaveOverride(dir, func(o *runtime.Overrides) {
+		v := true
+		o.Media.SaveAttachments = &v
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := doJSON(t, "DELETE", srv.URL+"/api/config/plugins", "tok", nil); status != http.StatusOK {
+		t.Fatalf("DELETE status = %d", status)
+	}
+	ov, err := runtime.LoadOverrides(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ov.Media.SaveAttachments == nil || *ov.Media.SaveAttachments != true {
+		t.Errorf("media override clobbered by DELETE: %+v", ov.Media.SaveAttachments)
+	}
+}
+
 // --- PUT /api/config/plugins/{id} ---
 
 func TestPutPluginInstance_AuthRequired(t *testing.T) {

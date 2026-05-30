@@ -45,22 +45,39 @@ const (
 	ClassToolUseDelta
 
 	// ClassTerminal marks the stream-end event. Anthropic message_stop,
-	// Chat data:[DONE], Responses response.completed. The dispatcher
-	// runs registered EmitBeforeFinish callbacks immediately before
-	// re-emitting the terminal event.
+	// Chat data:[DONE] (out-of-band — never reaches the dispatcher as
+	// an event), Responses response.completed. Pass-through; any
+	// remaining buffered last-delta is flushed (with OnLastTextDelta
+	// applied) before the terminal event re-emits.
 	ClassTerminal
+
+	// ClassContentBlockStop marks the per-content-block terminator.
+	// Anthropic content_block_stop, OpenAI Responses
+	// response.output_text.done. The dispatcher pairs this with the
+	// buffered last text delta of the same block: it runs the
+	// OnLastTextDelta chain on the buffered text, re-emits the
+	// mutated delta, then emits the stop event. For protocols
+	// without a per-block terminator (Chat, Gemini) the EOF flush
+	// covers the same case.
+	ClassContentBlockStop
 )
 
 // ClassifiedEvent is the dispatcher's working tuple. Text is the
 // extracted text payload when Class is ContentDelta / ReasoningDelta;
 // empty otherwise. Mutator writes a new event back (with the same
 // envelope and a substituted text payload).
+//
+// BlockIndex is the content-block index for ContentDelta and
+// ContentBlockStop events. Anthropic Messages carries this in the
+// wire format ("index" field); other protocols use 0 as the virtual
+// block index for the single text stream they emit. The dispatcher
+// uses BlockIndex to pair a buffered last-delta with the right
+// ContentBlockStop.
 type ClassifiedEvent struct {
-	Event sse.Event
-	Class EventClass
-	// Text is the extracted text payload for content/reasoning deltas.
-	// Empty for other classes.
-	Text string
+	Event      sse.Event
+	Class      EventClass
+	Text       string
+	BlockIndex int
 }
 
 // Classify computes the semantic class of an SSE event for the given
@@ -92,8 +109,19 @@ func classifyMessages(ev sse.Event) ClassifiedEvent {
 	switch ev.Name {
 	case "message_stop":
 		return ClassifiedEvent{Event: ev, Class: ClassTerminal}
+	case "content_block_stop":
+		var frame struct {
+			Index int `json:"index"`
+		}
+		// Best-effort index extraction; an unparseable frame falls back
+		// to block 0 — flushing the wrong block is recoverable (we
+		// emit the buffered delta unchanged), classifying it as Other
+		// would silently drop the OnLastTextDelta opportunity.
+		_ = json.Unmarshal(ev.Data, &frame)
+		return ClassifiedEvent{Event: ev, Class: ClassContentBlockStop, BlockIndex: frame.Index}
 	case "content_block_delta":
 		var frame struct {
+			Index int `json:"index"`
 			Delta *struct {
 				Type     string `json:"type"`
 				Text     string `json:"text"`
@@ -105,11 +133,11 @@ func classifyMessages(ev sse.Event) ClassifiedEvent {
 		}
 		switch frame.Delta.Type {
 		case "text_delta":
-			return ClassifiedEvent{Event: ev, Class: ClassContentDelta, Text: frame.Delta.Text}
+			return ClassifiedEvent{Event: ev, Class: ClassContentDelta, Text: frame.Delta.Text, BlockIndex: frame.Index}
 		case "thinking_delta":
-			return ClassifiedEvent{Event: ev, Class: ClassReasoningDelta, Text: frame.Delta.Thinking}
+			return ClassifiedEvent{Event: ev, Class: ClassReasoningDelta, Text: frame.Delta.Thinking, BlockIndex: frame.Index}
 		case "input_json_delta":
-			return ClassifiedEvent{Event: ev, Class: ClassToolUseDelta}
+			return ClassifiedEvent{Event: ev, Class: ClassToolUseDelta, BlockIndex: frame.Index}
 		}
 		return ClassifiedEvent{Event: ev, Class: ClassOther}
 	}
@@ -152,6 +180,12 @@ func classifyResponses(ev sse.Event) ClassifiedEvent {
 	switch ev.Name {
 	case "response.completed":
 		return ClassifiedEvent{Event: ev, Class: ClassTerminal}
+	case "response.output_text.done":
+		// Per-content-block terminator for the output_text stream.
+		// Block index 0 — the Responses wire format does not surface
+		// a per-text-block index; the dispatcher treats the whole
+		// text stream as a single virtual block.
+		return ClassifiedEvent{Event: ev, Class: ClassContentBlockStop, BlockIndex: 0}
 	case "response.output_text.delta":
 		var frame struct {
 			Delta string `json:"delta"`
@@ -159,7 +193,7 @@ func classifyResponses(ev sse.Event) ClassifiedEvent {
 		if err := json.Unmarshal(ev.Data, &frame); err != nil {
 			return ClassifiedEvent{Event: ev, Class: ClassOther}
 		}
-		return ClassifiedEvent{Event: ev, Class: ClassContentDelta, Text: frame.Delta}
+		return ClassifiedEvent{Event: ev, Class: ClassContentDelta, Text: frame.Delta, BlockIndex: 0}
 	case "response.reasoning_summary_text.delta", "response.reasoning.delta":
 		var frame struct {
 			Delta string `json:"delta"`
@@ -405,49 +439,61 @@ func mustJSONString(s string) string {
 //   - Content / reasoning deltas have each registered transform applied
 //     in registration order; the final text is written back into the
 //     event via RewriteDeltaText.
-//   - Per-event Process does NOT emit before-finish deltas. End-of-
-//     stream is signaled by the caller closing the input channel of
-//     WrapStream (or by an explicit call to FlushBeforeFinish for the
-//     synchronous-loop integration). This keeps the trigger uniform
-//     across all four protocols even though only Messages and
-//     Responses emit a named terminal event (Chat's [DONE] is
-//     swallowed by the SSE parser; Gemini has no terminal sentinel).
-//
-// The dispatcher itself is synchronous and goroutine-free. WrapStream
-// is the channel wrapper that adds the EOF-trigger semantics.
+//   - One event of lookahead per content block: the dispatcher holds
+//     the most recent content_delta of each block index, flushing it
+//     when (a) the next content_delta for the same block arrives, (b)
+//     a content_block_stop for that block arrives — in which case the
+//     OnLastTextDelta chain runs first — or (c) the stream EOF flush
+//     fires.
+//   - Per-block stops (ClassContentBlockStop) emit the buffered last
+//     delta with OnLastTextDelta applied, then the stop event itself.
+//     This is the structural fix for the R1 amendment: append-to-
+//     last-delta produces a wire-valid sequence ending with the
+//     protocol's terminator, not a synthesized block after it.
+//   - Per-event Process is the synchronous primitive. WrapStream is
+//     the channel wrapper that calls Process and FlushBeforeFinish on
+//     EOF.
 type StreamDispatcher struct {
 	Protocol Protocol
 	After    *AfterContext
+
+	// pending holds the most recent content-delta per block index,
+	// already re-emitted through the OnContentDelta chain. The
+	// dispatcher flushes pending on the next event for the same block,
+	// on the block's terminator (applying OnLastTextDelta first), or
+	// on EOF (applying OnLastTextDelta first).
+	pending map[int]ClassifiedEvent
+}
+
+// pendingMap lazy-inits the dispatcher's per-block buffer so the
+// zero-value StreamDispatcher works without an explicit constructor.
+func (d *StreamDispatcher) pendingMap() map[int]ClassifiedEvent {
+	if d.pending == nil {
+		d.pending = make(map[int]ClassifiedEvent)
+	}
+	return d.pending
 }
 
 // Process classifies one event, applies registered transforms, and
-// returns the event to re-emit. Returns the original event unchanged
-// for ClassOther / ClassTerminal / ClassToolUseDelta.
-//
-// Returns a slice (always length 1) for symmetry with WrapStream and
-// to leave room for a future variant that might split content blocks.
+// returns the events to re-emit. Length depends on the event class:
+// content_delta usually returns 0 (buffered) or 1 (the previously
+// buffered delta flushed in front of the new one); content_block_stop
+// returns up to 2 (flushed-last-delta + stop); other classes return 1.
 func (d *StreamDispatcher) Process(ev sse.Event) []sse.Event {
 	classified := Classify(d.Protocol, ev)
 	switch classified.Class {
 	case ClassContentDelta:
-		text := classified.Text
-		for _, fn := range d.After.ContentDeltaTransforms() {
-			text = fn(text)
-		}
-		if text == classified.Text {
-			return []sse.Event{ev}
-		}
-		out, err := RewriteDeltaText(d.Protocol, classified, text)
-		if err != nil {
-			// Rewrite failure → preserve original (fail-open).
-			return []sse.Event{ev}
-		}
-		return []sse.Event{out}
+		return d.handleContentDelta(classified, ev)
 	case ClassReasoningDelta:
 		text := classified.Text
 		for _, fn := range d.After.ReasoningDeltaTransforms() {
 			text = fn(text)
 		}
+		// Reasoning deltas pass through without flushing the per-block
+		// content buffer. Anthropic streams thinking blocks at a
+		// distinct content_block index; the text-content buffer is
+		// independent and must keep waiting for its own block stop /
+		// EOF before OnLastTextDelta fires.
 		if text == classified.Text {
 			return []sse.Event{ev}
 		}
@@ -457,71 +503,208 @@ func (d *StreamDispatcher) Process(ev sse.Event) []sse.Event {
 		}
 		return []sse.Event{out}
 	case ClassToolUseDelta:
-		// Carve-out: tool-use deltas pass through untouched even when
-		// content transforms are registered. The classifier already
-		// extracted no Text; we re-emit the original.
+		// Carve-out: tool-use deltas pass through untouched. Tool-use
+		// blocks have their own indices; the text-content buffer
+		// stays pending — Anthropic's content_block_stop for the
+		// text block is the trigger we wait on.
 		return []sse.Event{ev}
+	case ClassContentBlockStop:
+		return d.handleContentBlockStop(classified, ev)
 	case ClassTerminal:
-		// Terminal events pass through unchanged. The before-finish
-		// emit hooks fire on stream EOF (WrapStream / FlushBeforeFinish),
-		// not on the terminal event itself — Chat has no terminal
-		// event at all and Gemini's terminal is also out-of-band, so
-		// uniform handling means "react to channel close" rather than
-		// "react to a protocol-specific sentinel."
-		return []sse.Event{ev}
+		// Stream-level terminator. Flush any remaining buffered
+		// last-deltas (applying OnLastTextDelta) so the suffix lands
+		// before the protocol's terminator. This handles the Chat
+		// path (no per-block stop) and is also defensive for
+		// well-formed Messages / Responses streams that already
+		// flushed via ContentBlockStop.
+		out := d.flushAll(true)
+		return append(out, ev)
 	default:
+		// ClassOther — pings, content_block_start, message_delta,
+		// response.output_item.added, and any unknown frames. Pass
+		// through; keep the pending buffer intact. Flushing here
+		// would silently drop the OnLastTextDelta opportunity in
+		// streams that interleave a ping between the last text
+		// delta and content_block_stop — the per-block terminator
+		// is the trigger we wait on.
 		return []sse.Event{ev}
 	}
 }
 
-// FlushBeforeFinish runs every registered EmitBeforeFinish callback
-// and returns the synthesized events the framework should write to
-// the client before closing the response stream.
-//
-// Used by both the channel-form WrapStream (on input channel close)
-// and any synchronous integration that wants the same EOF semantics.
-// Calling FlushBeforeFinish twice yields a duplicate flush; the
-// framework MUST call it exactly once per stream.
-func (d *StreamDispatcher) FlushBeforeFinish() []sse.Event {
-	cbs := d.After.BeforeFinishCallbacks()
+// handleContentDelta applies the OnContentDelta chain to the new
+// event, then buffers it. If a previous delta for the same block was
+// pending, that previous one is now NOT-the-last and is flushed as-is
+// in front of the new buffer.
+func (d *StreamDispatcher) handleContentDelta(classified ClassifiedEvent, ev sse.Event) []sse.Event {
+	text := classified.Text
+	for _, fn := range d.After.ContentDeltaTransforms() {
+		text = fn(text)
+	}
+	stored := classified
+	stored.Text = text
+	if text != classified.Text {
+		rewritten, err := RewriteDeltaText(d.Protocol, classified, text)
+		if err == nil {
+			stored.Event = rewritten
+		}
+	}
+
+	pending := d.pendingMap()
+	var out []sse.Event
+	// Flush any other-block pending first to preserve ordering. Same-
+	// block pending becomes "not the last" and flushes without the
+	// OnLastTextDelta hook.
+	for idx, prev := range pending {
+		if idx == classified.BlockIndex {
+			continue
+		}
+		out = append(out, prev.Event)
+		delete(pending, idx)
+	}
+	if prev, ok := pending[classified.BlockIndex]; ok {
+		out = append(out, prev.Event)
+	}
+	pending[classified.BlockIndex] = stored
+	return out
+}
+
+// handleContentBlockStop flushes the buffered last delta for the
+// stop's block index with the OnLastTextDelta chain applied, then
+// emits the stop event itself.
+func (d *StreamDispatcher) handleContentBlockStop(classified ClassifiedEvent, ev sse.Event) []sse.Event {
+	pending := d.pendingMap()
+	// Flush any other-block pending first.
+	var out []sse.Event
+	for idx, prev := range pending {
+		if idx == classified.BlockIndex {
+			continue
+		}
+		out = append(out, prev.Event)
+		delete(pending, idx)
+	}
+	if prev, ok := pending[classified.BlockIndex]; ok {
+		out = append(out, d.applyLastTextDelta(prev))
+		delete(pending, classified.BlockIndex)
+	}
+	out = append(out, ev)
+	return out
+}
+
+// applyLastTextDelta runs the OnLastTextDelta chain on a buffered
+// delta and returns the resulting event. When the chain leaves the
+// text unchanged, the buffered (already-OnContentDelta-applied) event
+// is emitted as-is.
+func (d *StreamDispatcher) applyLastTextDelta(buffered ClassifiedEvent) sse.Event {
+	cbs := d.After.LastTextDeltaCallbacks()
 	if len(cbs) == 0 {
+		return buffered.Event
+	}
+	text := buffered.Text
+	for _, fn := range cbs {
+		text = fn(buffered.BlockIndex, text)
+	}
+	if text == buffered.Text {
+		return buffered.Event
+	}
+	// Build a fresh ClassifiedEvent describing the buffered event so
+	// RewriteDeltaText sees the correct Class — buffered.Event has
+	// the prior text payload, but its Name / envelope are intact.
+	classified := ClassifiedEvent{
+		Event:      buffered.Event,
+		Class:      ClassContentDelta,
+		Text:       buffered.Text,
+		BlockIndex: buffered.BlockIndex,
+	}
+	rewritten, err := RewriteDeltaText(d.Protocol, classified, text)
+	if err != nil {
+		return buffered.Event
+	}
+	return rewritten
+}
+
+// flushAll empties the per-block buffer. When applyLast is true, the
+// OnLastTextDelta chain runs on each (used at EOF and on the stream
+// terminator); otherwise the buffer is emitted as-is. Returned slice
+// preserves ascending block-index order so multi-block streams flush
+// deterministically.
+func (d *StreamDispatcher) flushAll(applyLast bool) []sse.Event {
+	if len(d.pending) == 0 {
 		return nil
 	}
-	out := make([]sse.Event, 0, len(cbs))
-	for _, fn := range cbs {
-		fn(func(text string) {
-			delta, err := SynthesizeContentDelta(d.Protocol, text)
-			if err != nil {
-				return
-			}
-			out = append(out, delta)
-		})
+	// Sort ascending so the flush order is deterministic and matches
+	// the typical upstream ordering. Map iteration is non-deterministic
+	// in Go; sorting matters for the EOF case where multiple blocks
+	// might still be pending (rare in practice but legal).
+	keys := make([]int, 0, len(d.pending))
+	for k := range d.pending {
+		keys = append(keys, k)
+	}
+	// Insertion sort — keys is tiny in practice (one content text
+	// block plus zero or one reasoning block per response).
+	for i := 1; i < len(keys); i++ {
+		j := i
+		for j > 0 && keys[j-1] > keys[j] {
+			keys[j-1], keys[j] = keys[j], keys[j-1]
+			j--
+		}
+	}
+	out := make([]sse.Event, 0, len(keys))
+	for _, k := range keys {
+		prev := d.pending[k]
+		if applyLast {
+			out = append(out, d.applyLastTextDelta(prev))
+		} else {
+			out = append(out, prev.Event)
+		}
+		delete(d.pending, k)
 	}
 	return out
+}
+
+// FlushBeforeFinish runs any pending last-delta buffers through the
+// OnLastTextDelta chain (so suffix-style mutations land at EOF for
+// protocols without a per-block terminator, notably Chat) and returns
+// the resulting events.
+//
+// The R1 amendment changed the semantics of this function. Previously
+// it invoked deprecated EmitBeforeFinish callbacks to synthesize new
+// content blocks AFTER the protocol terminator (which produced a
+// wire-invalid sequence). The new behavior flushes the buffered
+// last-delta of each block in place; callers no longer need to hold
+// the terminal event.
+//
+// Calling FlushBeforeFinish twice yields nothing on the second call
+// (the buffer is drained).
+func (d *StreamDispatcher) FlushBeforeFinish() []sse.Event {
+	return d.flushAll(true)
 }
 
 // WrapStream is the channel-form integration of the dispatcher.
 //
 // It reads from upstream until that channel is closed, applies per-
 // event transforms, and writes the re-emitted events to the returned
-// channel. On upstream close it runs FlushBeforeFinish — synthesizing
-// the registered after-finish deltas — BEFORE closing the output
-// channel.
+// channel. On upstream close it runs FlushBeforeFinish — flushing any
+// remaining buffered last-delta — BEFORE closing the output channel.
 //
 // The output channel buffer matches the input buffer size. The caller
 // owns the input channel (closes it on upstream EOF or context
 // cancel); the wrapper owns the output channel (closes it after
 // flushing).
 //
-// Two correctness invariants:
+// Three correctness invariants:
 //
-//   1. EmitBeforeFinish callbacks fire on stream END, not on a
-//      protocol-specific terminal event — works for all four
-//      protocols including Chat (no terminal event at all).
+//  1. OnLastTextDelta callbacks fire on per-block terminators
+//     (content_block_stop / response.output_text.done) when the
+//     upstream emits one, and on EOF otherwise — uniform behavior
+//     across all four protocols including Chat (no terminal event at
+//     all).
 //
-//   2. Tool-use deltas pass through untouched even on EOF; the flush
-//      step only adds synthesized content deltas, never tool-use
-//      events.
+//  2. Tool-use deltas pass through untouched at every stage; the
+//     dispatcher never inspects nor mutates their payloads.
+//
+//  3. No event is emitted after the protocol's stream terminator
+//     (message_stop, response.completed) — the last-delta mutation
+//     happens BEFORE the terminator flows through Process.
 func (d *StreamDispatcher) WrapStream(upstream <-chan sse.Event) <-chan sse.Event {
 	out := make(chan sse.Event, cap(upstream))
 	go func() {

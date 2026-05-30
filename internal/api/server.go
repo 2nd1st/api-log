@@ -69,6 +69,7 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("GET /api/plugins/types", authMW(deps.AdminToken, listPluginTypes(deps)))
 	mux.Handle("GET /api/config/plugins", authMW(deps.AdminToken, getConfigPlugins(deps)))
 	mux.Handle("PUT /api/config/plugins", authMW(deps.AdminToken, putConfigPlugins(deps)))
+	mux.Handle("DELETE /api/config/plugins", authMW(deps.AdminToken, deleteConfigPlugins(deps)))
 	mux.Handle("PUT /api/config/plugins/{id}", authMW(deps.AdminToken, putConfigPluginInstance(deps)))
 
 	// Embedded viewer. Intentionally NOT behind authMW — the page has
