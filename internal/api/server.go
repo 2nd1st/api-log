@@ -1,7 +1,8 @@
 // Package api implements the read API surface from ARCHITECTURE § 6.
 //
-// Four endpoints:
+// Core endpoints:
 //   GET /                       — JSON pointer to the viewer project
+//                                 (binary ships no embedded HTML)
 //   GET /healthz                — liveness + in-memory counter snapshot
 //   GET /api/traces             — list, SQLite-backed, paginated
 //   GET /api/traces/:id         — detail, SQLite + JSONL seek
@@ -17,7 +18,6 @@ import (
 	"github.com/leoyun/api-log/internal/counters"
 	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
 	"github.com/leoyun/api-log/internal/store/sqlite"
-	"github.com/leoyun/api-log/internal/viewer"
 )
 
 // Deps is the bag of process-wide handles the API handlers need.
@@ -67,8 +67,9 @@ type Deps struct {
 }
 
 // NewMux returns an http.Handler ready to mount on the API listener.
-// All /api/* routes require the admin bearer; /healthz and / are
-// authenticated too (operator dashboards need the token anyway).
+// /api/* and /healthz require the admin bearer; GET / is unauthenticated
+// so a reverse proxy or operator dashboard can probe liveness without
+// holding a token.
 func NewMux(deps Deps) http.Handler {
 	mux := http.NewServeMux()
 
@@ -91,18 +92,28 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("DELETE /api/config/plugins", authMW(deps.AdminToken, deleteConfigPlugins(deps)))
 	mux.Handle("PUT /api/config/plugins/{id}", authMW(deps.AdminToken, putConfigPluginInstance(deps)))
 
-	// Embedded viewer. Intentionally NOT behind authMW — the page has
-	// to load to prompt the user for their token. All AJAX calls the
-	// page makes hit the authed /api/* routes above.
-	mux.Handle("GET /viewer/", viewer.Handler("/viewer"))
-
-	// Root redirects to the viewer; old JSON pointer (M4) is gone now
-	// that there's a real UI to send people to.
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/viewer/", http.StatusFound)
-	})
+	// Root returns a small JSON pointer to the out-of-tree viewer
+	// project. The binary itself ships no HTML; operators point a
+	// reverse proxy (caddy, nginx, etc.) at the api-log-viewer build
+	// output and mount api-log under /api on the same origin.
+	mux.HandleFunc("GET /{$}", rootPointer)
 
 	return mux
+}
+
+// rootPointer answers GET / with a static JSON document pointing at
+// the out-of-tree viewer project and naming the live mount paths on
+// this binary. It is intentionally tiny and unauthenticated: a 200 OK
+// from `curl http://host/` is the cheapest "is api-log up?" probe an
+// operator has, and it gives a new adopter a single link to the UI
+// repo without needing to read the README first.
+func rootPointer(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"viewer":  "https://github.com/leoyun/api-log-viewer",
+		"api":     "/api",
+		"healthz": "/healthz",
+		"docs":    "see PHILOSOPHY.md and ARCHITECTURE.md in this repo",
+	})
 }
 
 // --- helpers used across handlers ---

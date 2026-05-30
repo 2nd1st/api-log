@@ -282,43 +282,31 @@ func TestGetByIDNotFound(t *testing.T) {
 	}
 }
 
-func TestRootRedirectsToViewer(t *testing.T) {
+func TestRootReturnsJSONPointer(t *testing.T) {
+	// GET / returns a small unauthenticated JSON pointer (the binary
+	// ships zero HTML; the separate api-log-viewer project is the
+	// frontend). The pointer is a signpost for adopters and the
+	// cheapest possible liveness probe.
 	srv, _, _, _ := newTestServer(t, "tok-test")
-	// Don't follow the redirect — we want to assert the 302 + Location.
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Errorf("status = %d, want 302", resp.StatusCode)
-	}
-	if loc := resp.Header.Get("Location"); loc != "/viewer/" {
-		t.Errorf("Location = %q, want /viewer/", loc)
-	}
-}
-
-func TestViewerServesHTML(t *testing.T) {
-	// /viewer/ is intentionally unauthenticated — the page needs to
-	// load to prompt the user for their token. Verify it serves the
-	// embedded HTML even without a Bearer header.
-	srv, _, _, _ := newTestServer(t, "tok-test")
-	resp, err := http.Get(srv.URL + "/viewer/")
+	resp, err := http.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Errorf("status = %d", resp.StatusCode)
+		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), `class="brand"`) {
-		t.Errorf("viewer body missing brand element")
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Errorf("Content-Type = %q, want text/html", ct)
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, k := range []string{"viewer", "api", "healthz", "docs"} {
+		if _, ok := body[k]; !ok {
+			t.Errorf("body missing key %q (got: %v)", k, body)
+		}
 	}
 }
 
