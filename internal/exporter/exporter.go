@@ -1,0 +1,351 @@
+// Package exporter builds the /api/export zip per PHILOSOPHY § 4
+// (compose, don't absorb) — it ships JSONL bytes straight from disk into
+// a streaming zip, no transformation. The SQLite store is consulted only
+// to decide *which* JSONL lines to ship (filesystem is truth; SQLite is
+// the derived index, principle 6).
+//
+// The zip layout matches uiux-research/phase-i-export-contract.md:
+//
+//	data/<YYYY-MM-DD>/<keyhash8>.jsonl          (all rows on disk matched)
+//	data/<YYYY-MM-DD>/<keyhash8>.partial.jsonl  (subset matched)
+//	agent/CLAUDE.md
+//	agent/jq-cheatsheet.md
+//	README.md
+package exporter
+
+import (
+	"archive/zip"
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"embed"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/leoyun/api-log/internal/store/sqlite"
+)
+
+//go:embed templates/CLAUDE.md templates/jq-cheatsheet.md
+var templatesFS embed.FS
+
+// HardCap is the maximum number of rows the exporter will pull from the
+// SQLite store per request. Mirrors the contract's safety cap (§ Query
+// Parameters / limit).
+const HardCap = 5000
+
+// fileGroup carries the rows that share one source JSONL file. The
+// exporter buckets rows by JSONLPath and turns each bucket into one zip
+// entry, with the name picking complete-vs-partial based on whether
+// every line in the source file is in the match set.
+type fileGroup struct {
+	path       string           // absolute or relative jsonl path on disk
+	offsets    map[int64]string // jsonl_offset -> trace.ID
+	earliestTs time.Time
+	date       string // YYYY-MM-DD parsed from JSONLPath dir name
+	keyhash    string // keyhash8 parsed from JSONLPath base
+}
+
+// WriteZip streams a zip archive of every row matched by filters into w.
+//
+// dataDir is the storage root that JSONL paths in the SQLite rows are
+// relative to (or absolute; we accept either — the row's JSONLPath is
+// the authoritative reader-side path).
+//
+// limit bounds how many rows we read from SQLite, on top of the
+// HardCap-imposed safety bound. Pass 0 for "unbounded up to HardCap".
+//
+// The returned error means either the SQLite read failed (zip not yet
+// started) or a disk read failed mid-stream (zip may be partial). The
+// caller is responsible for setting HTTP headers BEFORE calling — once
+// bytes start flowing to w we can no longer set a status code.
+func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.ListFilters, limit int) error {
+	cap := HardCap
+	if limit > 0 && limit < cap {
+		cap = limit
+	}
+	rows, err := store.AllMatching(filters, cap)
+	if err != nil {
+		return fmt.Errorf("query matching rows: %w", err)
+	}
+
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	// Group rows by their JSONLPath. Each group will become one zip entry.
+	// Track match-set as a set of jsonl_offset values so the per-file pass
+	// can decide complete-vs-partial without re-parsing JSON.
+	groups := make(map[string]*fileGroup)
+	for _, r := range rows {
+		g, ok := groups[r.JSONLPath]
+		if !ok {
+			date, keyhash := splitJSONLPath(dataDir, r.JSONLPath)
+			g = &fileGroup{
+				path:       r.JSONLPath,
+				offsets:    make(map[int64]string),
+				earliestTs: r.TsStart,
+				date:       date,
+				keyhash:    keyhash,
+			}
+			groups[r.JSONLPath] = g
+		}
+		g.offsets[r.JSONLOffset] = r.ID
+		if r.TsStart.Before(g.earliestTs) {
+			g.earliestTs = r.TsStart
+		}
+	}
+
+	// Deterministic emission order: by date then keyhash. Keeps two
+	// identical exports byte-identical.
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		gi, gj := groups[keys[i]], groups[keys[j]]
+		if gi.date != gj.date {
+			return gi.date < gj.date
+		}
+		if gi.keyhash != gj.keyhash {
+			return gi.keyhash < gj.keyhash
+		}
+		return keys[i] < keys[j]
+	})
+
+	// Track range for the README.
+	var (
+		minTs time.Time
+		maxTs time.Time
+	)
+	for _, r := range rows {
+		if minTs.IsZero() || r.TsStart.Before(minTs) {
+			minTs = r.TsStart
+		}
+		if r.TsStart.After(maxTs) {
+			maxTs = r.TsStart
+		}
+	}
+
+	for _, k := range keys {
+		g := groups[k]
+		if err := writeGroupEntry(zw, g); err != nil {
+			return fmt.Errorf("write entry for %s: %w", g.path, err)
+		}
+	}
+
+	// Embed agent/ templates (always present, even on empty exports per
+	// contract § Empty Export).
+	if err := copyEmbed(zw, "templates/CLAUDE.md", "agent/CLAUDE.md"); err != nil {
+		return err
+	}
+	if err := copyEmbed(zw, "templates/jq-cheatsheet.md", "agent/jq-cheatsheet.md"); err != nil {
+		return err
+	}
+
+	// README — human-readable summary.
+	if err := writeReadme(zw, len(rows), filters, minTs, maxTs, time.Now().UTC()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// writeGroupEntry reads the source JSONL file (plain or .gz fallback),
+// walks it line-by-line tracking byte offsets so we can detect which
+// lines match the row set, then writes one zip entry containing only the
+// matching lines. The entry name picks .jsonl vs .partial.jsonl based on
+// whether every line was matched.
+func writeGroupEntry(zw *zip.Writer, g *fileGroup) error {
+	src, plain, err := openJSONL(g.path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	r := io.Reader(src)
+	if !plain {
+		gz, err := gzip.NewReader(src)
+		if err != nil {
+			return fmt.Errorf("open gzip %s: %w", g.path, err)
+		}
+		defer gz.Close()
+		r = gz
+	}
+	br := bufio.NewReaderSize(r, 64*1024)
+
+	// First pass into a buffer: walk every line, track uncompressed offset,
+	// keep matching lines.
+	var matched bytes.Buffer
+	var (
+		offset    int64
+		total     int
+		matchHits int
+	)
+	for {
+		line, err := br.ReadBytes('\n')
+		lineLen := int64(len(line))
+		if lineLen > 0 {
+			total++
+			if _, ok := g.offsets[offset]; ok {
+				matched.Write(line)
+				matchHits++
+			}
+			offset += lineLen
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read %s: %w", g.path, err)
+		}
+	}
+
+	// Decide entry name. If every line in the source file is in our match
+	// set, the export carries the complete file; otherwise it's partial.
+	suffix := ".jsonl"
+	if matchHits < total {
+		suffix = ".partial.jsonl"
+	}
+	// If the match set has rows whose offset didn't show up in the file
+	// (e.g. file truncated since SQLite was written), still write what we
+	// have but flag as partial.
+	if matchHits < len(g.offsets) {
+		suffix = ".partial.jsonl"
+	}
+	name := fmt.Sprintf("data/%s/%s%s", g.date, g.keyhash, suffix)
+
+	hdr := &zip.FileHeader{
+		Name:     name,
+		Method:   zip.Deflate,
+		Modified: g.earliestTs,
+	}
+	zf, err := zw.CreateHeader(hdr)
+	if err != nil {
+		return err
+	}
+	_, err = zf.Write(matched.Bytes())
+	return err
+}
+
+// openJSONL opens path if it exists, else tries path+".gz". Returns the
+// open file plus a flag indicating whether to read it as plain JSONL
+// (true) or via gzip (false).
+//
+// We deliberately do not import internal/api/jsonlread because exporter
+// must not depend on api; the logic is small enough to duplicate.
+func openJSONL(path string) (*os.File, bool, error) {
+	if strings.HasSuffix(path, ".gz") {
+		f, err := os.Open(path)
+		return f, false, err
+	}
+	if f, err := os.Open(path); err == nil {
+		return f, true, nil
+	}
+	f, err := os.Open(path + ".gz")
+	if err != nil {
+		return nil, false, fmt.Errorf("neither %s nor %s.gz exists: %w", path, path, err)
+	}
+	return f, false, nil
+}
+
+// splitJSONLPath pulls the date directory and keyhash short out of a
+// JSONLPath. Writer writes <dataDir>/<date>/<keyhash8>.jsonl[.gz]; if the
+// path doesn't fit that shape (e.g. a rebuild dropped it elsewhere) we
+// fall back to filesystem-meaningful fragments so the zip stays valid.
+func splitJSONLPath(dataDir, path string) (date, keyhash string) {
+	base := filepath.Base(path)
+	base = strings.TrimSuffix(base, ".gz")
+	base = strings.TrimSuffix(base, ".jsonl")
+	keyhash = base
+
+	parent := filepath.Base(filepath.Dir(path))
+	date = parent
+
+	_ = dataDir // dataDir is reserved for future absolute-path resolution.
+	return date, keyhash
+}
+
+func copyEmbed(zw *zip.Writer, embedPath, zipName string) error {
+	data, err := templatesFS.ReadFile(embedPath)
+	if err != nil {
+		return fmt.Errorf("read embed %s: %w", embedPath, err)
+	}
+	zf, err := zw.Create(zipName)
+	if err != nil {
+		return err
+	}
+	_, err = zf.Write(data)
+	return err
+}
+
+func writeReadme(zw *zip.Writer, count int, filters sqlite.ListFilters, minTs, maxTs, now time.Time) error {
+	zf, err := zw.Create("README.md")
+	if err != nil {
+		return err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# api-log export\n\n")
+	fmt.Fprintf(&b, "Generated at: %s\n\n", now.Format(time.RFC3339))
+	fmt.Fprintf(&b, "## Summary\n\n")
+	fmt.Fprintf(&b, "- Traces matched: %d\n", count)
+	if count > 0 {
+		fmt.Fprintf(&b, "- Time range: %s -> %s\n", minTs.Format(time.RFC3339), maxTs.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(&b, "- Time range: (no traces matched)\n")
+	}
+	fmt.Fprintf(&b, "\n## Filters applied\n\n")
+	fmt.Fprintf(&b, "%s\n", summarizeFilters(filters))
+	fmt.Fprintf(&b, "\n## Layout\n\n")
+	fmt.Fprintf(&b, "- `data/<date>/<keyhash8>.jsonl` — every line in that day's file matched the filter.\n")
+	fmt.Fprintf(&b, "- `data/<date>/<keyhash8>.partial.jsonl` — only the matching subset of that day's file is included.\n")
+	fmt.Fprintf(&b, "- `agent/CLAUDE.md` — instructions for an offline agent analyzing this export.\n")
+	fmt.Fprintf(&b, "- `agent/jq-cheatsheet.md` — copy-paste jq recipes for common questions.\n")
+	fmt.Fprintf(&b, "\n## Quick start\n\n")
+	fmt.Fprintf(&b, "Each line in `data/**/*.jsonl` is one HTTP transaction. Inspect with jq:\n\n")
+	fmt.Fprintf(&b, "    jq 'select(.status >= 500)' data/**/*.jsonl\n\n")
+	fmt.Fprintf(&b, "See `agent/CLAUDE.md` for the full schema and `agent/jq-cheatsheet.md` for more recipes.\n")
+
+	_, err = zf.Write([]byte(b.String()))
+	return err
+}
+
+// summarizeFilters returns a human-readable bullet list of the filter set
+// for the README. Zero-valued fields are skipped so the empty-filter case
+// shows "(none — all traces up to safety cap)".
+func summarizeFilters(f sqlite.ListFilters) string {
+	var lines []string
+	if !f.Since.IsZero() {
+		lines = append(lines, "- since: "+f.Since.UTC().Format(time.RFC3339))
+	}
+	if !f.Until.IsZero() {
+		lines = append(lines, "- until: "+f.Until.UTC().Format(time.RFC3339))
+	}
+	if f.Status != nil {
+		lines = append(lines, fmt.Sprintf("- status: %d", *f.Status))
+	}
+	if f.StatusBucket > 0 {
+		lines = append(lines, fmt.Sprintf("- status_bucket: %dxx", f.StatusBucket))
+	}
+	if f.Model != "" {
+		lines = append(lines, "- model: "+f.Model)
+	}
+	if f.Path != "" {
+		lines = append(lines, "- path: "+f.Path)
+	}
+	if f.PathPrefix != "" {
+		lines = append(lines, "- path_prefix: "+f.PathPrefix+"*")
+	}
+	if f.KeyHashPrefix != "" {
+		lines = append(lines, "- key_hash: "+f.KeyHashPrefix)
+	}
+	if f.SessionRootID != "" {
+		lines = append(lines, "- session_root_id: "+f.SessionRootID)
+	}
+	if len(lines) == 0 {
+		return "(none — all traces up to safety cap of " + fmt.Sprintf("%d", HardCap) + ")"
+	}
+	return strings.Join(lines, "\n")
+}

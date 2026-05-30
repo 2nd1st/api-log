@@ -247,6 +247,7 @@ func run() error {
 		AdminToken: adminToken,
 		Version:    "0.0.0-dev",
 		StartedAt:  time.Now().UTC(),
+		DataDir:    cfg.Storage.DataDir,
 	})
 	apiSrv := &http.Server{
 		Addr:              cfg.API.Listen,

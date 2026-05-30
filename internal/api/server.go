@@ -25,6 +25,11 @@ type Deps struct {
 	AdminToken string
 	Version    string
 	StartedAt  time.Time
+
+	// DataDir is the storage root that JSONL paths in SQLite rows are
+	// relative to. /api/export reads files from here to stream into the
+	// zip; other handlers seek by absolute JSONLPath and don't need it.
+	DataDir string
 }
 
 // NewMux returns an http.Handler ready to mount on the API listener.
@@ -38,6 +43,7 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("GET /api/traces/{id}", authMW(deps.AdminToken, getTrace(deps)))
 	mux.Handle("GET /api/traces/{id}/replay", authMW(deps.AdminToken, replayHandler(deps)))
 	mux.Handle("GET /api/sessions", authMW(deps.AdminToken, listSessions(deps)))
+	mux.Handle("GET /api/export", authMW(deps.AdminToken, exportHandler(deps)))
 
 	// Embedded viewer. Intentionally NOT behind authMW — the page has
 	// to load to prompt the user for their token. All AJAX calls the

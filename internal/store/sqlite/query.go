@@ -54,49 +54,7 @@ func (s *Store) List(filters ListFilters) (ListPage, error) {
 		limit = 500
 	}
 
-	var (
-		conds []string
-		args  []any
-	)
-	if !filters.Since.IsZero() {
-		conds = append(conds, "ts_start >= ?")
-		args = append(args, unixMs(filters.Since))
-	}
-	if !filters.Until.IsZero() {
-		conds = append(conds, "ts_start < ?")
-		args = append(args, unixMs(filters.Until))
-	}
-	if filters.Status != nil {
-		conds = append(conds, "status = ?")
-		args = append(args, *filters.Status)
-	}
-	if filters.StatusBucket >= 2 && filters.StatusBucket <= 5 {
-		lo := filters.StatusBucket * 100
-		conds = append(conds, "status >= ? AND status < ?")
-		args = append(args, lo, lo+100)
-	}
-	if filters.Model != "" {
-		conds = append(conds, "model = ?")
-		args = append(args, filters.Model)
-	}
-	if filters.Path != "" {
-		conds = append(conds, "path = ?")
-		args = append(args, filters.Path)
-	} else if filters.PathPrefix != "" {
-		// Escape LIKE metacharacters in the prefix so paths
-		// containing `%` / `_` don't get treated as wildcards.
-		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(filters.PathPrefix)
-		conds = append(conds, `path LIKE ? ESCAPE '\'`)
-		args = append(args, esc+"%")
-	}
-	if filters.KeyHashPrefix != "" {
-		conds = append(conds, "key_hash LIKE ?")
-		args = append(args, filters.KeyHashPrefix+"%")
-	}
-	if filters.SessionRootID != "" {
-		conds = append(conds, "session_root_id = ?")
-		args = append(args, filters.SessionRootID)
-	}
+	conds, args := buildListConds(filters)
 	if filters.CursorTsStart > 0 || filters.CursorID != "" {
 		// Strict (ts_start, id) ordering — keyset pagination.
 		conds = append(conds,
