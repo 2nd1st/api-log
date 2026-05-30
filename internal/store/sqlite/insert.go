@@ -38,6 +38,13 @@ type Row struct {
 	TotalTokens      *int64
 	FinishReason     *string
 
+	// Extracted usage fields (T3). Deterministic copies of named protocol
+	// usage fields — PHILOSOPHY § 1 carve-out 1. Nil when the upstream
+	// response didn't carry the field; nil is distinct from a real zero.
+	CachedTokens        *int64 // sum of cache-hit tokens across protocols
+	CacheCreationTokens *int64 // Anthropic cache_creation_input_tokens (cache miss writes)
+	ReasoningTokens     *int64 // OpenAI Responses reasoning tokens from output
+
 	// Identifiers.
 	KeyHash string
 
@@ -138,7 +145,8 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		key_hash, prefix_len, prefix_canonical_hash,
 		parent_id, session_root_id,
 		jsonl_path, jsonl_offset,
-		media_count
+		media_count,
+		cached_tokens, cache_creation_tokens, reasoning_tokens
 	) VALUES (
 		?, ?, ?, ?, ?, ?, ?, ?,
 		?, ?, ?,
@@ -146,7 +154,8 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		?, ?, ?,
 		?, ?,
 		?, ?,
-		?
+		?,
+		?, ?, ?
 	)`
 	_, err = tx.Exec(q,
 		r.ID, unixMs(r.TsStart), unixMs(r.TsEnd), r.Client, r.Method, r.Path, r.Upstream, r.Status,
@@ -156,6 +165,7 @@ func (s *Store) AppendTrace(r Row, sessionPrefix []json.RawMessage) error {
 		nullStr(parentID), sessionRootID,
 		r.JSONLPath, r.JSONLOffset,
 		r.MediaCount,
+		nullInt64(r.CachedTokens), nullInt64(r.CacheCreationTokens), nullInt64(r.ReasoningTokens),
 	)
 	if err != nil {
 		return fmt.Errorf("insert %s: %w", r.ID, err)

@@ -45,6 +45,18 @@ type Counters struct {
 	// walking the media tree.
 	totalMediaFiles atomic.Int64
 
+	// Cumulative token totals (T3). Bumped at JSONL append time from the
+	// usage block extracted by parser.ExtractUsage. Per PHILOSOPHY §1, these
+	// are a deterministic copy of named protocol fields — no synthesis. Per
+	// §6, they are a derived cache: rebuildable from JSONL by replaying the
+	// same extractor. n == 0 calls are a no-op so callers can blindly add
+	// whatever the extractor returned without branching.
+	totalPromptTokens        atomic.Int64
+	totalCompletionTokens    atomic.Int64
+	totalCachedTokens        atomic.Int64
+	totalCacheCreationTokens atomic.Int64
+	totalReasoningTokens     atomic.Int64
+
 	// Per-stage timing histograms. Drain = sink-close → drainer-join.
 	// Parse = JSON unmarshal + SSE event walk + decompression. SQLite =
 	// AppendTrace (one tx covering JSONL append + UPSERT + session-
@@ -117,6 +129,26 @@ func (c *Counters) AddBytes(n int64) { c.totalBytes.Add(n) }
 // but is skipped by callers to avoid a no-op atomic add).
 func (c *Counters) AddMediaFiles(n int64) { c.totalMediaFiles.Add(n) }
 
+// AddPromptTokens records the prompt-token count for a single trace
+// (T3). n may be 0, which is a no-op.
+func (c *Counters) AddPromptTokens(n int64) { c.totalPromptTokens.Add(n) }
+
+// AddCompletionTokens records the completion-token count for a single
+// trace (T3). n may be 0, which is a no-op.
+func (c *Counters) AddCompletionTokens(n int64) { c.totalCompletionTokens.Add(n) }
+
+// AddCachedTokens records the cached-prompt-token count for a single
+// trace (T3). n may be 0, which is a no-op.
+func (c *Counters) AddCachedTokens(n int64) { c.totalCachedTokens.Add(n) }
+
+// AddCacheCreationTokens records the cache-creation-token count for a
+// single trace (T3). n may be 0, which is a no-op.
+func (c *Counters) AddCacheCreationTokens(n int64) { c.totalCacheCreationTokens.Add(n) }
+
+// AddReasoningTokens records the reasoning-token count for a single
+// trace (T3). n may be 0, which is a no-op.
+func (c *Counters) AddReasoningTokens(n int64) { c.totalReasoningTokens.Add(n) }
+
 // ObserveWriterChanLen records the current writer channel length;
 // keeps the running max in writerChanHighWater.
 func (c *Counters) ObserveWriterChanLen(n int) {
@@ -156,6 +188,16 @@ type Snapshot struct {
 	// Phase K. Zero when media extraction is disabled or has never run.
 	TotalMediaFiles int64 `json:"total_media_files"`
 
+	// Cumulative token totals (T3). Sum across all appended traces of the
+	// usage fields extracted by parser.ExtractUsage. Zero for protocols
+	// without a usage block or for traces where extraction failed (WARN-
+	// only per PHILOSOPHY §2).
+	TotalPromptTokens        int64 `json:"total_prompt_tokens"`
+	TotalCompletionTokens    int64 `json:"total_completion_tokens"`
+	TotalCachedTokens        int64 `json:"total_cached_tokens"`
+	TotalCacheCreationTokens int64 `json:"total_cache_creation_tokens"`
+	TotalReasoningTokens     int64 `json:"total_reasoning_tokens"`
+
 	Timings struct {
 		DrainMs  HistogramSnapshot `json:"drain_ms"`
 		ParseMs  HistogramSnapshot `json:"parse_ms"`
@@ -181,6 +223,12 @@ func (c *Counters) Snapshot() Snapshot {
 
 		TotalBytes:      c.totalBytes.Load(),
 		TotalMediaFiles: c.totalMediaFiles.Load(),
+
+		TotalPromptTokens:        c.totalPromptTokens.Load(),
+		TotalCompletionTokens:    c.totalCompletionTokens.Load(),
+		TotalCachedTokens:        c.totalCachedTokens.Load(),
+		TotalCacheCreationTokens: c.totalCacheCreationTokens.Load(),
+		TotalReasoningTokens:     c.totalReasoningTokens.Load(),
 	}
 	s.Timings.DrainMs = c.DrainHist.Snapshot()
 	s.Timings.ParseMs = c.ParseHist.Snapshot()

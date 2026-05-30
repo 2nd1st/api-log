@@ -139,6 +139,25 @@ CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonic
 			return fmt.Errorf("alter add media_count: %w", err)
 		}
 	}
+
+	// Additive migration: usage-extraction columns (T3).
+	//
+	// PHILOSOPHY § 1 (carve-out 1): deterministic copies of named protocol
+	// usage fields — cache hits / cache-creation / reasoning tokens. Nullable
+	// (no DEFAULT) so an absent field stays absent rather than being conflated
+	// with a real zero. Follows the same idempotent-ALTER pattern as media_count.
+	for _, alter := range []string{
+		"ALTER TABLE traces ADD COLUMN cached_tokens INTEGER",
+		"ALTER TABLE traces ADD COLUMN cache_creation_tokens INTEGER",
+		"ALTER TABLE traces ADD COLUMN reasoning_tokens INTEGER",
+	} {
+		if _, err := db.Exec(alter); err != nil {
+			msg := err.Error()
+			if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+				return fmt.Errorf("alter add: %w", err)
+			}
+		}
+	}
 	return nil
 }
 

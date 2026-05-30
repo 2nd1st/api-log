@@ -123,6 +123,103 @@ func TestWriterSessionInferenceAcrossTraces(t *testing.T) {
 	}
 }
 
+// chatTraceWithUsage builds a /v1/chat/completions trace whose Resp.Body
+// carries an OpenAI-shaped usage block + finish_reason. Used to verify
+// T3's writer-side wiring: parser.ExtractUsage runs at finalize, fills
+// Row.Model / FinishReason / *Tokens, and those land in SQLite columns
+// that insert.go binds. (Per PHILOSOPHY §1 the writer only copies named
+// protocol fields; this fixture matches the canonical OpenAI shape.)
+func chatTraceWithUsage(id string) trace.Trace {
+	reqBytes, _ := json.Marshal(map[string]any{
+		"model":    "test-model",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	respBytes, _ := json.Marshal(map[string]any{
+		"id":    "resp_x",
+		"model": "test-model",
+		"choices": []map[string]any{
+			{"index": 0, "finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": "hello"}},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     11,
+			"completion_tokens": 22,
+			"total_tokens":      33,
+		},
+	})
+	return trace.Trace{
+		ID:       id,
+		TsStart:  time.Date(2026, 5, 27, 10, 0, 0, 0, time.UTC),
+		TsEnd:    time.Date(2026, 5, 27, 10, 0, 1, 0, time.UTC),
+		Client:   "127.0.0.1:1234",
+		Method:   "POST",
+		Path:     "/v1/chat/completions",
+		Upstream: "http://gw",
+		Status:   200,
+		Req: trace.Body{
+			Headers: trace.Headers{"Content-Type": {"application/json"}},
+			Body:    json.RawMessage(reqBytes),
+		},
+		Resp: trace.Body{
+			Headers: trace.Headers{"Content-Type": {"application/json"}},
+			Body:    json.RawMessage(respBytes),
+		},
+	}
+}
+
+// TestWriterPersistsExtractedUsage verifies T3 writer wiring: the writer
+// calls parser.ExtractUsage at finalize and propagates the result to the
+// SQLite Row so the named protocol fields land in their columns.
+//
+// Scoped to the 5 columns the canonical chatTraceWithUsage fixture's body
+// populates (model, finish_reason, prompt_tokens, completion_tokens,
+// total_tokens). The Row also binds cached_tokens / cache_creation_tokens
+// / reasoning_tokens — round-trip for those is covered by
+// TestAppendTraceUsageFieldsRoundTrip in internal/store/sqlite, which
+// exercises the column binding directly with a fully populated Row.
+func TestWriterPersistsExtractedUsage(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(filepath.Join(dir, "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	w := New(dir, 16, store, nil, nil, nil, func() time.Time {
+		return time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	})
+	stop := w.Start()
+	w.TrySend(Record{Trace: chatTraceWithUsage("tu1"), KeyHash: "uuuuuuuu00000000"})
+	stop()
+
+	db, err := sql.Open("sqlite", filepath.Join(dir, "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var model, finishReason sql.NullString
+	var promptTokens, completionTokens, totalTokens sql.NullInt64
+	row := db.QueryRow(`SELECT model, finish_reason, prompt_tokens, completion_tokens, total_tokens FROM traces WHERE id = 'tu1'`)
+	if err := row.Scan(&model, &finishReason, &promptTokens, &completionTokens, &totalTokens); err != nil {
+		t.Fatal(err)
+	}
+	if !model.Valid || model.String != "test-model" {
+		t.Errorf("model = %v, want test-model", model)
+	}
+	if !finishReason.Valid || finishReason.String != "stop" {
+		t.Errorf("finish_reason = %v, want stop", finishReason)
+	}
+	if !promptTokens.Valid || promptTokens.Int64 != 11 {
+		t.Errorf("prompt_tokens = %v, want 11", promptTokens)
+	}
+	if !completionTokens.Valid || completionTokens.Int64 != 22 {
+		t.Errorf("completion_tokens = %v, want 22", completionTokens)
+	}
+	if !totalTokens.Valid || totalTokens.Int64 != 33 {
+		t.Errorf("total_tokens = %v, want 33", totalTokens)
+	}
+}
+
 func TestWriterAcceptsNilStore(t *testing.T) {
 	// Writer must work without a store (pure-JSONL mode used by tests).
 	dir := t.TempDir()

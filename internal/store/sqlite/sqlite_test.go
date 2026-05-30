@@ -230,6 +230,80 @@ func TestAppendTraceMediaCountRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAppendTraceUsageFieldsRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ts := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
+
+	// Row populated as T3-writer will fill it: model + the existing token
+	// columns + the three new extracted-usage fields. Verifies the columns
+	// added by the T3 migration round-trip through INSERT + SELECT.
+	r := mkRow("01H_usage", ts)
+	model := "claude-opus-4-7"
+	r.Model = &model
+	pt := int64(120)
+	r.PromptTokens = &pt
+	ct := int64(45)
+	r.CompletionTokens = &ct
+	tt := int64(165)
+	r.TotalTokens = &tt
+	cached := int64(80)
+	r.CachedTokens = &cached
+	cacheCreate := int64(40)
+	r.CacheCreationTokens = &cacheCreate
+	reasoning := int64(25)
+	r.ReasoningTokens = &reasoning
+
+	if err := s.AppendTrace(r, nil); err != nil {
+		t.Fatalf("AppendTrace: %v", err)
+	}
+
+	got, err := s.GetByID("01H_usage")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Model == nil || *got.Model != "claude-opus-4-7" {
+		t.Errorf("Model round-trip = %v, want claude-opus-4-7", got.Model)
+	}
+	if got.PromptTokens == nil || *got.PromptTokens != 120 {
+		t.Errorf("PromptTokens round-trip = %v, want 120", got.PromptTokens)
+	}
+	if got.CompletionTokens == nil || *got.CompletionTokens != 45 {
+		t.Errorf("CompletionTokens round-trip = %v, want 45", got.CompletionTokens)
+	}
+	if got.TotalTokens == nil || *got.TotalTokens != 165 {
+		t.Errorf("TotalTokens round-trip = %v, want 165", got.TotalTokens)
+	}
+	if got.CachedTokens == nil || *got.CachedTokens != 80 {
+		t.Errorf("CachedTokens round-trip = %v, want 80", got.CachedTokens)
+	}
+	if got.CacheCreationTokens == nil || *got.CacheCreationTokens != 40 {
+		t.Errorf("CacheCreationTokens round-trip = %v, want 40", got.CacheCreationTokens)
+	}
+	if got.ReasoningTokens == nil || *got.ReasoningTokens != 25 {
+		t.Errorf("ReasoningTokens round-trip = %v, want 25", got.ReasoningTokens)
+	}
+
+	// Nil-in / nil-out: a row with no usage columns set must come back with
+	// nil pointers (not zero-valued). PHILOSOPHY § 1: absence ≠ zero.
+	rEmpty := mkRow("01H_no_usage", ts.Add(time.Second))
+	if err := s.AppendTrace(rEmpty, nil); err != nil {
+		t.Fatalf("AppendTrace empty: %v", err)
+	}
+	gotEmpty, err := s.GetByID("01H_no_usage")
+	if err != nil {
+		t.Fatalf("GetByID empty: %v", err)
+	}
+	if gotEmpty.CachedTokens != nil {
+		t.Errorf("CachedTokens should be nil when absent, got %v", *gotEmpty.CachedTokens)
+	}
+	if gotEmpty.CacheCreationTokens != nil {
+		t.Errorf("CacheCreationTokens should be nil when absent, got %v", *gotEmpty.CacheCreationTokens)
+	}
+	if gotEmpty.ReasoningTokens != nil {
+		t.Errorf("ReasoningTokens should be nil when absent, got %v", *gotEmpty.ReasoningTokens)
+	}
+}
+
 func TestMigrateIdempotentOnReopen(t *testing.T) {
 	// Open + close + re-open the same file. The ALTER TABLE on the second
 	// migrate() pass must NOT error (PHILOSOPHY § 6: schema is append-only,

@@ -223,27 +223,31 @@ const selectColumns = `
 	key_hash, prefix_len, prefix_canonical_hash,
 	parent_id, session_root_id,
 	jsonl_path, jsonl_offset,
-	media_count
+	media_count,
+	cached_tokens, cache_creation_tokens, reasoning_tokens
 `
 
 func scanRow(rs rowScanner) (Row, error) {
 	var (
-		r              Row
-		tsStartMs      int64
-		tsEndMs        int64
-		disc           int
-		truncReq       int
-		truncResp      int
-		model          sql.NullString
-		stream         sql.NullInt64
-		promptTokens   sql.NullInt64
-		completionToks sql.NullInt64
-		totalTokens    sql.NullInt64
-		finishReason   sql.NullString
-		prefixLen      sql.NullInt64
-		prefixHash     sql.NullString
-		parentID       sql.NullString
-		mediaCount     sql.NullInt64
+		r                   Row
+		tsStartMs           int64
+		tsEndMs             int64
+		disc                int
+		truncReq            int
+		truncResp           int
+		model               sql.NullString
+		stream              sql.NullInt64
+		promptTokens        sql.NullInt64
+		completionToks      sql.NullInt64
+		totalTokens         sql.NullInt64
+		finishReason        sql.NullString
+		prefixLen           sql.NullInt64
+		prefixHash          sql.NullString
+		parentID            sql.NullString
+		mediaCount          sql.NullInt64
+		cachedTokens        sql.NullInt64
+		cacheCreationTokens sql.NullInt64
+		reasoningTokens     sql.NullInt64
 	)
 	err := rs.Scan(
 		&r.ID, &tsStartMs, &tsEndMs, &r.Client, &r.Method, &r.Path, &r.Upstream, &r.Status,
@@ -253,6 +257,7 @@ func scanRow(rs rowScanner) (Row, error) {
 		&parentID, &r.SessionRootID,
 		&r.JSONLPath, &r.JSONLOffset,
 		&mediaCount,
+		&cachedTokens, &cacheCreationTokens, &reasoningTokens,
 	)
 	if err != nil {
 		return Row{}, err
@@ -300,6 +305,18 @@ func scanRow(rs rowScanner) (Row, error) {
 	}
 	if mediaCount.Valid {
 		r.MediaCount = int(mediaCount.Int64)
+	}
+	if cachedTokens.Valid {
+		v := cachedTokens.Int64
+		r.CachedTokens = &v
+	}
+	if cacheCreationTokens.Valid {
+		v := cacheCreationTokens.Int64
+		r.CacheCreationTokens = &v
+	}
+	if reasoningTokens.Valid {
+		v := reasoningTokens.Int64
+		r.ReasoningTokens = &v
 	}
 	return r, nil
 }

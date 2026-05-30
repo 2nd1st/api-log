@@ -22,6 +22,7 @@ import (
 	"github.com/leoyun/api-log/internal/counters"
 	"github.com/leoyun/api-log/internal/ids"
 	"github.com/leoyun/api-log/internal/media"
+	"github.com/leoyun/api-log/internal/parser"
 	"github.com/leoyun/api-log/internal/session"
 	"github.com/leoyun/api-log/internal/store/sqlite"
 	"github.com/leoyun/api-log/internal/trace"
@@ -222,6 +223,35 @@ func (w *Writer) appendOne(rec Record) {
 		w.counters.AddBytes(int64(len(line)))
 	}
 
+	// T3 — usage extraction. PHILOSOPHY §1 carve-out 1: deterministic copy
+	// of named protocol fields (no synthesis). PHILOSOPHY §2: runs AFTER
+	// JSONL is on disk; extractor failure surfaces inside the extractor
+	// (WARN log) and never blocks the writer — a returned zero-value
+	// UsageInfo just means "no fields populated" and all the nil-checks
+	// below skip the corresponding atomic add. PHILOSOPHY §6: the bumped
+	// counters and the Row fields below are derived caches; replaying
+	// parser.ExtractUsage over the JSONL on disk regenerates the same
+	// values. The single extractor call is reused below to populate the
+	// SQLite Row (one parse per finalize, not two).
+	usage := parser.ExtractUsage(rec.Trace)
+	if w.counters != nil {
+		if usage.PromptTokens != nil {
+			w.counters.AddPromptTokens(*usage.PromptTokens)
+		}
+		if usage.CompletionTokens != nil {
+			w.counters.AddCompletionTokens(*usage.CompletionTokens)
+		}
+		if usage.CachedTokens != nil {
+			w.counters.AddCachedTokens(*usage.CachedTokens)
+		}
+		if usage.CacheCreationTokens != nil {
+			w.counters.AddCacheCreationTokens(*usage.CacheCreationTokens)
+		}
+		if usage.ReasoningTokens != nil {
+			w.counters.AddReasoningTokens(*usage.ReasoningTokens)
+		}
+	}
+
 	// Phase K — media extraction. PHILOSOPHY §2: runs AFTER JSONL is on
 	// disk, so any failure here doesn't affect what was captured. The
 	// extractor itself logs WARN on per-file errors and returns whatever
@@ -253,6 +283,19 @@ func (w *Writer) appendOne(rec Record) {
 	// already on disk and a startup rebuild will recover.
 	row := sqlite.FromTrace(rec.Trace, keyHash, of.path, offset)
 	row.MediaCount = mediaCount
+	// T3 — reuse the usage value extracted above so both the cumulative
+	// counters and the SQLite Row see exactly the same numbers from the
+	// same parse. Nil fields stay nil in the Row (distinct from a real
+	// zero) so downstream queries can tell "field absent" apart from
+	// "field present and zero" per PHILOSOPHY §1.
+	row.Model = usage.Model
+	row.FinishReason = usage.FinishReason
+	row.PromptTokens = usage.PromptTokens
+	row.CompletionTokens = usage.CompletionTokens
+	row.TotalTokens = usage.TotalTokens
+	row.CachedTokens = usage.CachedTokens
+	row.CacheCreationTokens = usage.CacheCreationTokens
+	row.ReasoningTokens = usage.ReasoningTokens
 	prefix, _ := session.Build(rec.Trace.Path, sessionPrefixBody(rec.Trace))
 	sqlStart := time.Now()
 	if err := w.store.AppendTrace(row, prefix); err != nil {
