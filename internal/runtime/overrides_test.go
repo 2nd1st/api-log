@@ -141,6 +141,93 @@ func TestSaveOverride_NilMutateErrors(t *testing.T) {
 	}
 }
 
+func TestSaveOverride_PluginsNilByDefault(t *testing.T) {
+	// A media-only save MUST NOT introduce a non-nil Plugins block —
+	// omitempty on Overrides.Plugins is the load-bearing piece that
+	// keeps "no override" distinct from "explicit empty override."
+	dir := t.TempDir()
+	if err := SaveOverride(dir, func(o *Overrides) {
+		o.Media.SaveAttachments = boolPtr(true)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := LoadOverrides(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ov.Plugins != nil {
+		t.Errorf("media-only save introduced Plugins block: %+v", ov.Plugins)
+	}
+}
+
+func TestSaveOverride_PluginsEmptyListRoundTrips(t *testing.T) {
+	// plugin-b-c-spec §3.3.2: a non-nil Plugins pointer with an empty
+	// Instances slice is the "all plugins off" signal. It MUST survive
+	// the marshal/unmarshal trip — not collapse into nil. The test
+	// directly exercises the load/save layer because this invariant is
+	// what makes the API handler's empty-PUT semantics work.
+	dir := t.TempDir()
+	if err := SaveOverride(dir, func(o *Overrides) {
+		o.Plugins = &PluginsOverride{Instances: []PluginInstanceOverride{}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := LoadOverrides(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ov.Plugins == nil {
+		t.Fatal("empty Instances collapsed to nil Plugins on round-trip")
+	}
+	if ov.Plugins.Instances == nil {
+		// json.Unmarshal of `[]` into a nil slice produces a non-nil
+		// empty slice; if this ever changes we want a loud signal so
+		// downstream "all plugins off" detection keeps working.
+		t.Error("Instances came back nil; want non-nil empty slice")
+	}
+	if len(ov.Plugins.Instances) != 0 {
+		t.Errorf("len(Instances) = %d, want 0", len(ov.Plugins.Instances))
+	}
+}
+
+func TestSaveOverride_PluginsInstanceRoundTrips(t *testing.T) {
+	// Full-shape round trip: every field on PluginInstanceOverride
+	// must come back exactly as written. Catches accidental json tag
+	// drift.
+	dir := t.TempDir()
+	want := PluginInstanceOverride{
+		Type:    "text-replace",
+		ID:      "wm-public",
+		Enabled: boolPtr(true),
+		Config: map[string]any{
+			"routes": []any{"/v1/*"},
+			"down":   map[string]any{"suffix": "footer"},
+		},
+	}
+	if err := SaveOverride(dir, func(o *Overrides) {
+		o.Plugins = &PluginsOverride{Instances: []PluginInstanceOverride{want}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := LoadOverrides(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ov.Plugins == nil || len(ov.Plugins.Instances) != 1 {
+		t.Fatalf("plugins not persisted: %+v", ov.Plugins)
+	}
+	got := ov.Plugins.Instances[0]
+	if got.Type != want.Type || got.ID != want.ID {
+		t.Errorf("type/id mismatch: got=%+v want=%+v", got, want)
+	}
+	if got.Enabled == nil || *got.Enabled != true {
+		t.Errorf("Enabled = %+v, want &true", got.Enabled)
+	}
+	if got.Config["routes"] == nil {
+		t.Errorf("Config.routes lost on round trip: %+v", got.Config)
+	}
+}
+
 func TestSaveOverride_OnDiskShapeMatchesContract(t *testing.T) {
 	// Phase K contract § 6 specifies:
 	//   {"media": {"save_attachments": true}}

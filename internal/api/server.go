@@ -36,6 +36,15 @@ type Deps struct {
 	// can flip it from a different goroutine while the writer reads it
 	// per-trace. Nil = extraction disabled (treat as off).
 	MediaEnabled *atomic.Bool
+
+	// PluginTypes is the catalogue provider for GET /api/plugins/types
+	// (plugin-b-c-spec §8.5). main.go injects this from the
+	// builtin-plugin registry; W3 keeps it nil-safe so the handler
+	// returns an empty list before main.go is wired and during tests
+	// that do not exercise the catalogue. Returning the slice fresh on
+	// each call (rather than caching a pointer) lets future hot-swap
+	// scenarios surface a changing catalogue without touching Deps.
+	PluginTypes func() []PluginTypeDescriptor
 }
 
 // NewMux returns an http.Handler ready to mount on the API listener.
@@ -55,6 +64,12 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("GET /api/media/{trace_id}/{idx}", authMW(deps.AdminToken, mediaHandler(deps)))
 	mux.Handle("GET /api/config/media", authMW(deps.AdminToken, getConfigMedia(deps)))
 	mux.Handle("PUT /api/config/media", authMW(deps.AdminToken, putConfigMedia(deps)))
+
+	// Plugin runtime-config endpoints (plugin-b-c-spec §8.5).
+	mux.Handle("GET /api/plugins/types", authMW(deps.AdminToken, listPluginTypes(deps)))
+	mux.Handle("GET /api/config/plugins", authMW(deps.AdminToken, getConfigPlugins(deps)))
+	mux.Handle("PUT /api/config/plugins", authMW(deps.AdminToken, putConfigPlugins(deps)))
+	mux.Handle("PUT /api/config/plugins/{id}", authMW(deps.AdminToken, putConfigPluginInstance(deps)))
 
 	// Embedded viewer. Intentionally NOT behind authMW — the page has
 	// to load to prompt the user for their token. All AJAX calls the

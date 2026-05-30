@@ -34,7 +34,8 @@ const overridesFilename = "runtime_overrides.json"
 // through to the layer below"); a present false value is meaningful and
 // MUST not collapse into "unset".
 type Overrides struct {
-	Media MediaOverrides `json:"media"`
+	Media   MediaOverrides   `json:"media"`
+	Plugins *PluginsOverride `json:"plugins,omitempty"`
 }
 
 // MediaOverrides toggles the media extraction subsystem at runtime.
@@ -45,6 +46,49 @@ type Overrides struct {
 //   - &false: force extraction off
 type MediaOverrides struct {
 	SaveAttachments *bool `json:"save_attachments,omitempty"`
+}
+
+// PluginsOverride is the runtime-override block for the plugin instance
+// list, mirroring plugin-b-c-spec §3.3.2 / §3.3.3.
+//
+// The bug-prone distinction is between a nil pointer and a non-nil
+// pointer with an empty Instances slice:
+//
+//   - Overrides.Plugins == nil          → no override; YAML wins.
+//   - Overrides.Plugins != nil with
+//     Instances == nil OR len() == 0    → "operator turned all plugins
+//     off"; override wins, no
+//     plugins run.
+//   - Overrides.Plugins != nil with
+//     a non-empty Instances             → full replace of the YAML list.
+//
+// Because of that, Instances has NO omitempty: an explicit empty array
+// must round-trip through json.Marshal → json.Unmarshal as the same
+// non-nil empty slice we just wrote.
+type PluginsOverride struct {
+	Instances []PluginInstanceOverride `json:"instances"`
+}
+
+// PluginInstanceOverride is one configured plugin instance as stored on
+// disk. Field semantics:
+//
+//   - Type, ID: identifying tuple. Operator chooses ID (unique across
+//     all instances). Both are required when an instance is persisted.
+//   - Enabled: *bool because a single-instance PATCH may carry "config
+//     only" or "enabled only"; nil means "do not change this field"
+//     when applied by PUT /api/config/plugins/{id}. For full-list PUTs
+//     (the common path) clients SHOULD send a concrete bool.
+//   - Config: per-type config blob. nil pointer (map==nil) means "do
+//     not change this field" on PATCH; an empty map means "clear
+//     overrides for this instance."
+//
+// The pointer-on-Enabled choice mirrors MediaOverrides.SaveAttachments
+// — absent in the wire format MUST be distinguishable from `false`.
+type PluginInstanceOverride struct {
+	Type    string         `json:"type"`
+	ID      string         `json:"id"`
+	Enabled *bool          `json:"enabled,omitempty"`
+	Config  map[string]any `json:"config,omitempty"`
 }
 
 // LoadOverrides reads <dataDir>/runtime_overrides.json.
