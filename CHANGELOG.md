@@ -10,6 +10,29 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+- **Plugin Phase B + C — contract + PHILOSOPHY amendments** (2026-05-30,
+  commit TBD): `uiux-research/plugin-b-c-spec.md` frozen as the BUILD
+  contract for the interfere-class hook surface (BEFORE / AFTER) layered
+  on top of the Phase A.1 Observer scaffold. This commit is docs-only
+  (no Go file touched) — it ships the PHILOSOPHY amendments the
+  interfere-class surface requires before any code lands:
+  PHILOSOPHY §2 gains a paragraph allowing operator-opt-in BEFORE/AFTER
+  interference bounded by the two hook points (verbatim per spec §6.1);
+  PHILOSOPHY §6 gains a paragraph documenting that plugin mutations are
+  recorded post-mutation only — no pre/post diff retained (verbatim per
+  spec §6.2); PHILOSOPHY "no" list `No configurable header / body
+  redaction filters` rewritten to "in the capture path itself" with the
+  plugin-path carve-out (verbatim per spec §6.4). ROADMAP gains §11
+  Plugin Phase B + C and §5 cross-links. ARCHITECTURE §6.7 amended for
+  the upcoming `/api/config/plugins` family (second write-side endpoint
+  family in the read API, pattern-matching the §6.8
+  `/api/config/media` precedent); ARCHITECTURE §13.4 added documenting
+  the v1 carve-out: AFTER plugins may mutate `Content` / `Reasoning`
+  only, and streaming `tool_call` argument mutation is deferred to
+  Phase D per spec §10.6 (not cut — a future `ToolCallMutator` optional
+  interface ships via Go's stdlib `io.WriterTo` / `io.ReaderFrom`
+  evolution pattern when a real adopter use case surfaces). Go code
+  lands in subsequent commits per spec §9 work packages W1–W6.
 - **R5a — Client identification** (2026-05-30, commit `de44b28`): new
   `internal/parser/client.go` exports `ExtractClient(h trace.Headers) ClientInfo`
   with a 10-rule deterministic header-based classifier (claude-code-desktop,

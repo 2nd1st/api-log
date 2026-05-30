@@ -27,6 +27,37 @@ plugins:
   #     # Add your own — e.g. "/heartbeat", "/probe/*". Empty list or
   #     # missing block = plugin disabled.
 
+# v2 hook-class plugins (plugin-b-c-spec.md §2 / §3) — BEFORE / AFTER
+# hooks that can mutate or intercept requests and responses. In v1 the
+# yaml side does NOT carry an instance list yet (this section is the
+# Phase A path_filter mapping shape, not the §3.3.1 sequence); v2
+# plugins are configured via runtime_overrides.json under the `plugins`
+# block, which the read API and viewer Settings UI own.
+#
+# Seed example for the integration test in tests/integration/
+# (drop into <data_dir>/runtime_overrides.json on the host):
+#
+#   {
+#     "plugins": {
+#       "instances": [
+#         {
+#           "type": "text-replace", "id": "tr-1", "enabled": true,
+#           "config": {
+#             "up":   [{"match": "你",        "replace": "世界上最好最好的ai"}],
+#             "down": [{"match": "<needle>",  "replace": "世界上最好的好哥哥"}]
+#           }
+#         },
+#         {
+#           "type": "text-append", "id": "ta-1", "enabled": true,
+#           "config": {
+#             "up":   {"suffix": "\n\n谢谢你",                                          "target": "last_user_message"},
+#             "down": {"suffix": "\n\n我已经为你对世界上最好的AI发出了感谢", "target": "content"}
+#           }
+#         }
+#       ]
+#     }
+#   }
+
 # Other top-level config blocks (storage, proxy, api, timeouts,
 # media) all accept the same fields shown in internal/config/config.go.
 # Defaults are documented inline in that source file; uncomment + edit

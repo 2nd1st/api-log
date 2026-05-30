@@ -58,6 +58,8 @@ The forwarding path is never throttled by a slow capture sink. If the disk is fu
 
 We do not retry. We do not cache. We do not rate-limit. We do not route. We do not rewrite. We do not enrich. The traffic belongs to the user; we are a tap, not a participant. PRs that add "smart" behavior to the request path will be rejected on sight.
 
+Explicit operator-configured plugins registered at startup MAY interfere with requests and responses through the BEFORE (post-receive, pre-forward) and AFTER (post-upstream-response, pre-client-send) hooks. Such interference is OPT-IN at the config level — no plugin runs unless the operator has declared it in `config.yaml` or `runtime_overrides.json` — and is bounded by the two hook points described in `uiux-research/plugin-b-c-spec.md`. The original spirit of §2 holds: the capture path itself never independently rewrites, retries, rate-limits, or routes. The recorder is honest about what passed through it. What plugins do is recorded as the post-mutation state; the operator opted in and accepts that the recording reflects the new behavior, not a fictional pre-mutation baseline.
+
 ### 3. Fail open on capture; succeed visibly on forwarding.
 
 If storage is full, if the index is locked, if the parser crashes, if a trace is silently dropped because a buffer overflowed — the client request **must still complete** to the gateway and back. Capture-side failures are by design **invisible to the client** (it gets its gateway response either way) but **visible to the operator** (via `/healthz` counters: `truncated_req_total` / `truncated_resp_total` / `drop_writer_full` / `drop_jsonl_fail` / `drop_sqlite_fail` and per-trace `truncated_req` / `truncated_resp` / `disconnected` flags). The operator's job is to monitor those signals; the client's job is to receive its response.
@@ -86,6 +88,8 @@ Two structural commitments follow:
 - **The JSONL schema is append-only for the lifetime of the project.** New optional fields can be added at any time; existing fields are never removed, renamed, or repurposed. Breaking changes happen by introducing a new top-level format key (e.g., `format: "apilog/v2"`) on new lines while older readers continue to handle older lines unchanged. This is the same longevity pattern that pcap, systemd-journal, and syslog have held for decades.
 
 If the JSONL files exist, every byte of data exists, and any tool that can read a line of JSON can reconstruct everything we know.
+
+Plugin mutations are NOT separately recorded. The JSONL line reflects the post-mutation state — what actually flowed after the BEFORE chain ran and what the client actually received after the AFTER chain ran. This is a deliberate trade-off: we forgo the ability to audit pre/post mutation diffs in exchange for simpler trace records and smaller files. Operators who need pre-mutation audit trails run their plugins under a dev profile that logs separately. Intercepted requests are marked on the JSONL line with a `plugin_intercepted` field (see plugin-b-c-spec § 5.2) so the operator can distinguish plugin-handled responses from genuine upstream responses.
 
 ### 7. The protocol surface is small, named, and slow to grow.
 
@@ -116,7 +120,7 @@ The following are out of scope. Not "maybe later." Out of scope.
 - **No replay that re-contacts upstream.** `/api/traces/:id/replay` re-emits recorded SSE bytes to the API caller (a viewer) at original pacing — that is **inspection**. Re-sending a recorded request back to the gateway / LLM (with or without edits), simulating a different timing pattern by mutating recorded events, or chaos-engineering knobs that distort what was recorded — all of those are out of scope. The axis is **upstream contact**: anything that touches the upstream is forbidden; anything that re-emits recorded bytes back to a caller is fine.
 - No upstream account management. The gateway already does this.
 - No client authentication. The client's `Authorization` / `x-api-key` is captured as-is in the request headers — there is no separate redaction step. If you do not want bearer tokens on disk, that is a deployment-level decision.
-- **No configurable header / body redaction filters.** Once we ship a "redact `email` field" hook the capture path becomes a regex pipeline. Redaction belongs in a downstream consumer or a separate sidecar; we do not host configurable rewriters.
+- **No configurable header / body redaction filters in the capture path itself. Redaction MAY be implemented as an operator-opt-in plugin (see plugin-b-c-spec.md); the recorded JSONL line reflects the post-redaction state.**
 - **No aggregate / analytics endpoints** like `/api/sessions/:root_id/tree`, `/api/stats/...`, `/api/usage/...`. The read API exposes raw rows; aggregate queries are SQL the frontend (or any consumer) runs against SQLite.
 - **No per-key / per-model / per-path configuration overrides.** Body-size caps, retention windows, viewer flags are instance-wide and singular. Configurable-per-thing is the entry point for absorption.
 - **No online re-parse on the read path.** Re-parse is an explicit offline CLI subcommand that walks JSONL through the current parser and updates SQLite. The read path never speculatively re-runs the parser.

@@ -550,6 +550,21 @@ The binary contains zero HTML. Frontends are separate consumers of the read API.
 - **No replay-to-LLM.** The §6.4 `/replay` endpoint emits the recorded response back to the *API caller* (a viewer); it never re-contacts the upstream gateway. Re-sending a recorded request to an LLM on a user's behalf remains in the philosophy "no" list.
 - No `/stats`, no `/api/sessions/:root_id/tree`, no aggregate endpoints. Aggregates are SQL the consumer runs against `index.sqlite` (read-only, multiple concurrent readers under WAL). (`/api/sessions` lists root-id-grouped session summaries — see §6.8 — but is intentionally NOT a tree-walking endpoint.)
 
+The "no write-side endpoints" rule articulated against the §6.8
+`/api/config/media` precedent is amended a second time for the
+`/api/config/plugins` family landing under Plugin Phase B + C (spec
+ratified 2026-05-30 — see ROADMAP §11): `GET/PUT /api/config/plugins`,
+`PUT /api/config/plugins/{id}`, `DELETE /api/config/plugins`, and
+`GET /api/plugins/types`. The justification mirrors §6.8 for
+`/api/config/media`: (a) the alternative is process restart per plugin
+edit, which loses in-flight traces; (b) operator edits persist to
+`<DataDir>/runtime_overrides.json` under a `plugins` block — YAML
+remains the declarative truth, runtime overrides are explicit
+deviations; (c) the contract is narrow — only the instance list shape
+defined in plugin-b-c-spec.md §3 is eligible. The full-list-replace
+semantic (PUT with the whole instances array; no merge-by-id) matches
+the spec §3.3 ratification.
+
 ### 6.8 Post-v0 endpoint additions
 
 Surface that grew after v0 shipped. Each addition is justified against the §6.7 boundary and PHILOSOPHY.
@@ -1057,4 +1072,40 @@ The Plugin Phase A.1 wiring (commit `4500a7d`) does NOT yet:
 
 Both are forward-looking; no third-party plugins exist in tree yet.
 First plugin proposal that needs them will trigger the work.
+
+### 13.4 AFTER-hook tool_call argument mutation — deferred to Phase D
+
+Plugin Phase B + C v1 (contract frozen 2026-05-30 in
+`uiux-research/plugin-b-c-spec.md`) ships AFTER-hook mutation for
+`ParsedResponse.Content` and `ParsedResponse.Reasoning` only.
+Mutation of streaming `tool_call` argument fragments on the AFTER hook
+is deferred to Phase D per spec §10.6.
+
+`ParsedResponse.ToolCalls` is exposed for AFTER plugins to READ; v1
+plugins MUST NOT mutate it. The `text-replace` AFTER half explicitly
+passes `tool_use` `input_json_delta` events through untouched even
+when the match string appears in tool-call argument JSON. The
+`text-append` AFTER half emits a synthesized final text delta and
+leaves tool_call events alone. Operators wanting to control tool-call
+behavior in v1 use one of: BEFORE-side `ParsedRequest.Tools` editing
+(strip tools the model is not allowed to call), full-response
+`ActionIntercept` (replace the whole stream with a refusal / safe
+completion), or Observer-class JSONL scrub at record time.
+
+The deferral is grounded in the spec §10.6 4-lens adversarial review:
+the OSS-adopter and use-case-substitution lenses both found zero
+realistic named adopters for AFTER-side tool_call argument mutation,
+and the maintenance-burden lens flagged ~1400 LOC of bidirectional
+per-protocol SSE re-emitter (Anthropic / Chat / Responses / Gemini all
+differ) as a textbook vendor-wire-format trap if pre-emptively shipped.
+
+Forward compatibility: when Phase D arrives, tool_call mutation lands
+as a SEPARATE optional `ToolCallMutator` interface detected by type
+assertion at dispatch time (Go stdlib `io.WriterTo` / `io.ReaderFrom`
+evolution pattern), so existing v1 `BeforePlugin` / `AfterPlugin`
+implementations remain UNTOUCHED. The dispatcher gains
+buffer-then-expose machinery only when at least one registered plugin
+opts in via the new interface. Re-open Phase D when a real adopter
+files an issue with a concrete use case that BEFORE-tools-array,
+`ActionIntercept`, or Observer-scrub genuinely cannot serve.
 

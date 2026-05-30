@@ -413,6 +413,13 @@ patterns. PHILOSOPHY §1 tension acknowledged — the plugin form makes the
 
 ### 5. Plugin / hook system (strategic, larger)
 
+**Phase B + C status (in flight 2026-05-30): contract frozen in
+`uiux-research/plugin-b-c-spec.md`; build underway. Adds the
+interfere-class BEFORE / AFTER hooks alongside the Phase A Observer
+class. See §11 below for the in-flight entry and the supersession
+note: the original five-hook sketch in `uiux-research/plugin.md` is
+OBSOLETE for greenfield work.**
+
 **Phase A.1 status (2026-05-30, commit `4500a7d`): scaffold + wiring shipped.**
 
 Design lives in `uiux-research/plugin.md` (the contract). Phase A
@@ -698,6 +705,93 @@ per-kind counters, no `?client_kind=` list-filter knob in this commit
 
 ✅ confirmed 2026-05-30 — operator OK'd day-split scheme; see
 ARCHITECTURE §5.5 Status callout. No code change.
+
+### 11. Plugin Phase B + C (IN FLIGHT 2026-05-30)
+
+Adds the interfere-class hook surface on top of the Phase A.1 observer
+scaffold. Contract is frozen in
+`uiux-research/plugin-b-c-spec.md` — read that first.
+
+Two hot-path hook points only: **BEFORE** (post-receive, pre-forward)
+and **AFTER** (post-upstream-response, pre-client-send). Each hook
+plugin returns `Continue` / `Mutate` / `Intercept`. Intercept can carry
+any HTTP status (200, 4xx, 5xx) and any body. Phase A's Observer class
+(`pathfilter`) stays as a separate third class — Observers run
+post-finalize, pre-writer, and can only drop recording.
+
+MVP plugins shipping in the first BUILD commit (spec §7):
+- `text-replace` (BOTH hooks, multi-direction): literal substring
+  match/replace on request/response content. Subsumes the operator's
+  upstream `"你" → "世界上最好最好的ai"` + downstream
+  `"<needle>" → "世界上最好的好哥哥"` examples.
+- `text-append` (BOTH hooks, multi-direction): append fixed suffix to
+  last user message / system prompt / assistant content / reasoning.
+  Subsumes the original `watermark` + `prompt_inject` placeholder
+  names without locking in single-direction plugin types.
+- `rate_limit_ip` is deferred post-MVP — the operator wants it, but
+  the two text plugins prove the contract first.
+
+Trace recording semantics (spec §5, ratified):
+- **Post-mutation only** — no separate mutation log. The JSONL line
+  carries what actually flowed. Trade audit detail for simpler trace
+  shape; PHILOSOPHY §6 amended in this commit.
+- **Intercepted traces ARE recorded** with a top-level
+  `plugin_intercepted: {type, id, hook}` marker so operators can tell
+  a plugin-served 403 apart from a genuine upstream 403.
+- **Plugin error breadcrumbs** as a small optional `plugin_errors`
+  array — the only audit channel for plugin failures at disk level.
+
+Fail / panic semantics (spec §4): hooks have no `error` return value;
+plugins log via `slog` and return `ActionContinue` on trouble. The
+dispatcher wraps each call in `defer recover()` so a panicking plugin
+becomes a WARN log + ActionContinue — capture and forwarding continue.
+Closes ARCHITECTURE §13.3 partially (the v1 contract resolves the
+"no `defer recover()` around plugin calls" item for hot-path hooks; the
+Observer-class call site picks up the same wrapper as part of W5).
+
+Multi-instance + persistence (spec §3): operator declares plugin
+instances in `config.yaml` as `(type, id, enabled, config)` tuples;
+runtime overrides extend `runtime_overrides.json` with a `plugins`
+block that **full-replaces** the YAML list (no merge-by-id). New
+endpoints `GET/PUT /api/config/plugins`, `PUT /api/config/plugins/{id}`,
+`DELETE /api/config/plugins`, `GET /api/plugins/types` — the second
+write-side endpoint family in the read API, pattern-matching the §6.8
+`/api/config/media` amendment. Atomic registry rebuild via
+`atomic.Pointer[Registry]`; failed Init on a new instance does NOT
+swap and surfaces the error to the viewer UI.
+
+v1 carve-out (spec §10.6, 4-lens adversarial ratification): AFTER
+plugins MAY READ `ParsedResponse.ToolCalls` but MUST NOT MUTATE
+streaming `tool_call` argument fragments. Tool_call argument mutation
+on the AFTER hook is **deferred to Phase D**, not permanently cut —
+when (if) a real adopter files an issue, Phase D ships as a separate
+optional `ToolCallMutator` interface detected by type assertion (Go
+stdlib `io.WriterTo` / `io.ReaderFrom` evolution pattern), so v1
+`BeforePlugin` / `AfterPlugin` implementations stay untouched. See
+ARCHITECTURE §13.4 for the deferred-tool_call note.
+
+PHILOSOPHY amendments landed in this pass (verbatim per
+plugin-b-c-spec.md §6):
+- §2 "Capture, never interfere" — new paragraph allowing
+  operator-opt-in BEFORE/AFTER interference, bounded by the two hook
+  points, recorded post-mutation.
+- §6 "The filesystem is the truth" — new paragraph documenting that
+  plugin mutations are NOT separately recorded; trade-off explicit.
+- "No" list — `No configurable header / body redaction filters` rewritten
+  to "in the capture path itself", carving out the plugin path with
+  faithful post-mutation recording.
+
+Work package plan (spec §9): W1 framework + dispatcher, W2 MVP
+plugins, W3 overrides + API, W4 viewer Settings UI (separate repo,
+follow-up workflow), W5 Phase A migration
+(`ObserveBeforeRecord` → `ObserveOnFinalize`,
+`ObserveAfterRecord` → `ObserveAfterWrite`; `pathfilter` is the only
+in-tree consumer — single-commit migration per spec §12.5), W6 docs.
+This commit is W5 — the docs amendments themselves. Go code lands in
+subsequent commits.
+
+Supersedes the original `uiux-research/plugin.md` five-hook sketch for
+greenfield work. Cross-link from §5 above.
 
 ---
 
