@@ -664,6 +664,39 @@ work never blocks forwarding (parser failures log WARN, traces still
 land); §6 columns are rebuildable from JSONL by replaying the same
 ExtractUsage function.
 
+### ✅ 9. Client identification (DONE — R5a, 2026-05-30, commit `de44b28`)
+
+Headers-only classifier surfaces "which SDK / CLI / browser sent the
+request" as new columns `client_kind` and `client_version` on the
+SQLite row. Backend-only; viewer aggregations land in T5.
+
+Taxonomy (first match wins, inspected at finalize off `req.headers`):
+
+| Kind | Discriminator | Version source |
+|---|---|---|
+| `claude-code-desktop` | `Anthropic-Client-Platform: desktop_app` AND `Anthropic-Beta` contains a `claude-code-*` token | `Anthropic-Client-Version` |
+| `claude-cli` | `User-Agent` starts with `claude-cli/` | UA version suffix |
+| `anthropic-sdk-python` | `x-stainless-package-version: anthropic@*` AND `x-stainless-runtime: python` | package version |
+| `anthropic-sdk-ts` | same package, `x-stainless-runtime: node` | package version |
+| `openai-sdk-python` | `x-stainless-package-version: openai@*` AND `x-stainless-runtime: python` | package version |
+| `openai-sdk-ts` | same package, `x-stainless-runtime: node` | package version |
+| `codex-cli` | `User-Agent` starts with `codex/` | UA version suffix |
+| `opencode-cli` | `User-Agent` starts with `opencode/` | UA version suffix |
+| `browser` | `User-Agent` starts with `Mozilla/` | nil |
+| `go-http-client` | `User-Agent` starts with `Go-http-client/` | UA version suffix |
+| (none) | no rule matches | both nil |
+
+PHILOSOPHY §1 carve-out 1: named headers only, no body content sniff, no
+heuristic UA library imported. New client kinds add a row to the table;
+the dispatch is a straight switch, no ambiguity-tiebreaker logic. No
+per-kind counters, no `?client_kind=` list-filter knob in this commit
+([[feedback_design_discipline]] — restraint).
+
+### 10. Cross-day session continuity (CONFIRMED 2026-05-30)
+
+✅ confirmed 2026-05-30 — operator OK'd day-split scheme; see
+ARCHITECTURE §5.5 Status callout. No code change.
+
 ---
 
 ## Iteration model

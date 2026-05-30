@@ -400,6 +400,15 @@ Daily JSONL rotation does **not** break long-running sessions.
 
 A consumer rendering "the full conversation" for a long-running session loads `n` JSONL lines from `n` different files — still a one-SQLite-query + `n` seeks operation, no joins, no scans.
 
+**Status (2026-05-30, post-deployment confirmation):** Operator OK'd
+the day-split scheme described above. Cross-day session continuity is
+reconstructed at read-time via parent_id traversal across `jsonl_path`
+values — ``SELECT ... WHERE session_root_id = ?`` returns rows
+spanning multiple JSONL files and the consumer opens each + seeks to
+`jsonl_offset`. No JSONL-boundary special-casing in the writer; no
+"long-session compaction" pass scheduled. The single SQLite `index.sqlite`
+is the join table.
+
 ### 5.6 Query patterns
 
 All traces in one session (any depth, any branch):
@@ -552,6 +561,39 @@ Surface that grew after v0 shipped. Each addition is justified against the §6.7
 | `/api/media/{trace_id}/{idx}` | GET | K (2026-05-30) | Streams a single extracted media file from disk with Content-Type derived from the extension via `mime.TypeByExtension`. 404 when the trace has no extracted media at that idx (the trace was recorded with `save_attachments=false`, or the field exists in the body but extraction was skipped per §protocol-skip-list). |
 | `/api/config/media` | GET | K | Returns `{save_attachments: bool, source: "default"\|"yaml"\|"env"\|"override"}`. Read-only view of the effective runtime configuration. |
 | `/api/config/media` | **PUT** | K | This is the **single write-side endpoint in the read API** as of this writing. The §6.7 blanket "no write-side endpoints" is amended here for the narrow case of operator-toggleable runtime overrides: the operator flips an atomic boolean, the handler atomically write-temp + renames `<DataDir>/runtime_overrides.json`, and the writer goroutine reads the new value on its next trace finalize. Body: `{"save_attachments": bool}`. The amendment is justified because: (a) the alternative is a process restart per toggle, which loses in-flight traces; (b) the override is persisted to a separate file from `config.yaml`, so YAML stays the declarative truth and runtime overrides are explicit deviations; (c) the contract is intentionally narrow — only flags that can be safely flipped during a running trace are eligible (no schema fields, no listener ports, no plugin enable lists). The plugin enable list, if it later gains a runtime toggle, will pattern-match this design. |
+
+### 6.9 `/healthz` endpoint policy (decided 2026-05-30)
+
+The `/healthz` endpoint stays. It carries: liveness + uptime +
+cumulative counters (bytes, trace counts by status, drop counters,
+media files, token totals from T3, future client-kind hits if and only
+if added later).
+
+Two consumer classes exist:
+
+- **Third-party adopters** (the open-source target per
+  `user_open_source_first` memory): k8s liveness probes, reverse-proxy
+  health checks, observability sinks, alertmanager rules. These all
+  expect a `/healthz` to exist. Removing it would break adopter
+  workflows the project explicitly targets.
+
+- **The viewer's Landing surface**: now sources aggregations from
+  SQLite (Model histograms from `model` column; token totals via
+  `SUM(prompt_tokens + completion_tokens + cached_tokens + ...)`;
+  client kind distribution from `client_kind`). The "INTERNAL ·
+  healthz" collapsible block on Landing becomes a diagnostic-only
+  view — it still exists and queries `/healthz` for the truth on
+  drop counters and process uptime — but it is no longer the primary
+  numeric source for Landing's main strips.
+
+This decision **commits the project to continuing to emit /healthz
+counters** even when the viewer doesn't consume them, because adopter
+contracts run on stable endpoint surface. New counters added (T3's
+token totals, T4's client kind hits if added) keep flowing.
+
+The viewer-side change (Landing aggregates from SQLite + healthz
+becomes diagnostic-only) is a viewer-repo change — tracked under T5,
+not landed here.
 
 ---
 
@@ -972,4 +1014,47 @@ These are deliberately left to the implementer:
 - **Orphan tmp file GC cadence**: scan at startup, then once per hour. Tmp files older than 1 h with no associated in-flight trace are removed.
 - **CLI subcommands** for reparse, rebuild-sqlite, and gzip-old-files. None are required for v0; `index.sqlite` deletion + restart already covers rebuild; reparse can be added when a real parser bug needs it.
 - **Per-trace concurrency cap**: implicit upper bound on number of concurrent forwarding goroutines (and thus per-trace tmp files / channels in memory). v0 may set this via `http.Server.MaxConnsPerHost` or rely on OS file-descriptor limits; revisit if file-descriptor exhaustion becomes a real failure mode.
+
+---
+
+## 13. Known limitations
+
+Documented limitations the project ships with, by deliberate operator
+decision. Each entry names the protocol/path affected, the symptom,
+and the reason for accepting it as-is.
+
+### 13.1 OpenAI Responses `encrypted_content` is opaque
+
+Some recorded /v1/responses traces contain reasoning blocks where the
+upstream returns `encrypted_content` instead of plaintext reasoning.
+There is no decryption key; the project cannot recover the underlying
+text. Operator approved shipping as-is 2026-05-30 ("如果没办法简单解决我觉得没问题的").
+The viewer's reasoning tombstone shows the summary/id without a
+"plaintext not available" placeholder — the absence of a body
+communicates the redacted state.
+
+### 13.2 Streaming usage extraction — Gemini deferred
+
+Gemini `:streamGenerateContent` SSE token extraction is NOT
+implemented — token columns will be NULL for Gemini streaming traces.
+The non-streaming Gemini path IS covered (see §6 / ROADMAP §8 for the
+current `parser.ExtractUsage` coverage matrix; this entry is strictly
+the deferral note, not a re-assertion of what does work).
+
+Deferred until a Gemini-using operator surfaces with real sample event
+shapes — synthesizing field paths from public docs without empirical
+samples risks a §1 amendment that doesn't match real wire format.
+
+### 13.3 Plugin error telemetry + panic recovery
+
+The Plugin Phase A.1 wiring (commit `4500a7d`) does NOT yet:
+- Increment a `drop_plugin_error` counter when a plugin's
+  `IterateBeforeRecord` returns an error (errors only logged WARN).
+- Wrap plugin calls in `defer recover()` — a buggy third-party
+  plugin could leak tmp files (the upstream response IS already
+  forwarded, so PHILOSOPHY §2 is honored, but tmpDir.RemoveTraceFiles
+  is unreachable past a panic).
+
+Both are forward-looking; no third-party plugins exist in tree yet.
+First plugin proposal that needs them will trigger the work.
 

@@ -10,6 +10,15 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+- **R5a — Client identification** (2026-05-30, commit `de44b28`): new
+  `internal/parser/client.go` exports `ExtractClient(h trace.Headers) ClientInfo`
+  with a 10-rule deterministic header-based classifier (claude-code-desktop,
+  claude-cli, anthropic-sdk-py/ts, openai-sdk-py/ts, codex-cli, opencode-cli,
+  browser, go-http-client). Writer calls it once at finalize; populates
+  Row.ClientKind + Row.ClientVersion. SQLite gains two nullable TEXT
+  columns via idempotent ALTER TABLE. No counters per-kind, no list-filter
+  API expansion in this commit (restraint per `feedback_design_discipline`).
+  Unblocks the T5 Landing "active clients" distribution panel.
 - **Phase H** (2026-05-30, commit `492f1ad`): `total_bytes` cumulative counter on `/healthz` — bumped at JSONL append time so the read API can answer "how much have we recorded so far" without walking the data dir. (Token cumulative counters shipped subsequently in T3, commit `49e55bb`, below.)
 - **Phase H** (2026-05-30, commit `96cf41a`): `clientAddrOf()` extracts the real client IP from `X-Forwarded-For` (leftmost = original client, RFC 7239) → `X-Real-IP` → `r.RemoteAddr` chain. Effective on traces where XFF actually reaches the backend; in the current homelab topology the placeholder evaluates to `127.0.0.1` because external HTTP is forwarded into the Caddy LXC via host loopback (incus port-forwarder / docker stack) — recovering the real IP needs PROXY protocol on the listener, separate infra task.
 - **Phase I** (2026-05-29, commit `6294be2`): `internal/exporter` package + `GET /api/export` endpoint streaming a zip of matching JSONL lines bundled with `agent/CLAUDE.md` + `agent/jq-cheatsheet.md` + `README.md`. New `Store.AllMatching(filters, hardCap)` walks rows chronologically (ts_start ASC, id ASC) past the List() page limit — extracted `buildListConds` helper so the filter pipeline is single-sourced. `Deps.DataDir` added.
