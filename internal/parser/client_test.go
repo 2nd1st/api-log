@@ -71,11 +71,29 @@ func TestExtractClient(t *testing.T) {
 			want: ClientInfo{Kind: strPtr("codex-cli"), Version: strPtr("0.42.0")},
 		},
 		{
+			// Real sub2api production trace UA shape, sampled 2026-05-30:
+			// codex-tui/0.134.0 (Windows 10.0.26200; x86_64) WindowsTerminal (codex-tui; 0.134.0)
+			// The codex-tui rule MUST come before codex-cli so the more
+			// specific prefix wins.
+			name: "codex-tui",
+			headers: http.Header{
+				"User-Agent": {"codex-tui/0.134.0 (Windows 10.0.26200; x86_64) WindowsTerminal (codex-tui; 0.134.0)"},
+			},
+			want: ClientInfo{Kind: strPtr("codex-tui"), Version: strPtr("0.134.0")},
+		},
+		{
 			name: "opencode-cli",
 			headers: http.Header{
 				"User-Agent": {"opencode/0.2.3"},
 			},
 			want: ClientInfo{Kind: strPtr("opencode-cli"), Version: strPtr("0.2.3")},
+		},
+		{
+			name: "opencode-tui",
+			headers: http.Header{
+				"User-Agent": {"opencode-tui/0.2.3"},
+			},
+			want: ClientInfo{Kind: strPtr("opencode-tui"), Version: strPtr("0.2.3")},
 		},
 		{
 			name: "browser",

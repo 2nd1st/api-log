@@ -64,12 +64,25 @@ func ExtractClient(h trace.Headers) ClientInfo {
 		}
 	}
 
-	// 7. codex-cli: UA ^codex/
+	// 7a. codex-tui: UA ^codex-tui/  (OpenAI's terminal UI for codex)
+	//      Must come BEFORE the codex-cli rule so the more specific prefix
+	//      wins.
+	if ver, ok := uaSuffix(ua, "codex-tui/"); ok {
+		return clientInfo("codex-tui", ver)
+	}
+
+	// 7b. codex-cli: UA ^codex/  (the older CLI; also catches alternative
+	//      packagings that didn't pick a more specific prefix).
 	if ver, ok := uaSuffix(ua, "codex/"); ok {
 		return clientInfo("codex-cli", ver)
 	}
 
-	// 8. opencode-cli: UA ^opencode/
+	// 8a. opencode-tui: UA ^opencode-tui/  (parallel to codex-tui shape).
+	if ver, ok := uaSuffix(ua, "opencode-tui/"); ok {
+		return clientInfo("opencode-tui", ver)
+	}
+
+	// 8b. opencode-cli: UA ^opencode/
 	if ver, ok := uaSuffix(ua, "opencode/"); ok {
 		return clientInfo("opencode-cli", ver)
 	}

@@ -680,7 +680,9 @@ Taxonomy (first match wins, inspected at finalize off `req.headers`):
 | `anthropic-sdk-ts` | same package, `x-stainless-runtime: node` | package version |
 | `openai-sdk-python` | `x-stainless-package-version: openai@*` AND `x-stainless-runtime: python` | package version |
 | `openai-sdk-ts` | same package, `x-stainless-runtime: node` | package version |
+| `codex-tui` | `User-Agent` starts with `codex-tui/` (OpenAI terminal UI) | UA version suffix |
 | `codex-cli` | `User-Agent` starts with `codex/` | UA version suffix |
+| `opencode-tui` | `User-Agent` starts with `opencode-tui/` | UA version suffix |
 | `opencode-cli` | `User-Agent` starts with `opencode/` | UA version suffix |
 | `browser` | `User-Agent` starts with `Mozilla/` | nil |
 | `go-http-client` | `User-Agent` starts with `Go-http-client/` | UA version suffix |
