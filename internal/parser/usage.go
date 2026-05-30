@@ -197,15 +197,39 @@ func extractChat(t trace.Trace) UsageInfo {
 
 // --- Anthropic Messages ---------------------------------------------
 //
-// Named fields:
-//   model        : resp.body.model
-//   prompt       : resp.body.usage.input_tokens
-//   completion   : resp.body.usage.output_tokens
-//   total        : not provided by protocol — computed from prompt + completion
-//   cached       : resp.body.usage.cache_read_input_tokens
-//   cacheCreation: resp.body.usage.cache_creation_input_tokens (Anthropic-only)
-//   reasoning    : not provided by protocol
-//   finish       : resp.body.stop_reason
+// Two on-disk shapes, both covered (PHILOSOPHY §6 — same extractor must
+// rebuild SQLite from any recorded trace, regardless of streaming vs
+// non-streaming):
+//
+//   NON-STREAMING (resp.body present):
+//     model      : resp.body.model
+//     prompt     : resp.body.usage.input_tokens
+//     completion : resp.body.usage.output_tokens
+//     cached     : resp.body.usage.cache_read_input_tokens
+//     cacheCre.  : resp.body.usage.cache_creation_input_tokens (Anthropic-only)
+//     finish     : resp.body.stop_reason
+//
+//   STREAMING (resp.events present):
+//     model      : first message_start.data.message.model
+//     prompt     : first message_start.data.message.usage.input_tokens
+//     cached     : first message_start.data.message.usage.cache_read_input_tokens
+//     cacheCre.  : first message_start.data.message.usage.cache_creation_input_tokens
+//     completion : LAST message_delta.data.usage.output_tokens
+//     finish     : LAST message_delta.data.delta.stop_reason
+//
+//     The streaming usage block is split across two event kinds by
+//     protocol design. message_start carries the canonical input-side
+//     counts; subsequent message_delta events emit cumulative output_tokens
+//     and (eventually) the stop_reason. message_stop carries no usage.
+//
+//     This is *not* synthesis — every field above is a named protocol
+//     field whose path is fixed by the Anthropic Messages spec.
+//     PHILOSOPHY §1 carve-out 1 covers it because the on-the-wire trace
+//     in SSE form has these names verbatim; the contract just chooses
+//     which event to read each named field from.
+//
+// total is not provided by protocol — computed from prompt + completion
+// when both are present. reasoning_tokens is not provided by protocol.
 
 type messagesUsage struct {
 	InputTokens              *int64 `json:"input_tokens"`
@@ -220,25 +244,92 @@ type messagesBody struct {
 	StopReason *string        `json:"stop_reason"`
 }
 
+// messagesStartEventData mirrors the `data` block of a message_start SSE
+// event:
+//
+//	{"type":"message_start","message":{...,"model":"...","usage":{...}}}
+type messagesStartEventData struct {
+	Message *messagesBody `json:"message"`
+}
+
+// messagesDeltaEventData mirrors the `data` block of a message_delta SSE
+// event:
+//
+//	{"type":"message_delta","delta":{"stop_reason":"..."},"usage":{"output_tokens":N,...}}
+//
+// Note: message_delta's `usage.input_tokens` is a *delta* (not cumulative)
+// per protocol — we deliberately ignore it and take input_tokens from
+// message_start only.
+type messagesDeltaEventData struct {
+	Delta *struct {
+		StopReason *string `json:"stop_reason"`
+	} `json:"delta"`
+	Usage *struct {
+		OutputTokens *int64 `json:"output_tokens"`
+	} `json:"usage"`
+}
+
 func extractMessages(t trace.Trace) UsageInfo {
 	var out UsageInfo
-	if len(t.Resp.Body) == 0 {
+
+	// Non-streaming shape.
+	if len(t.Resp.Body) > 0 {
+		var resp messagesBody
+		if err := json.Unmarshal(t.Resp.Body, &resp); err != nil {
+			return out
+		}
+		out.Model = resp.Model
+		out.FinishReason = resp.StopReason
+		if resp.Usage != nil {
+			out.PromptTokens = resp.Usage.InputTokens
+			out.CompletionTokens = resp.Usage.OutputTokens
+			out.CachedTokens = resp.Usage.CacheReadInputTokens
+			out.CacheCreationTokens = resp.Usage.CacheCreationInputTokens
+		}
+		out.TotalTokens = computeTotal(nil, out.PromptTokens, out.CompletionTokens)
 		return out
 	}
-	var resp messagesBody
-	if err := json.Unmarshal(t.Resp.Body, &resp); err != nil {
+
+	// Streaming shape: walk events. Single O(N) pass that captures:
+	//   - the first message_start (model + prompt-side usage)
+	//   - the most recent message_delta (stop_reason + cumulative
+	//     output_tokens — Anthropic emits multiple delta events as the
+	//     stream proceeds; the last one carries the final counts).
+	if len(t.Resp.Events) == 0 {
 		return out
 	}
-	out.Model = resp.Model
-	out.FinishReason = resp.StopReason
-	if resp.Usage != nil {
-		out.PromptTokens = resp.Usage.InputTokens
-		out.CompletionTokens = resp.Usage.OutputTokens
-		out.CachedTokens = resp.Usage.CacheReadInputTokens
-		out.CacheCreationTokens = resp.Usage.CacheCreationInputTokens
+	for _, ev := range t.Resp.Events {
+		if len(ev.Data) == 0 {
+			continue
+		}
+		switch ev.Name {
+		case "message_start":
+			if out.Model != nil {
+				continue // first wins
+			}
+			var data messagesStartEventData
+			if json.Unmarshal(ev.Data, &data) != nil || data.Message == nil {
+				continue
+			}
+			out.Model = data.Message.Model
+			if u := data.Message.Usage; u != nil {
+				out.PromptTokens = u.InputTokens
+				out.CachedTokens = u.CacheReadInputTokens
+				out.CacheCreationTokens = u.CacheCreationInputTokens
+			}
+		case "message_delta":
+			var data messagesDeltaEventData
+			if json.Unmarshal(ev.Data, &data) != nil {
+				continue
+			}
+			if data.Delta != nil && data.Delta.StopReason != nil {
+				out.FinishReason = data.Delta.StopReason
+			}
+			if data.Usage != nil && data.Usage.OutputTokens != nil {
+				out.CompletionTokens = data.Usage.OutputTokens
+			}
+		}
 	}
-	// Anthropic does not provide total_tokens; compute from prompt + completion
-	// when both are present.
 	out.TotalTokens = computeTotal(nil, out.PromptTokens, out.CompletionTokens)
 	return out
 }

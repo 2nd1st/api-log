@@ -640,13 +640,19 @@ same finalize callsite where Row fields are filled (one ExtractUsage
 call serves both). Surfaced on `/healthz` today; subject to §6's
 healthz endpoint policy decision.
 
-**Documented out-of-scope (PHILOSOPHY §1):** Anthropic Messages SSE and
-Gemini `:streamGenerateContent` streaming bodies. The contract names
-body field paths, not event paths, for those two protocols.
-Token totals on streaming Claude traffic will be NULL until a
-philosophy amendment names event paths — tracked as a forward-looking
-follow-up, not v0 blocking. Operators querying SQLite for tokens on
-streaming Claude traces should be aware.
+**Anthropic Messages streaming SSE** (`message_start` carries model +
+input-side usage including cache_read / cache_creation; final
+`message_delta` carries stop_reason + cumulative output_tokens) was
+added in a follow-up commit immediately after T3 shipped, once real
+sub2api traffic showed it was the dominant protocol and the original
+"body-only" scope left NULL counters on the operator's actual traffic.
+This stays §1-compliant: every field path is named by the Anthropic
+SSE spec; the contract just dispatches on which event kind to read each
+named field from.
+
+**Still out-of-scope (PHILOSOPHY §1):** Gemini `:streamGenerateContent`
+SSE — no real samples in tree yet, deferred until a Gemini-using
+operator surfaces.
 
 Tests: 21 parser table cases (incl. zero-vs-absent, body_b64 fallback,
 Responses dual-shape, model-comes-from-request-not-response for

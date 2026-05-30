@@ -15,6 +15,23 @@ append-only / new-format-key migration discipline documented in
 - **Phase I** (2026-05-29, commit `6294be2`): `internal/exporter` package + `GET /api/export` endpoint streaming a zip of matching JSONL lines bundled with `agent/CLAUDE.md` + `agent/jq-cheatsheet.md` + `README.md`. New `Store.AllMatching(filters, hardCap)` walks rows chronologically (ts_start ASC, id ASC) past the List() page limit — extracted `buildListConds` helper so the filter pipeline is single-sourced. `Deps.DataDir` added.
 - **Phase J** (2026-05-30, commit `35acd7c`): Plugin Phase A scaffold — `internal/plugin/` package with the `Plugin` interface, `ObserveBeforeRecord` (shouldRecord gate) + `ObserveAfterRecord` (side-effect hook) discriminants, and `Registry`. First concrete plugin `internal/plugin/builtin/pathfilter/` matches `trace.Path` against glob patterns from `config.Plugins.PathFilter.Patterns` and drops matched traces. Scaffold-only — `cmd/api-log/main.go` does NOT construct the Registry yet; wiring is Phase A.1 (deliberate separation per `project_gate_position` memory + PHILOSOPHY §2 carve-out). `Config.Plugins.PathFilter` block + env binding added. Tests: table tests for the Registry's `IterateBeforeRecord` ordering invariant + pathfilter's glob behavior.
 - **Phase J** (2026-05-30, commit `35acd7c`): export 5000-row cap removed end-to-end. `internal/exporter/exporter.go` dropped the `HardCap = 5000` const; `WriteZip` forwards the caller's `limit` straight to `AllMatching`. `Store.AllMatching` emits `LIMIT ?` conditionally — `hardCap=0` / negative means unlimited. `internal/api/export.go` `parseExportFilters` lifts the ceiling check on `limit` (only rejects `n < 1`).
+- **T3.1 — Anthropic Messages SSE coverage** (2026-05-30, follow-up to
+  T3): `extractMessages` now handles BOTH on-disk shapes. Body shape
+  unchanged. New streaming shape walks `resp.events` in a single O(N)
+  pass — first `message_start.data.message` yields model + input_tokens
+  + cache_read_input_tokens + cache_creation_input_tokens; the most
+  recent `message_delta.data` yields stop_reason +
+  cumulative output_tokens; `message_stop` carries no usage and is
+  skipped. Triggered by empirical observation on sub2api real traffic
+  immediately after T3 shipped: 47 traces of `/v1/messages?beta=true`
+  all showed NULL tokens because the dominant Anthropic traffic is
+  streaming. PHILOSOPHY §1 compliant — every field path is a named
+  Anthropic Messages SSE field; the extractor just dispatches on event
+  name to find each named field. Tests: 4 new SSE test cases
+  (happy-path with cache split + cumulative output_tokens, multi-delta
+  last-wins, first-start-wins defensive, mid-stream-cut graceful
+  degrade). Gemini `:streamGenerateContent` SSE remains out-of-scope
+  until a Gemini operator surfaces with real samples.
 - **T3 — usage extraction** (2026-05-30, commit `49e55bb`): new
   `internal/parser/usage.go` exports `ExtractUsage(trace.Trace) UsageInfo`
   with per-protocol field paths for Chat / Messages / Responses / Gemini;

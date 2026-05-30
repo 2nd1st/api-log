@@ -179,6 +179,101 @@ func TestExtractUsage_Messages_MissingFields(t *testing.T) {
 	strEq(t, "FinishReason", got.FinishReason, nil)
 }
 
+func TestExtractUsage_Messages_Streaming_HappyPath(t *testing.T) {
+	// Real shape sampled from sub2api 2026-05-30:
+	//   message_start.data.message.{model, usage.{input_tokens,
+	//     cache_read_input_tokens, cache_creation_input_tokens, output_tokens}}
+	//   (final) message_delta.data.{delta.stop_reason, usage.output_tokens}
+	//   message_stop carries no usage.
+	events := []sse.Event{
+		{Name: "message_start", Data: json.RawMessage(`{
+			"type":"message_start",
+			"message":{
+				"id":"msg_x","role":"assistant","model":"claude-opus-4-8",
+				"usage":{
+					"input_tokens":126070,
+					"cache_creation_input_tokens":267,
+					"cache_read_input_tokens":109114,
+					"output_tokens":1
+				}
+			}
+		}`)},
+		{Name: "content_block_start", Data: json.RawMessage(`{"type":"content_block_start","index":0}`)},
+		{Name: "content_block_delta", Data: json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`)},
+		{Name: "content_block_stop", Data: json.RawMessage(`{"type":"content_block_stop","index":0}`)},
+		{Name: "message_delta", Data: json.RawMessage(`{
+			"type":"message_delta",
+			"delta":{"stop_reason":"tool_use","stop_sequence":null},
+			"usage":{"input_tokens":1,"output_tokens":487}
+		}`)},
+		{Name: "message_stop", Data: json.RawMessage(`{"type":"message_stop"}`)},
+	}
+	got := ExtractUsage(mkTrace("/v1/messages?beta=true", "", "", events))
+
+	strEq(t, "Model", got.Model, sp("claude-opus-4-8"))
+	strEq(t, "FinishReason", got.FinishReason, sp("tool_use"))
+	ptrEq(t, "PromptTokens", got.PromptTokens, p(126070))
+	// output_tokens taken from the FINAL message_delta, not the
+	// initial-and-conservatively-low value in message_start.
+	ptrEq(t, "CompletionTokens", got.CompletionTokens, p(487))
+	// total = prompt + completion (Anthropic does not provide it).
+	ptrEq(t, "TotalTokens", got.TotalTokens, p(126557))
+	ptrEq(t, "CachedTokens", got.CachedTokens, p(109114))
+	ptrEq(t, "CacheCreationTokens", got.CacheCreationTokens, p(267))
+}
+
+func TestExtractUsage_Messages_Streaming_MultipleDeltasLastWins(t *testing.T) {
+	// Anthropic emits message_delta multiple times during long streams;
+	// each carries the cumulative output_tokens to date. We must take the
+	// LAST one, not the first. Same for stop_reason (which is only emitted
+	// on the final delta but treat 'most recent non-nil wins' as the rule).
+	events := []sse.Event{
+		{Name: "message_start", Data: json.RawMessage(`{
+			"type":"message_start","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":100}}
+		}`)},
+		{Name: "message_delta", Data: json.RawMessage(`{"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":10}}`)},
+		{Name: "message_delta", Data: json.RawMessage(`{"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":42}}`)},
+		{Name: "message_delta", Data: json.RawMessage(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":99}}`)},
+		{Name: "message_stop", Data: json.RawMessage(`{"type":"message_stop"}`)},
+	}
+	got := ExtractUsage(mkTrace("/v1/messages", "", "", events))
+
+	strEq(t, "Model", got.Model, sp("claude-haiku-4-5"))
+	strEq(t, "FinishReason", got.FinishReason, sp("end_turn"))
+	ptrEq(t, "PromptTokens", got.PromptTokens, p(100))
+	ptrEq(t, "CompletionTokens", got.CompletionTokens, p(99))
+	ptrEq(t, "TotalTokens", got.TotalTokens, p(199))
+}
+
+func TestExtractUsage_Messages_Streaming_FirstStartWins(t *testing.T) {
+	// Defensive: if a recording ever contains two message_start events
+	// (it shouldn't per protocol, but be explicit), the first one wins —
+	// matches the documented contract.
+	events := []sse.Event{
+		{Name: "message_start", Data: json.RawMessage(`{"type":"message_start","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1000}}}`)},
+		{Name: "message_start", Data: json.RawMessage(`{"type":"message_start","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":1}}}`)},
+		{Name: "message_delta", Data: json.RawMessage(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`)},
+	}
+	got := ExtractUsage(mkTrace("/v1/messages", "", "", events))
+	strEq(t, "Model", got.Model, sp("claude-opus-4-8"))
+	ptrEq(t, "PromptTokens", got.PromptTokens, p(1000))
+}
+
+func TestExtractUsage_Messages_Streaming_NoUsageReturnsZero(t *testing.T) {
+	// Stream cut before any message_delta lands — output_tokens absent.
+	// Initial input_tokens still extracted from message_start.
+	events := []sse.Event{
+		{Name: "message_start", Data: json.RawMessage(`{"type":"message_start","message":{"model":"claude-opus-4-8","usage":{"input_tokens":50}}}`)},
+	}
+	got := ExtractUsage(mkTrace("/v1/messages", "", "", events))
+	strEq(t, "Model", got.Model, sp("claude-opus-4-8"))
+	ptrEq(t, "PromptTokens", got.PromptTokens, p(50))
+	ptrEq(t, "CompletionTokens", got.CompletionTokens, nil)
+	// total stays nil — computeTotal requires both prompt and completion.
+	ptrEq(t, "TotalTokens", got.TotalTokens, nil)
+	strEq(t, "FinishReason", got.FinishReason, nil)
+}
+
 // ----- OpenAI Responses --------------------------------------------------
 
 func TestExtractUsage_Responses_NonStreamingBody(t *testing.T) {
