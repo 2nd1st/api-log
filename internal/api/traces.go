@@ -188,53 +188,65 @@ func decodeCursor(s string) (int64, string, error) {
 // ---- row JSON shape (matches ARCHITECTURE § 6.2 example) ----
 
 type rowJSON struct {
-	ID               string  `json:"id"`
-	TsStart          string  `json:"ts_start"`
-	TsEnd            string  `json:"ts_end"`
-	Client           string  `json:"client"`
-	Method           string  `json:"method"`
-	Path             string  `json:"path"`
-	Upstream         string  `json:"upstream"`
-	Status           int     `json:"status"`
-	Model            *string `json:"model"`
-	Stream           *bool   `json:"stream"`
-	PromptTokens     *int64  `json:"prompt_tokens"`
-	CompletionTokens *int64  `json:"completion_tokens"`
-	TotalTokens      *int64  `json:"total_tokens"`
-	FinishReason     *string `json:"finish_reason"`
-	KeyHash          string  `json:"key_hash"`
-	ParentID         *string `json:"parent_id"`
-	SessionRootID    string  `json:"session_root_id"`
-	Disconnected     bool    `json:"disconnected"`
-	TruncatedReq     bool    `json:"truncated_req"`
-	TruncatedResp    bool    `json:"truncated_resp"`
-	JSONLPath        string  `json:"jsonl_path"`
-	JSONLOffset      int64   `json:"jsonl_offset"`
+	ID                  string  `json:"id"`
+	TsStart             string  `json:"ts_start"`
+	TsEnd               string  `json:"ts_end"`
+	Client              string  `json:"client"`
+	Method              string  `json:"method"`
+	Path                string  `json:"path"`
+	Upstream            string  `json:"upstream"`
+	Status              int     `json:"status"`
+	Model               *string `json:"model"`
+	Stream              *bool   `json:"stream"`
+	PromptTokens        *int64  `json:"prompt_tokens"`
+	CompletionTokens    *int64  `json:"completion_tokens"`
+	TotalTokens         *int64  `json:"total_tokens"`
+	CachedTokens        *int64  `json:"cached_tokens"`
+	CacheCreationTokens *int64  `json:"cache_creation_tokens"`
+	ReasoningTokens     *int64  `json:"reasoning_tokens"`
+	FinishReason        *string `json:"finish_reason"`
+	ClientKind          *string `json:"client_kind"`
+	ClientVersion       *string `json:"client_version"`
+	KeyHash             string  `json:"key_hash"`
+	ParentID            *string `json:"parent_id"`
+	SessionRootID       string  `json:"session_root_id"`
+	Disconnected        bool    `json:"disconnected"`
+	TruncatedReq        bool    `json:"truncated_req"`
+	TruncatedResp       bool    `json:"truncated_resp"`
+	MediaCount          int     `json:"media_count"`
+	JSONLPath           string  `json:"jsonl_path"`
+	JSONLOffset         int64   `json:"jsonl_offset"`
 }
 
 func rowToJSON(r sqlite.Row) rowJSON {
 	return rowJSON{
-		ID:               r.ID,
-		TsStart:          r.TsStart.UTC().Format(time.RFC3339Nano),
-		TsEnd:            r.TsEnd.UTC().Format(time.RFC3339Nano),
-		Client:           r.Client,
-		Method:           r.Method,
-		Path:             r.Path,
-		Upstream:         r.Upstream,
-		Status:           r.Status,
-		Model:            r.Model,
-		Stream:           r.Stream,
-		PromptTokens:     r.PromptTokens,
-		CompletionTokens: r.CompletionTokens,
-		TotalTokens:      r.TotalTokens,
-		FinishReason:     r.FinishReason,
-		KeyHash:          r.KeyHash,
-		ParentID:         r.ParentID,
-		SessionRootID:    r.SessionRootID,
-		Disconnected:     r.Disconnected,
-		TruncatedReq:     r.TruncatedReq,
-		TruncatedResp:    r.TruncatedResp,
-		JSONLPath:        r.JSONLPath,
-		JSONLOffset:      r.JSONLOffset,
+		ID:                  r.ID,
+		TsStart:             r.TsStart.UTC().Format(time.RFC3339Nano),
+		TsEnd:               r.TsEnd.UTC().Format(time.RFC3339Nano),
+		Client:              r.Client,
+		Method:              r.Method,
+		Path:                r.Path,
+		Upstream:            r.Upstream,
+		Status:              r.Status,
+		Model:               r.Model,
+		Stream:              r.Stream,
+		PromptTokens:        r.PromptTokens,
+		CompletionTokens:    r.CompletionTokens,
+		TotalTokens:         r.TotalTokens,
+		CachedTokens:        r.CachedTokens,
+		CacheCreationTokens: r.CacheCreationTokens,
+		ReasoningTokens:     r.ReasoningTokens,
+		FinishReason:        r.FinishReason,
+		ClientKind:          r.ClientKind,
+		ClientVersion:       r.ClientVersion,
+		KeyHash:             r.KeyHash,
+		ParentID:            r.ParentID,
+		SessionRootID:       r.SessionRootID,
+		Disconnected:        r.Disconnected,
+		TruncatedReq:        r.TruncatedReq,
+		TruncatedResp:       r.TruncatedResp,
+		MediaCount:          r.MediaCount,
+		JSONLPath:           r.JSONLPath,
+		JSONLOffset:         r.JSONLOffset,
 	}
 }
