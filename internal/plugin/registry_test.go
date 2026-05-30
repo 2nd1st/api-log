@@ -8,7 +8,7 @@ import (
 	"github.com/leoyun/api-log/internal/trace"
 )
 
-// stubBefore is a test Plugin that implements ObserveBeforeRecord.
+// stubBefore is a test Plugin that implements ObserveOnFinalize.
 // Each call appends the plugin's name to *order so tests can assert
 // iteration sequencing + short-circuit behavior.
 type stubBefore struct {
@@ -21,13 +21,13 @@ type stubBefore struct {
 func (s *stubBefore) Name() string                  { return s.name }
 func (s *stubBefore) Init(_ map[string]any) error   { return nil }
 func (s *stubBefore) Close() error                  { return nil }
-func (s *stubBefore) BeforeRecord(_ context.Context, _ trace.Trace) (bool, error) {
+func (s *stubBefore) OnFinalize(_ context.Context, _ trace.Trace) (bool, error) {
 	*s.order = append(*s.order, s.name)
 	return s.shouldRecord, s.err
 }
 
-// stubAfter implements ObserveAfterRecord only (no BeforeRecord).
-// Used to assert that the BeforeRecord iterator skips plugins that
+// stubAfter implements ObserveAfterWrite only (no OnFinalize).
+// Used to assert that the OnFinalize iterator skips plugins that
 // haven't opted into the hook.
 type stubAfter struct {
 	name  string
@@ -37,7 +37,7 @@ type stubAfter struct {
 func (s *stubAfter) Name() string                                  { return s.name }
 func (s *stubAfter) Init(_ map[string]any) error                   { return nil }
 func (s *stubAfter) Close() error                                  { return nil }
-func (s *stubAfter) AfterRecord(_ context.Context, _ trace.Trace)  { *s.order = append(*s.order, s.name) }
+func (s *stubAfter) AfterWrite(_ context.Context, _ trace.Trace)   { *s.order = append(*s.order, s.name) }
 
 // stubInitErr fails Init, used to assert Registry.Init surfaces errors.
 type stubInitErr struct {
@@ -120,7 +120,7 @@ func (c *cfgCapturePlugin) Init(cfg map[string]any) error {
 }
 func (c *cfgCapturePlugin) Close() error { return nil }
 
-func TestRegistry_IterateBeforeRecord_OrderAndShortCircuit(t *testing.T) {
+func TestRegistry_IterateOnFinalize_OrderAndShortCircuit(t *testing.T) {
 	type call struct {
 		name         string
 		shouldRecord bool
@@ -198,7 +198,7 @@ func TestRegistry_IterateBeforeRecord_OrderAndShortCircuit(t *testing.T) {
 					t.Fatalf("register %s: %v", p.name, err)
 				}
 			}
-			gotRecord, errs := r.IterateBeforeRecord(context.Background(), trace.Trace{})
+			gotRecord, errs := r.IterateOnFinalize(context.Background(), trace.Trace{})
 			if gotRecord != tc.wantRecord {
 				t.Errorf("shouldRecord = %v, want %v", gotRecord, tc.wantRecord)
 			}
@@ -212,7 +212,7 @@ func TestRegistry_IterateBeforeRecord_OrderAndShortCircuit(t *testing.T) {
 	}
 }
 
-func TestRegistry_IterateBeforeRecord_SkipsNonOptedInPlugins(t *testing.T) {
+func TestRegistry_IterateOnFinalize_SkipsNonOptedInPlugins(t *testing.T) {
 	r := NewRegistry()
 	var order []string
 	if err := r.Register(&stubAfter{name: "after-only", order: &order}); err != nil {
@@ -221,7 +221,7 @@ func TestRegistry_IterateBeforeRecord_SkipsNonOptedInPlugins(t *testing.T) {
 	if err := r.Register(&stubBefore{name: "before", shouldRecord: true, order: &order}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	shouldRecord, errs := r.IterateBeforeRecord(context.Background(), trace.Trace{})
+	shouldRecord, errs := r.IterateOnFinalize(context.Background(), trace.Trace{})
 	if !shouldRecord {
 		t.Errorf("shouldRecord = false, want true")
 	}
@@ -229,11 +229,11 @@ func TestRegistry_IterateBeforeRecord_SkipsNonOptedInPlugins(t *testing.T) {
 		t.Errorf("errs = %v, want none", errs)
 	}
 	if !stringSliceEqual(order, []string{"before"}) {
-		t.Errorf("only the BeforeRecord plugin should have fired, got order=%v", order)
+		t.Errorf("only the OnFinalize plugin should have fired, got order=%v", order)
 	}
 }
 
-func TestRegistry_IterateAfterRecord_OrderAndSkip(t *testing.T) {
+func TestRegistry_IterateAfterWrite_OrderAndSkip(t *testing.T) {
 	r := NewRegistry()
 	var order []string
 	// Register a mix: one before-only, one after-only, one after-only.
@@ -246,9 +246,9 @@ func TestRegistry_IterateAfterRecord_OrderAndSkip(t *testing.T) {
 	if err := r.Register(&stubAfter{name: "after-2", order: &order}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	r.IterateAfterRecord(context.Background(), trace.Trace{})
+	r.IterateAfterWrite(context.Background(), trace.Trace{})
 	if !stringSliceEqual(order, []string{"after-1", "after-2"}) {
-		t.Errorf("AfterRecord order = %v, want [after-1 after-2]", order)
+		t.Errorf("AfterWrite order = %v, want [after-1 after-2]", order)
 	}
 }
 

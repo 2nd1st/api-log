@@ -38,6 +38,7 @@ import (
 	"github.com/leoyun/api-log/internal/parser"
 	"github.com/leoyun/api-log/internal/plugin"
 	"github.com/leoyun/api-log/internal/plugin/builtin/pathfilter"
+	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
 	"github.com/leoyun/api-log/internal/proxy"
 	"github.com/leoyun/api-log/internal/runtime"
 	"github.com/leoyun/api-log/internal/store/sqlite"
@@ -113,25 +114,24 @@ func run() error {
 	// Phase K — media extraction + runtime toggle.
 	mediaEnabled := &atomic.Bool{}
 	mediaEnabled.Store(cfg.Media.SaveAttachments)
-	if ovr, err := runtime.LoadOverrides(cfg.Storage.DataDir); err == nil {
-		if ovr.Media.SaveAttachments != nil {
-			mediaEnabled.Store(*ovr.Media.SaveAttachments)
-		}
-	} else {
+	runtimeOverrides, err := runtime.LoadOverrides(cfg.Storage.DataDir)
+	if err != nil {
 		slog.Warn("runtime overrides load failed", "err", err)
+	}
+	if runtimeOverrides.Media.SaveAttachments != nil {
+		mediaEnabled.Store(*runtimeOverrides.Media.SaveAttachments)
 	}
 	mediaExt := media.New(media.Config{DataDir: cfg.Storage.DataDir})
 
-	// Plugin registry — Phase A.1 wiring. Constructed BEFORE the writer
-	// goroutine starts so it is visible to the proxyHandler closure. Only
-	// observe-class plugins (ObserveBeforeRecord) are wired today; see
-	// internal/plugin/plugin.go for the contract. Operators control the
-	// enabled set via cfg.Plugins; an empty block (zero value) registers
-	// nothing and the proxy behaves exactly as before this commit.
+	// Phase A observer-class registry. Constructed BEFORE the writer
+	// goroutine starts so it is visible to the proxyHandler closure.
+	// Operators control the enabled set via cfg.Plugins; an empty block
+	// (zero value) registers nothing and the proxy behaves exactly as
+	// before this commit.
 	//
-	// PHILOSOPHY §2 — capture never interferes: BeforeRecord runs AFTER
-	// the response has fully reached the client. It can drop a trace from
-	// recording but cannot affect forwarding.
+	// PHILOSOPHY §2 — capture never interferes: OnFinalize runs AFTER
+	// the response has fully reached the client. It can drop a trace
+	// from recording but cannot affect forwarding.
 	pluginReg := plugin.NewRegistry()
 	if patterns := cfg.Plugins.PathFilter.Patterns; len(patterns) > 0 {
 		pf := pathfilter.New()
@@ -156,6 +156,41 @@ func run() error {
 		slog.Info("plugin enabled", "name", pf.Name(), "patterns", patterns)
 	}
 
+	// v2 hook-class registry — plugin-b-c-spec §2 / §3. Hot-path BEFORE
+	// + AFTER plugins that can mutate or intercept requests/responses.
+	// In v1 the YAML side has no instance-list yet (cfg.Plugins is the
+	// Phase A mapping shape, not the §3.3.1 sequence); everything flows
+	// through runtime_overrides.json's `plugins` block, which the read
+	// API (api/plugins.go) and the viewer Settings UI (W4) own. An
+	// override block with non-nil but empty Instances = "all plugins
+	// off"; a nil block = "no v2 plugins configured."
+	//
+	// PHILOSOPHY §2 (amended): explicit operator-configured plugins MAY
+	// interfere through BEFORE/AFTER hooks; the capture path itself
+	// still never independently rewrites or routes.
+	var v2InstanceConfigs []pluginv2.InstanceConfig
+	if runtimeOverrides.Plugins != nil {
+		v2InstanceConfigs = pluginv2.Load(nil, &pluginv2.OverrideList{
+			Instances: buildEffectivePluginInstances(runtimeOverrides.Plugins),
+		})
+	}
+	pluginV2Reg, v2Errs := pluginv2.NewRegistry(v2InstanceConfigs)
+	for _, e := range v2Errs {
+		slog.Warn("v2 plugin init", "err", e)
+	}
+	// Process-start convention (spec §4.4): Init failures are fatal.
+	// Runtime config edits via the API never swap on Init failure; the
+	// old registry stays live. main() does not do hot-swap in v1 — that
+	// lands once the viewer Settings UI lights up.
+	if len(v2Errs) > 0 {
+		return fmt.Errorf("v2 plugin init failed: %d error(s)", len(v2Errs))
+	}
+	defer func() { _ = pluginV2Reg.Close() }()
+	for _, inst := range pluginV2Reg.Instances() {
+		slog.Info("v2 plugin enabled",
+			"type", inst.Type, "id", inst.ID, "enabled", inst.Enabled)
+	}
+
 	// Single-writer goroutine for JSONL append + SQLite upsert. Both
 	// run in the same goroutine in one transaction per trace.
 	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, ctrs, mediaExt, mediaEnabled, nil)
@@ -177,6 +212,13 @@ func run() error {
 		OnDialError: ctrs.IncUpstreamDialErr,
 	}
 	rp := proxy.NewReverseProxy(upstreamURL, captureTransport)
+	// Hook the AFTER chain onto the reverse proxy. ModifyResponse runs
+	// after the upstream response is in hand but before the body is
+	// streamed to the client; the plumbing in plugin_wiring.go reads
+	// the per-request ParsedRequest from the outbound context and
+	// either replaces the body buffer (non-streaming) or wraps it in
+	// an io.Pipe driven by a StreamDispatcher (streaming).
+	rp.ModifyResponse = makeModifyResponse(pluginV2Reg)
 
 	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		traceID := ids.NewTraceID()
@@ -212,7 +254,46 @@ func run() error {
 		crw := &capturingResponseWriter{ResponseWriter: w, status: -1}
 
 		ctx = proxy.WithTraceID(ctx, traceID)
+
+		// v2 BEFORE chain — runs only when at least one hook plugin
+		// (BEFORE or AFTER) is registered. Empty registry means the
+		// proxy behaves byte-for-byte as before this commit: no body
+		// buffering, no header rewriting, no ModifyResponse overhead.
+		// When only AFTER plugins are enabled we still buffer the
+		// request so ModifyResponse can build its parsed view from
+		// the same shape BEFORE plugins would have seen.
+		slot := &interceptSlot{}
+		ctx = withInterceptSlot(ctx, slot)
+		var postChainReq *pluginv2.ParsedRequest
+		if hasAnyV2Plugins(pluginV2Reg) {
+			body, berr := readAndResetBody(r)
+			if berr != nil {
+				slog.Warn("buffer request body for plugins failed; skipping plugin chain",
+					"trace_id", traceID, "err", berr)
+			} else {
+				parsedIn := pluginv2.ParsedRequestFromHTTPRequest(r, body)
+				parsedIn.ClientIP = state.clientAddr
+				continued, intercept, mutated := applyBeforeHooks(ctx, pluginV2Reg, r, parsedIn)
+				if !continued {
+					// BEFORE intercept short-circuits forwarding. Serve
+					// the intercept payload to the client; do not call
+					// rp.ServeHTTP. Trace still records (spec §5.2) —
+					// the marker on the slot tells buildTrace what
+					// happened.
+					recordIntercept(ctx, intercept)
+					serveIntercept(crw, intercept)
+					goto finalize
+				}
+				postChainReq = mutated
+			}
+		}
+		if postChainReq != nil {
+			ctx = withParsedRequest(ctx, postChainReq)
+		}
+
 		rp.ServeHTTP(crw, r.WithContext(ctx))
+
+	finalize:
 
 		// FINALIZE — close capture channels, join drainers (bounded).
 		state.watchdog.Stop()
@@ -274,9 +355,9 @@ func run() error {
 			}
 		}
 
-		// Plugin BeforeRecord hooks — runs AFTER the response fully
-		// reached the client (rp.ServeHTTP returned) but BEFORE the
-		// writer goroutine sees the trace. A plugin returning
+		// Observer-class OnFinalize hooks — runs AFTER the response
+		// fully reached the client (rp.ServeHTTP returned) but BEFORE
+		// the writer goroutine sees the trace. A plugin returning
 		// shouldRecord=false drops the trace from JSONL + SQLite; the
 		// upstream forward is untouched. Per PHILOSOPHY §3 ("fail open
 		// on capture"), plugin errors are logged but do not by
@@ -285,9 +366,9 @@ func run() error {
 		// ctx: that ctx may have already been cancelled by the
 		// stream-idle watchdog, and the recording decision is
 		// decoupled from the forward lifecycle.
-		shouldRecord, errs := pluginReg.IterateBeforeRecord(context.Background(), tr)
+		shouldRecord, errs := pluginReg.IterateOnFinalize(context.Background(), tr)
 		for _, e := range errs {
-			slog.Warn("plugin BeforeRecord error",
+			slog.Warn("plugin OnFinalize error",
 				"trace_id", traceID, "err", e)
 		}
 		if !shouldRecord {
@@ -296,6 +377,15 @@ func run() error {
 			// don't persist this one.
 			tmpDir.RemoveTraceFiles(traceID)
 			return
+		}
+
+		// Plugin-intercept marker (spec §5.2): an intercepted trace
+		// gets a top-level plugin_intercepted field so operators can
+		// distinguish "plugin returned 403" from "upstream returned
+		// 403." The slot is written by the BEFORE/AFTER chain inside
+		// applyBeforeHooks / makeModifyResponse.
+		if slot != nil && slot.info != nil {
+			tr.PluginIntercepted = slot.info
 		}
 
 		keyHash := ids.KeyHashFromHeaders(state.reqHeader)
@@ -325,6 +415,7 @@ func run() error {
 		StartedAt:    time.Now().UTC(),
 		DataDir:      cfg.Storage.DataDir,
 		MediaEnabled: mediaEnabled,
+		PluginTypes:  pluginTypeCatalogue,
 	})
 	apiSrv := &http.Server{
 		Addr:              cfg.API.Listen,

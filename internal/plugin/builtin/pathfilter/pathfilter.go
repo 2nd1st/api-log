@@ -1,5 +1,5 @@
 // Package pathfilter implements the Phase A "path-filter" plugin:
-// an ObserveBeforeRecord plugin that drops traces whose Path matches
+// an ObserveOnFinalize plugin that drops traces whose Path matches
 // any operator-configured pattern.
 //
 // PHASE A SCAFFOLD — this plugin builds, has tests, and is configurable,
@@ -65,14 +65,14 @@ func (p pattern) matches(path string) bool {
 }
 
 // Plugin is the path-filter implementation. It satisfies
-// plugin.Plugin and plugin.ObserveBeforeRecord. Construction is
+// plugin.Plugin and plugin.ObserveOnFinalize. Construction is
 // trivial; the patterns are compiled in Init.
 type Plugin struct {
 	patterns []pattern
 }
 
 // New returns an uninitialized Plugin. The caller (Registry) MUST call
-// Init before invoking BeforeRecord — calling BeforeRecord on a fresh
+// Init before invoking OnFinalize — calling OnFinalize on a fresh
 // Plugin yields shouldRecord=true (no patterns means nothing matches).
 func New() *Plugin {
 	return &Plugin{}
@@ -139,14 +139,16 @@ func (p *Plugin) Init(cfg map[string]any) error {
 // Close is a no-op for path-filter; there is no buffered state.
 func (p *Plugin) Close() error { return nil }
 
-// BeforeRecord returns shouldRecord=false when tr.Path matches any of
+// OnFinalize returns shouldRecord=false when tr.Path matches any of
 // the configured patterns, shouldRecord=true otherwise. The error
 // return is always nil for path-filter — pattern matching cannot fail
 // at runtime once patterns compile cleanly in Init.
 //
 // The context is accepted to honor the plugin interface contract but
 // is not consulted; matching is non-blocking and cheap.
-func (p *Plugin) BeforeRecord(_ context.Context, tr trace.Trace) (bool, error) {
+//
+// Renamed from BeforeRecord per plugin-b-c-spec §7.3 (Phase A migration).
+func (p *Plugin) OnFinalize(_ context.Context, tr trace.Trace) (bool, error) {
 	for _, pat := range p.patterns {
 		if pat.matches(tr.Path) {
 			return false, nil

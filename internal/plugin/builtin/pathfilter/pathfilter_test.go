@@ -12,9 +12,9 @@ func TestInit_NilCfg(t *testing.T) {
 	if err := p.Init(nil); err != nil {
 		t.Fatalf("Init(nil): %v", err)
 	}
-	got, err := p.BeforeRecord(context.Background(), trace.Trace{Path: "/anything"})
+	got, err := p.OnFinalize(context.Background(), trace.Trace{Path: "/anything"})
 	if err != nil {
-		t.Fatalf("BeforeRecord: %v", err)
+		t.Fatalf("OnFinalize: %v", err)
 	}
 	if !got {
 		t.Error("no patterns should record every trace; got shouldRecord=false")
@@ -26,7 +26,7 @@ func TestInit_MissingPatternsKey(t *testing.T) {
 	if err := p.Init(map[string]any{}); err != nil {
 		t.Fatalf("Init({}): %v", err)
 	}
-	got, _ := p.BeforeRecord(context.Background(), trace.Trace{Path: "/v1/messages"})
+	got, _ := p.OnFinalize(context.Background(), trace.Trace{Path: "/v1/messages"})
 	if !got {
 		t.Error("missing patterns key should record every trace")
 	}
@@ -53,7 +53,7 @@ func TestInit_RejectsBadShape(t *testing.T) {
 	}
 }
 
-func TestBeforeRecord_Matching(t *testing.T) {
+func TestOnFinalize_Matching(t *testing.T) {
 	tests := []struct {
 		name             string
 		patterns         []any
@@ -144,9 +144,9 @@ func TestBeforeRecord_Matching(t *testing.T) {
 			if err := p.Init(map[string]any{"patterns": tc.patterns}); err != nil {
 				t.Fatalf("Init: %v", err)
 			}
-			got, err := p.BeforeRecord(context.Background(), trace.Trace{Path: tc.path})
+			got, err := p.OnFinalize(context.Background(), trace.Trace{Path: tc.path})
 			if err != nil {
-				t.Fatalf("BeforeRecord: %v", err)
+				t.Fatalf("OnFinalize: %v", err)
 			}
 			if got != tc.wantShouldRecord {
 				t.Errorf("shouldRecord = %v, want %v (path=%q, patterns=%v)",

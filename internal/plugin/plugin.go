@@ -17,7 +17,7 @@
 //
 //   - Per PHILOSOPHY principle 6 ("filesystem is truth"), the only honest
 //     way for a plugin to skip a trace is to drop it before the writer ever
-//     sees it. That is what BeforeRecord does. Observe-class is the strict
+//     sees it. That is what OnFinalize does. Observe-class is the strict
 //     subset that does not violate principles 1, 2, 3, or 6; it is the
 //     entire surface Phase A is permitted to expose.
 //
@@ -43,7 +43,7 @@ import (
 // Plugin is the base contract every observe-class plugin satisfies.
 //
 // A plugin opts into individual hooks by also implementing one of the
-// hook interfaces (ObserveBeforeRecord, ObserveAfterRecord). The base
+// hook interfaces (ObserveOnFinalize, ObserveAfterWrite). The base
 // contract here is only "I am a named, configurable, closable thing."
 type Plugin interface {
 	// Name returns the stable identifier used in config and telemetry.
@@ -68,7 +68,7 @@ type Plugin interface {
 	Close() error
 }
 
-// ObserveBeforeRecord is the observe-class hook called BEFORE the writer
+// ObserveOnFinalize is the observe-class hook called BEFORE the writer
 // chain runs. It fires inside the trace finalize block, after buildTrace
 // has produced a *trace.Trace but before the writer goroutine has been
 // notified.
@@ -95,20 +95,26 @@ type Plugin interface {
 //   - Runs after the response has been fully delivered to the client.
 //     Cannot affect forwarding (principle 2 honored by construction).
 //   - Runs synchronously on the finalize goroutine; the writer is not
-//     notified until every BeforeRecord plugin has returned.
+//     notified until every OnFinalize plugin has returned.
 //   - Runs in registration order. Returning shouldRecord=false from any
 //     plugin SHORT-CIRCUITS the iteration: subsequent plugins do not
 //     see the dropped trace.
-type ObserveBeforeRecord interface {
+//
+// Renamed from ObserveBeforeRecord per plugin-b-c-spec §7.3 (Phase A
+// migration) to reflect that this fires inside the finalize block, not
+// the writer pipeline. Observer-class plugins decide whether the trace
+// is recorded; hook-class plugins (v2.BeforePlugin / v2.AfterPlugin)
+// shape what flows to the client.
+type ObserveOnFinalize interface {
 	Plugin
-	BeforeRecord(ctx context.Context, tr trace.Trace) (shouldRecord bool, err error)
+	OnFinalize(ctx context.Context, tr trace.Trace) (shouldRecord bool, err error)
 }
 
-// ObserveAfterRecord is the observe-class hook called AFTER the writer
+// ObserveAfterWrite is the observe-class hook called AFTER the writer
 // chain has finished. It fires after the JSONL line is on disk and the
 // SQLite row has been upserted — i.e. the trace is durable and queryable.
 //
-// AfterRecord is the natural home for side-effecting observation:
+// AfterWrite is the natural home for side-effecting observation:
 // counter exports, downstream notification sinks, operator dashboards
 // (the doc's "alert" and "metrics" categories — see
 // uiux-research/plugin.md § 2.6, § 7.5). Per PHILOSOPHY principle 4
@@ -120,24 +126,29 @@ type ObserveBeforeRecord interface {
 //
 //   - Runs after the writer ack. (Phase A.1 caveat: TrySend is currently
 //     non-blocking; the trace is queued but may not be on disk when
-//     AfterRecord fires. See uiux-research/plugin.md § 10 "after_record
+//     AfterWrite fires. See uiux-research/plugin.md § 10 "after_record
 //     durability semantics" — Phase A ships best-effort and explicitly
 //     documents it.)
 //   - Runs in registration order, sequentially per trace. Phase A does
 //     NOT fan out to a worker pool; that is Phase B territory if the
 //     observed plugins prove load-bearing.
-//   - Errors are logged. There is no way for an AfterRecord plugin to
+//   - Errors are logged. There is no way for an AfterWrite plugin to
 //     un-write an already-recorded trace (principle 6: filesystem is
 //     truth, append-only). Operators learn about plugin errors via
 //     /healthz counters.
-type ObserveAfterRecord interface {
+//
+// Renamed from ObserveAfterRecord per plugin-b-c-spec §7.3 (Phase A
+// migration); the "AfterWrite" name keeps the side-effecting-only
+// semantics distinct from the hook-class AFTER (which can mutate the
+// response before the client sees it).
+type ObserveAfterWrite interface {
 	Plugin
-	AfterRecord(ctx context.Context, tr trace.Trace)
+	AfterWrite(ctx context.Context, tr trace.Trace)
 }
 
 // Registry holds the operator's enabled plugins in registration order.
 //
-// The order matters: BeforeRecord plugins fire in registration order,
+// The order matters: OnFinalize plugins fire in registration order,
 // and a shouldRecord=false return SHORT-CIRCUITS the chain. Operators
 // who care about ordering (e.g. "tag-by-path runs before path-filter
 // so dropped traces still carry the tag in logs") control it via the
@@ -209,11 +220,11 @@ func (r *Registry) Close() error {
 	return firstErr
 }
 
-// IterateBeforeRecord runs the BeforeRecord chain in registration order.
+// IterateOnFinalize runs the OnFinalize chain in registration order.
 //
 // Semantics:
 //
-//   - Plugins that do NOT implement ObserveBeforeRecord are skipped
+//   - Plugins that do NOT implement ObserveOnFinalize are skipped
 //     (a plugin can opt out of this hook entirely).
 //   - Returning shouldRecord=false from any plugin causes iteration to
 //     STOP and the caller receives (false, nil). Subsequent plugins do
@@ -230,16 +241,16 @@ func (r *Registry) Close() error {
 //
 // The caller (writer dispatch in Phase A.1) uses shouldRecord to gate
 // the TrySend call and logs errs for telemetry.
-func (r *Registry) IterateBeforeRecord(ctx context.Context, tr trace.Trace) (shouldRecord bool, errs []error) {
+func (r *Registry) IterateOnFinalize(ctx context.Context, tr trace.Trace) (shouldRecord bool, errs []error) {
 	shouldRecord = true
 	for _, p := range r.plugins {
-		hook, ok := p.(ObserveBeforeRecord)
+		hook, ok := p.(ObserveOnFinalize)
 		if !ok {
 			continue
 		}
-		ok, err := hook.BeforeRecord(ctx, tr)
+		ok, err := hook.OnFinalize(ctx, tr)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("plugin %q before_record: %w", p.Name(), err))
+			errs = append(errs, fmt.Errorf("plugin %q on_finalize: %w", p.Name(), err))
 		}
 		if !ok {
 			return false, errs
@@ -248,22 +259,22 @@ func (r *Registry) IterateBeforeRecord(ctx context.Context, tr trace.Trace) (sho
 	return true, errs
 }
 
-// IterateAfterRecord runs the AfterRecord chain in registration order.
+// IterateAfterWrite runs the AfterWrite chain in registration order.
 //
-// Plugins that do NOT implement ObserveAfterRecord are skipped. There
+// Plugins that do NOT implement ObserveAfterWrite are skipped. There
 // is no short-circuit semantic here — the trace is already durable,
 // and every interested plugin gets a chance to observe it. Plugin
-// errors are NOT returned because AfterRecord has no return value;
+// errors are NOT returned because AfterWrite has no return value;
 // plugins that need to surface errors do so via their own logging /
 // counter mechanism. Phase A.1's wiring layer will be the place that
 // adds shared telemetry on top of this iterator.
-func (r *Registry) IterateAfterRecord(ctx context.Context, tr trace.Trace) {
+func (r *Registry) IterateAfterWrite(ctx context.Context, tr trace.Trace) {
 	for _, p := range r.plugins {
-		hook, ok := p.(ObserveAfterRecord)
+		hook, ok := p.(ObserveAfterWrite)
 		if !ok {
 			continue
 		}
-		hook.AfterRecord(ctx, tr)
+		hook.AfterWrite(ctx, tr)
 	}
 }
 

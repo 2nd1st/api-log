@@ -30,6 +30,26 @@ type Trace struct {
 	Disconnected  bool      `json:"disconnected"`
 	TruncatedReq  bool      `json:"truncated_req"`
 	TruncatedResp bool      `json:"truncated_resp"`
+
+	// PluginIntercepted is the marker for traces whose request was
+	// short-circuited by a v2 hook plugin (plugin-b-c-spec §5.2). Absent
+	// on the common path; set only when a BEFORE or AFTER hook returned
+	// ActionIntercept. Without this field, intercepted traces would be
+	// indistinguishable from genuine upstream responses.
+	//
+	// omitempty + pointer keeps the JSONL line shape stable: the field
+	// is *absent* (not "null") on every trace the plugin chain did not
+	// intercept, matching the rest of the trace schema's
+	// presence-or-absent convention.
+	PluginIntercepted *PluginInterceptMarker `json:"plugin_intercepted,omitempty"`
+}
+
+// PluginInterceptMarker identifies the plugin instance that produced an
+// intercept response. The shape is frozen by plugin-b-c-spec §5.2.
+type PluginInterceptMarker struct {
+	Type string `json:"type"` // plugin type name, e.g. "rate_limit_ip"
+	ID   string `json:"id"`   // operator-chosen instance id
+	Hook string `json:"hook"` // "before" | "after"
 }
 
 // Body is one side of the trace. Exactly one of Body/Events/BodyB64 is set:
