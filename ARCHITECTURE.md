@@ -282,19 +282,46 @@ CREATE INDEX idx_session_root   ON traces(session_root_id);
 CREATE INDEX idx_prefix_hash    ON traces(key_hash, prefix_canonical_hash);  -- enables parent lookup without loading JSONL
 ```
 
-**Additive schema changes after v0** (per PHILOSOPHY §6 — schema is append-only; new optional columns added via idempotent `ALTER TABLE ADD COLUMN`):
+**Additive schema changes after v0** (per PHILOSOPHY §6 — schema is append-only; new optional columns added via idempotent `ALTER TABLE ADD COLUMN`). Entries are listed in commit order; for the actual statement text see `internal/store/sqlite/sqlite.go` `migrate()`.
 
 ```sql
--- Phase K (2026-05-30): media extraction. Count of extracted media files
--- per trace; 0 when save_attachments is off or the trace has no media
--- fields. Populated by the writer goroutine post-JSONL-append from the
--- length of internal/media.Extract()'s returned slice.
-ALTER TABLE traces ADD COLUMN media_count INTEGER DEFAULT 0;
+-- Phase K (commit 67142f9): media extraction. Count of extracted media
+-- files per trace; 0 when save_attachments is off or the trace has no
+-- media fields. Populated by the writer goroutine post-JSONL-append from
+-- the length of internal/media.Extract()'s returned slice.
+-- NOT NULL DEFAULT 0 — absence is genuinely zero, not unknown.
+ALTER TABLE traces ADD COLUMN media_count INTEGER NOT NULL DEFAULT 0;
+
+-- T3 (commit 49e55bb): usage extraction. Deterministic copies of named
+-- protocol usage fields (PHILOSOPHY § 1 carve-out 1) for cache hits,
+-- cache-creation tokens, and reasoning tokens — emitted by Anthropic
+-- Messages, OpenAI Responses, and (partially) Chat Completions. Nullable
+-- (no DEFAULT) so a protocol that does not name the field stays NULL
+-- rather than being conflated with a real zero.
+ALTER TABLE traces ADD COLUMN cached_tokens          INTEGER;
+ALTER TABLE traces ADD COLUMN cache_creation_tokens  INTEGER;
+ALTER TABLE traces ADD COLUMN reasoning_tokens       INTEGER;
+
+-- R5a (commit de44b28): client identification at finalize. Taxonomy-driven
+-- ExtractClient parses request headers (chiefly User-Agent) into a stable
+-- kind / version pair — e.g. `claude-code-desktop` / `1.9659.2`. Nullable
+-- TEXT: a request whose headers do not match any taxonomy rule stays
+-- NULL (PHILOSOPHY § 1: no heuristic synthesis).
+ALTER TABLE traces ADD COLUMN client_kind     TEXT;
+ALTER TABLE traces ADD COLUMN client_version  TEXT;
+
+-- W4.1 Phase 2 (commit 3c6503d): project context. Deterministic copy of
+-- an operator-authored L2 system-prompt field — parser.ExtractProjectContext
+-- parses the request body's system / instructions text for a project
+-- name. Nullable TEXT so a trace with no project signal stays NULL,
+-- distinct from a real empty string. Mirrors the viewer's promptSource.ts
+-- so the derived column matches what the UI used to compute at render.
+ALTER TABLE traces ADD COLUMN client_project  TEXT;
 ```
 
-The migration runner catches `duplicate column` errors specifically so
-re-startup against an existing database is idempotent. Other errors
-propagate.
+The migration runner runs each `ALTER` unconditionally and swallows the
+specific `duplicate column` / `already exists` error so re-startup
+against an existing database is idempotent. Any other error propagates.
 
 Indexes deferred to a future when a query justifies them:
 - `idx_status_ts`, `idx_model_ts`, `idx_parent` — currently no read-API path requires them.
@@ -433,11 +460,11 @@ SELECT t.* FROM traces t JOIN descendants ON t.id = descendants.id;
 Three endpoints. All require `Authorization: Bearer <token>` where `<token>` is the value at `data/admin_token` (auto-generated on first run; print to stdout once at startup; if the file is deleted, regenerate on next startup and print again).
 
 ```
-GET  /api/traces?since=&until=&status=&model=&key_hash=&session_root_id=&limit=&cursor=    # §6.2
-GET  /api/traces/:id                                                                       # §6.3
-GET  /api/traces/:id/replay                                                                # §6.4
-GET  /healthz                                                                              # §6.5
-GET  /                                                                                     # §6.6
+GET  /api/traces?since=&until=&status=&model=&path=&key_hash=&session_root_id=&project=&limit=&cursor=    # §6.2
+GET  /api/traces/:id                                                                                      # §6.3
+GET  /api/traces/:id/replay                                                                               # §6.4
+GET  /healthz                                                                                             # §6.5
+GET  /                                                                                                    # §6.6
 ```
 
 ### 6.1 Auth and error contract
@@ -454,36 +481,47 @@ GET  /                                                                          
 List, backed by SQLite only — never opens JSONL on this path. Returns the SQLite row shape: mirror columns + derived columns + `jsonl_path` / `jsonl_offset` pointers. **The list response intentionally does NOT include `req`/`resp` body content** — those are only available via `/api/traces/:id` (which seeks into the JSONL file).
 
 - `since`, `until`: RFC3339 timestamps; bounds on `ts_start`.
-- `status`, `model`, `key_hash`, `session_root_id`: equality filters. `key_hash` accepts 8- or 16-char prefix.
+- `status`: either an exact integer code (`200`, `404`, …) or a bucket of the form `2xx` / `4xx` / `5xx`.
+- `model`, `session_root_id`, `project`: equality filters. `project` matches the `client_project` column populated by parser.ExtractProjectContext (W4.1 Phase 2).
+- `key_hash`: equality filter accepting an 8- or 16-char hex prefix.
+- `path`: defaults to exact match. **A trailing `*` flips it to prefix match** — e.g. `path=/v1/*` matches `/v1/messages`, `/v1/responses`, `/v1/chat/completions`. The semantics live in `internal/api/traces.go::parseListFilters`; viewer Landing uses `/v1/*` by default to hide `/api/v1/*` admin UI traffic.
 - `limit`: 1..500, default 100.
 - `cursor`: opaque base64 of `(ts_start_ms, id)`. Ordering is always `ts_start DESC, id DESC` for stability.
-- Row shape (each element of `traces[]`):
+- Row shape (each element of `traces[]`). Nullable columns ship as JSON `null` when the underlying SQLite column is NULL — they are nullable pointer types in `internal/api/traces.go::rowJSON`:
   ```json
   {
-    "id":               "01HX7K8MS...",
-    "ts_start":         "2026-05-27T10:23:45.123Z",
-    "ts_end":           "2026-05-27T10:23:46.357Z",
-    "client":           "172.17.0.5:54321",
-    "method":           "POST",
-    "path":             "/v1/messages",
-    "upstream":         "http://gateway:7860",
-    "status":           200,
-    "model":            "claude-sonnet-4-6",
-    "stream":           true,
-    "prompt_tokens":    234,
-    "completion_tokens": 521,
-    "total_tokens":     755,
-    "finish_reason":    "end_turn",
-    "key_hash":         "a1b2c3d4...",
-    "parent_id":        "01HX7K8M9...",
-    "session_root_id":  "01HX7K8M0...",
-    "disconnected":     false,
-    "truncated_req":    false,
-    "truncated_resp":   false,
-    "jsonl_path":       "data/2026-05-27/a1b2c3d4.jsonl",
-    "jsonl_offset":     18472
+    "id":                    "01HX7K8MS...",
+    "ts_start":              "2026-05-27T10:23:45.123Z",
+    "ts_end":                "2026-05-27T10:23:46.357Z",
+    "client":                "172.17.0.5:54321",
+    "method":                "POST",
+    "path":                  "/v1/messages",
+    "upstream":              "http://gateway:7860",
+    "status":                200,
+    "model":                 "claude-sonnet-4-6",
+    "stream":                true,
+    "prompt_tokens":         234,
+    "completion_tokens":     521,
+    "total_tokens":          755,
+    "cached_tokens":         128,
+    "cache_creation_tokens": 64,
+    "reasoning_tokens":      null,
+    "finish_reason":         "end_turn",
+    "client_kind":           "claude-code-desktop",
+    "client_version":        "1.9659.2",
+    "client_project":        "api-log",
+    "key_hash":              "a1b2c3d4e5f6a7b8",
+    "parent_id":             "01HX7K8M9...",
+    "session_root_id":       "01HX7K8M0...",
+    "disconnected":          false,
+    "truncated_req":         false,
+    "truncated_resp":        false,
+    "media_count":           0,
+    "jsonl_path":            "data/2026-05-27/a1b2c3d4.jsonl",
+    "jsonl_offset":          18472
   }
   ```
+  The seven post-v0 fields (`cached_tokens`, `cache_creation_tokens`, `reasoning_tokens`, `client_kind`, `client_version`, `client_project`, `media_count`) correspond directly to the ALTER TABLE additions in § 4. `media_count` is `int` (NOT NULL DEFAULT 0); the other six are nullable.
 - Full response:
   ```json
   { "traces":      [ ...row objects above... ],
@@ -533,6 +571,8 @@ Returns `200 OK` with a compact JSON object exposing the listener's identity, ve
 ```
 
 Counters are cumulative since process start. `/healthz` itself does not check disk or SQLite — only HTTP-path liveness and counter exposure. Operator dashboards should alert on these counters increasing, not on disk/SQLite probes done by `/healthz`.
+
+The counter list above is **illustrative, not exhaustive**. Drop / overflow counters, byte and trace totals, per-status-bucket counts, media file totals, token totals (T3), and writer-channel high-water are all emitted; the viewer Landing reads roughly thirty distinct fields. For the authoritative set inspect `internal/counters/counters.go` (the `Snapshot` struct's JSON tags) — adding a counter is a backend-only change that flows through the same `/healthz` payload.
 
 ### 6.6 `GET /`
 
@@ -658,8 +698,7 @@ For each inbound HTTP request:
    - The per-trace `req_body_capture_timeout` (default 60 s) fires while waiting for `req.Body` EOF — guards against the pathological case where the inner Transport reads partial req body, the response gets sent and consumed, but `req.Body` is never closed cleanly. After the timeout, the request side is marked `truncated_req: true` and finalize proceeds.
 
    The finalize trigger is a `sync.Once`-guarded function so all paths converge safely. Inside finalize:
-   - Cancel any still-running capture drainers (they unblock on their channel select / ctx done).
-   - Close the capture channels and wait at most `drainer_join_timeout` (default 2 s) for drainers to flush remaining bytes; close tmp files.
+   - Close the capture channels. Each drainer goroutine owns its tmp file and closes it when its loop exits; finalize blocks on the drainer-done channels so `buildTrace`'s later `os.Open` cannot race a torn write.
    - **Parse phase**: read the response tmp file. Determine the body form from `resp.Header.Get("Content-Type")` after stripping `Content-Encoding` if we decompressed (see §10.3): `application/json` → unmarshal as `body`; `text/event-stream` → SSE event parser (§10.6) → `events` array + `stream_done`; everything else → base64 → `body_b64`. JSON parse failure → fall back to `body_b64 + parse_error`. Parse the request body analogously.
    - **Compute derived fields** (provenance-extracted only — see PHILOSOPHY principle 1): `model` from `req.body.model`; `key_hash` from `req.Header.Get("Authorization")` (fallback `x-api-key`); token counts from the relevant final-chunk fields per protocol; `prefix_canonical_hash` from §5.1.
    - **Build the JSONL line** struct (using `req.Header` directly for headers — there is no header-bytes file to read).
@@ -996,7 +1035,6 @@ timeouts:
   idle_seconds:               120           # http.Server.IdleTimeout
   stream_idle_seconds:        600           # cancel ctx if SSE chunk gap exceeds this
   req_body_capture_seconds:   60            # finalize waits at most this for req body EOF
-  drainer_join_seconds:       2             # finalize waits at most this for capture drainers
 
 shutdown:
   grace_seconds:     30
