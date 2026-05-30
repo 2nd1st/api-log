@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/leoyun/api-log/internal/plugin/builtin/pathfilter"
 )
 
 // Config is the parsed runtime config.
@@ -24,6 +26,21 @@ type Config struct {
 	Shutdown    ShutdownConfig    `yaml:"shutdown"`
 	Logging     LoggingConfig     `yaml:"logging"`
 	Diagnostics DiagnosticsConfig `yaml:"diagnostics"`
+	Plugins     PluginsConfig     `yaml:"plugins"`
+}
+
+// PluginsConfig holds per-plugin config subtrees for the Phase A
+// observe-class plugin pipeline. The zero value disables every plugin
+// (no plugins are constructed in main) — matching the documented
+// "empty plugins block = current behavior" contract in
+// uiux-research/plugin.md § 5.
+//
+// PHASE A SCAFFOLD ONLY: this struct is parsed but NOT yet read by
+// main.go to construct a plugin.Registry. The wiring lands in
+// Phase A.1 as its own commit. Until then, populating this block has
+// no runtime effect — the JSONL output is identical with or without it.
+type PluginsConfig struct {
+	PathFilter pathfilter.Config `yaml:"path_filter"`
 }
 
 type ProxyConfig struct {

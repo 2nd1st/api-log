@@ -33,11 +33,6 @@ import (
 //go:embed templates/CLAUDE.md templates/jq-cheatsheet.md
 var templatesFS embed.FS
 
-// HardCap is the maximum number of rows the exporter will pull from the
-// SQLite store per request. Mirrors the contract's safety cap (§ Query
-// Parameters / limit).
-const HardCap = 5000
-
 // fileGroup carries the rows that share one source JSONL file. The
 // exporter buckets rows by JSONLPath and turns each bucket into one zip
 // entry, with the name picking complete-vs-partial based on whether
@@ -56,19 +51,17 @@ type fileGroup struct {
 // relative to (or absolute; we accept either — the row's JSONLPath is
 // the authoritative reader-side path).
 //
-// limit bounds how many rows we read from SQLite, on top of the
-// HardCap-imposed safety bound. Pass 0 for "unbounded up to HardCap".
+// limit optionally bounds how many rows we read from SQLite. Pass 0 (or
+// any non-positive value) to export every matching row — there is no
+// fixed upper bound; the export streams so memory is not the bottleneck
+// and SQLite handles 100k+ rows comfortably.
 //
 // The returned error means either the SQLite read failed (zip not yet
 // started) or a disk read failed mid-stream (zip may be partial). The
 // caller is responsible for setting HTTP headers BEFORE calling — once
 // bytes start flowing to w we can no longer set a status code.
 func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.ListFilters, limit int) error {
-	cap := HardCap
-	if limit > 0 && limit < cap {
-		cap = limit
-	}
-	rows, err := store.AllMatching(filters, cap)
+	rows, err := store.AllMatching(filters, limit)
 	if err != nil {
 		return fmt.Errorf("query matching rows: %w", err)
 	}
@@ -345,7 +338,7 @@ func summarizeFilters(f sqlite.ListFilters) string {
 		lines = append(lines, "- session_root_id: "+f.SessionRootID)
 	}
 	if len(lines) == 0 {
-		return "(none — all traces up to safety cap of " + fmt.Sprintf("%d", HardCap) + ")"
+		return "(none — all traces)"
 	}
 	return strings.Join(lines, "\n")
 }

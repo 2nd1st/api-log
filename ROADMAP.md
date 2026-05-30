@@ -388,6 +388,39 @@ the recorder schema bump pass.
 
 ### 5. Plugin / hook system (strategic, larger)
 
+**Phase A status (2026-05-30): scaffold landed; wiring deferred.**
+
+Design lives in `uiux-research/plugin.md` (the contract). The Phase A
+scaffold — `internal/plugin/` (Plugin + ObserveBeforeRecord +
+ObserveAfterRecord + Registry) plus the first concrete plugin
+`internal/plugin/builtin/pathfilter/` plus the `plugins:` config block
+— is in tree as of this commit. The Phase A scaffold is **observe-class
+only**: no `mutate_req`, no `before_forward`, no gate behavior. Those
+are the gate-position phases (B and C in plugin.md § 8) and remain
+designed-but-not-built per `project_gate_position`.
+
+**Behavior shipped today is unchanged.** The Registry is not constructed
+in `cmd/api-log/main.go` yet; the path-filter plugin builds and has
+tests but does not run on the trace path. Phase A.1 is a separate
+commit that wires the Registry into the finalize block, gated on
+`config.Plugins.PathFilter.Patterns` being non-empty. Splitting the
+scaffold from the wiring honors the operator's stance of "leverage via
+plugins, never bake into capture path" — the wiring commit can be
+reviewed against the now-stable contract.
+
+Once Phase A.1 lands, the planned ROADMAP § 4 "capture-time skip" TODO
+above resolves through `path-filter` instead of a bespoke
+`capture.skip_paths` knob.
+
+The original sketch below remains the long-form record of what hooks
+are designed (interfere-class included) and how mutation-recording
+would work — none of it ships in Phase A. See `uiux-research/plugin.md`
+§§ 7.2, 7.3 for the Phase B (`key-redactor`) and Phase C (`rate-limit`)
+designs, and §§ 8 Phase B / Phase C for the PHILOSOPHY amendments each
+phase requires.
+
+---
+
 api-log sits at the natural gate position in front of LLM gateways.
 The operator pointed out 2026-05-28 that this position is useful
 beyond just recording — rate-limit, DDoS-resistance, audit, secret

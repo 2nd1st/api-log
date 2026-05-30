@@ -16,10 +16,11 @@ import (
 //
 // Filters share the /api/traces vocabulary (status, model, key_hash,
 // session_root_id, since, until, path) — we parse them with the same
-// pipeline but lift the limit cap to 5000 (vs. /api/traces' 500-row page
-// limit). The body is a streaming zip; once the first byte is on the
-// wire we can no longer set a status code, so all validation runs before
-// any zip data is written.
+// pipeline. The limit param is unbounded (defaults to unlimited when
+// absent) — export streams, memory is not the bottleneck, and SQLite
+// handles 100k+ rows comfortably. The body is a streaming zip; once the
+// first byte is on the wire we can no longer set a status code, so all
+// validation runs before any zip data is written.
 func exportHandler(deps Deps) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		filters, limit, errCode, errField := parseExportFilters(r)
@@ -60,9 +61,11 @@ func exportHandler(deps Deps) http.Handler {
 	})
 }
 
-// parseExportFilters mirrors parseListFilters but allows limit up to
-// exporter.HardCap (5000) instead of the 500 page cap. Cursor is
-// rejected — /api/export is a one-shot endpoint, not paginated.
+// parseExportFilters mirrors parseListFilters but does not impose an
+// upper bound on limit (the export streams; the previous 5000-row cap
+// was an arbitrary safety guard and has been removed). A missing or
+// zero limit means "every matching row". Cursor is rejected —
+// /api/export is a one-shot endpoint, not paginated.
 func parseExportFilters(r *http.Request) (sqlite.ListFilters, int, string, string) {
 	q := r.URL.Query()
 	f := sqlite.ListFilters{}
@@ -120,7 +123,7 @@ func parseExportFilters(r *http.Request) (sqlite.ListFilters, int, string, strin
 	limit := 0
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > exporter.HardCap {
+		if err != nil || n < 1 {
 			return f, 0, "bad_param", "limit"
 		}
 		limit = n
