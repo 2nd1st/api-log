@@ -27,6 +27,7 @@ import (
 
 	"github.com/leoyun/api-log/internal/api"
 	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
+	"github.com/leoyun/api-log/internal/proxy"
 	"github.com/leoyun/api-log/internal/runtime"
 	"github.com/leoyun/api-log/internal/sse"
 	"github.com/leoyun/api-log/internal/trace"
@@ -382,18 +383,27 @@ func makeModifyResponse(reg *pluginv2.Registry) func(*http.Response) error {
 // the upstream body into memory, builds ParsedResponse, runs the chain.
 // On Mutate: re-marshal and replace resp.Body. On Intercept: replace
 // resp.Body + status + headers with the intercept payload.
+//
+// Capture invariant: the CaptureTransport's response tee is detached
+// BEFORE we read resp.Body so the original upstream bytes do NOT land
+// in the per-trace respSink. Every return path then re-wraps the
+// outgoing body with the same handle, so the captured stream matches
+// what the CLIENT receives — mutated content, intercept payload, or
+// original passthrough bytes, whichever applies.
 func modifyBufferedResponse(
 	ctx context.Context,
 	reg *pluginv2.Registry,
 	req *pluginv2.ParsedRequest,
 	resp *http.Response,
 ) error {
+	capH := proxy.DetachResponseCapture(resp)
 	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
-		// Read failed; replay empty body downstream (capture already saw
-		// what arrived). Caller's WriteHeader path is unaffected.
-		resp.Body = io.NopCloser(bytes.NewReader(nil))
+		// Read failed; replay empty body downstream. The respSink will
+		// also see "nothing past this point" which matches what the
+		// client sees, so re-wrap unconditionally.
+		resp.Body = capH.RewrapBody(io.NopCloser(bytes.NewReader(nil)))
 		resp.ContentLength = 0
 		return nil
 	}
@@ -409,7 +419,7 @@ func modifyBufferedResponse(
 		if info.Response.Status != 0 {
 			resp.StatusCode = info.Response.Status
 		}
-		resp.Body = io.NopCloser(bytes.NewReader(newBody))
+		resp.Body = capH.RewrapBody(io.NopCloser(bytes.NewReader(newBody)))
 		resp.ContentLength = int64(len(newBody))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
 		return nil
@@ -422,18 +432,18 @@ func modifyBufferedResponse(
 		if berr != nil {
 			slog.Warn("plugin-mutate: build response body failed; serving original",
 				"err", berr, "protocol", req.Protocol)
-			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.Body = capH.RewrapBody(io.NopCloser(bytes.NewReader(body)))
 			resp.ContentLength = int64(len(body))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 			return nil
 		}
-		resp.Body = io.NopCloser(bytes.NewReader(out))
+		resp.Body = capH.RewrapBody(io.NopCloser(bytes.NewReader(out)))
 		resp.ContentLength = int64(len(out))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
 		return nil
 	}
 	// No mutation, no intercept: hand the original bytes back.
-	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.Body = capH.RewrapBody(io.NopCloser(bytes.NewReader(body)))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	return nil
@@ -457,6 +467,12 @@ func modifyStreamingResponse(
 	req *pluginv2.ParsedRequest,
 	resp *http.Response,
 ) error {
+	// Detach the response capture tee BEFORE doing anything else. The
+	// dispatcher goroutine below reads raw upstream bytes and writes
+	// mutated bytes into a pipe; we want respSink to see the pipe
+	// (= what the client gets), not the upstream stream. Every return
+	// path re-wraps the body it hands back to ReverseProxy.
+	capH := proxy.DetachResponseCapture(resp)
 	dispatcher, info := reg.WrapStreamDispatcher(ctx, req)
 	if info != nil {
 		// Intercept fired during AFTER-plugin registration: drop the
@@ -469,7 +485,7 @@ func modifyStreamingResponse(
 		if info.Response.Status != 0 {
 			resp.StatusCode = info.Response.Status
 		}
-		resp.Body = io.NopCloser(bytes.NewReader(info.Response.Body))
+		resp.Body = capH.RewrapBody(io.NopCloser(bytes.NewReader(info.Response.Body)))
 		resp.ContentLength = int64(len(info.Response.Body))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(info.Response.Body)))
 		// Drop streaming hints since the body is now a fixed-size byte
@@ -489,8 +505,9 @@ func modifyStreamingResponse(
 	go func() {
 		// On any panic in the transform goroutine, close the pipe with
 		// an error so the downstream client write loop unblocks. The
-		// capture tee on resp.Body already saw the upstream bytes; this
-		// goroutine only affects what flows to the CLIENT.
+		// capture tee sits on the OUTPUT side (the pipe reader handed
+		// back below), so respSink records whatever this goroutine
+		// successfully wrote — matching what the client received.
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Warn("stream dispatcher panic", "panic", rec)
@@ -527,6 +544,6 @@ func modifyStreamingResponse(
 		}
 		_ = pw.Close()
 	}()
-	resp.Body = pr
+	resp.Body = capH.RewrapBody(pr)
 	return nil
 }

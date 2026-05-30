@@ -151,3 +151,52 @@ func (t *teeReadCloser) Read(p []byte) (int, error) {
 func (t *teeReadCloser) Close() error {
 	return t.src.Close()
 }
+
+// CaptureHandle is an opaque handle to a previously-attached response
+// capture sink. ModifyResponse-style hooks that need to mutate the
+// response body call DetachResponseCapture to remove the tee from
+// resp.Body (so they can read upstream bytes without those bytes
+// landing in the capture sink), then call RewrapBody on whatever they
+// hand back to ReverseProxy so the captured stream reflects what the
+// CLIENT receives — not what upstream emitted.
+//
+// A zero CaptureHandle is the "no-op" value: DetachResponseCapture
+// returns it when resp.Body wasn't a teeReadCloser (e.g. capture was
+// never wired). RewrapBody on a zero handle returns its argument
+// unchanged.
+type CaptureHandle struct {
+	sink *capture.Sink
+}
+
+// DetachResponseCapture unwraps any *teeReadCloser the CaptureTransport
+// placed on resp.Body and returns a handle holding the underlying sink.
+// resp.Body is updated to point at the raw upstream reader. The
+// returned handle's RewrapBody re-installs the tee on whatever body the
+// caller eventually hands back.
+//
+// Idempotent: if resp.Body is already raw (or nil), the returned handle
+// is a no-op and resp.Body is left alone.
+func DetachResponseCapture(resp *http.Response) CaptureHandle {
+	if resp == nil || resp.Body == nil {
+		return CaptureHandle{}
+	}
+	tee, ok := resp.Body.(*teeReadCloser)
+	if !ok {
+		return CaptureHandle{}
+	}
+	resp.Body = tee.src
+	return CaptureHandle{sink: tee.sink}
+}
+
+// RewrapBody returns rc wrapped in a tee that feeds the handle's sink.
+// A zero handle returns rc unchanged so callers can use the helper
+// unconditionally regardless of whether capture was wired.
+//
+// Pass a nil rc to get nil back (so e.g. an intercept that drops the
+// upstream body can still call this without a special case).
+func (h CaptureHandle) RewrapBody(rc io.ReadCloser) io.ReadCloser {
+	if rc == nil || h.sink == nil {
+		return rc
+	}
+	return newTeeReadCloser(rc, h.sink)
+}
