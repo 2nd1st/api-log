@@ -1,8 +1,6 @@
 # Architecture
 
 > This document describes the **backend** — the `api-log` proxy process. The frontend (`api-log-viewer`) is a separate project; its contract with the backend is the read API documented in §6.
->
-> Read [PHILOSOPHY.md](./PHILOSOPHY.md) first. Every decision below is downstream of those principles.
 
 ---
 
@@ -90,7 +88,7 @@ One line per completed trace. Three structural variants based on the response bo
 
 ### Pragmatic absent-value sentinels
 
-A few fields use sentinel values to encode "the protocol did not provide this" without forcing every consumer to special-case nulls. These are **encodings, not synthesis** — they live with the schema, not with derived semantics (see PHILOSOPHY § principle 1). New sentinels require an entry in this section.
+A few fields use sentinel values to encode "the protocol did not provide this" without forcing every consumer to special-case nulls. These are **encodings, not synthesis** — they live with the schema, not with derived semantics. New sentinels require an entry in this section.
 
 | Field | Sentinel | Meaning |
 |---|---|---|
@@ -253,7 +251,7 @@ CREATE TABLE traces (
   truncated_req   INTEGER,                      -- 0/1
   truncated_resp  INTEGER,                      -- 0/1
 
-  -- Protocol field copies (PHILOSOPHY principle 1, direct field extraction)
+  -- Protocol field copies (named protocol fields only — direct extraction, no body synthesis)
   model           TEXT,                         -- copied from req.body.model (or normalized for Responses)
   stream          INTEGER,                      -- copied from req.body.stream (1 / 0 / NULL if absent)
   prompt_tokens   INTEGER,                      -- copied from the protocol's named token field
@@ -261,12 +259,12 @@ CREATE TABLE traces (
   total_tokens    INTEGER,
   finish_reason   TEXT,                         -- copied from stop_reason / finish_reason
 
-  -- Deterministic encodings of named values (PHILOSOPHY principle 1, carve-out 1)
+  -- Deterministic encodings of named values (carve-out: named header parsing for stable classification)
   key_hash              TEXT NOT NULL,          -- sha256(Authorization)[:16] — 16 hex chars; see §2 for canonical form
   prefix_len            INTEGER,                -- number of turns in this trace's session prefix; NULL if no session concept
   prefix_canonical_hash TEXT,                   -- sha256(canonicalize(this trace's session prefix))[:16]
 
-  -- Cross-trace structural algorithm output (PHILOSOPHY principle 1, carve-out 2; see §5)
+  -- Cross-trace structural algorithm output (carve-out: prefix-canonical-hash session inference, §5)
   parent_id             TEXT,                   -- prior trace this one continues (FK to traces.id)
   session_root_id       TEXT NOT NULL,          -- root of the session (= id if no parent)
 
@@ -282,7 +280,7 @@ CREATE INDEX idx_session_root   ON traces(session_root_id);
 CREATE INDEX idx_prefix_hash    ON traces(key_hash, prefix_canonical_hash);  -- enables parent lookup without loading JSONL
 ```
 
-**Additive schema changes after v0** (per PHILOSOPHY §6 — schema is append-only; new optional columns added via idempotent `ALTER TABLE ADD COLUMN`). Entries are listed in commit order; for the actual statement text see `internal/store/sqlite/sqlite.go` `migrate()`.
+**Additive schema changes after v0** (schema is append-only; new optional columns added via idempotent `ALTER TABLE ADD COLUMN`). Entries are listed in commit order; for the actual statement text see `internal/store/sqlite/sqlite.go` `migrate()`.
 
 ```sql
 -- Phase K (commit 67142f9): media extraction. Count of extracted media
@@ -293,7 +291,7 @@ CREATE INDEX idx_prefix_hash    ON traces(key_hash, prefix_canonical_hash);  -- 
 ALTER TABLE traces ADD COLUMN media_count INTEGER NOT NULL DEFAULT 0;
 
 -- T3 (commit 49e55bb): usage extraction. Deterministic copies of named
--- protocol usage fields (PHILOSOPHY § 1 carve-out 1) for cache hits,
+-- protocol usage fields (named provider-reported counts) for cache hits,
 -- cache-creation tokens, and reasoning tokens — emitted by Anthropic
 -- Messages, OpenAI Responses, and (partially) Chat Completions. Nullable
 -- (no DEFAULT) so a protocol that does not name the field stays NULL
@@ -306,7 +304,7 @@ ALTER TABLE traces ADD COLUMN reasoning_tokens       INTEGER;
 -- ExtractClient parses request headers (chiefly User-Agent) into a stable
 -- kind / version pair — e.g. `claude-code-desktop` / `1.9659.2`. Nullable
 -- TEXT: a request whose headers do not match any taxonomy rule stays
--- NULL (PHILOSOPHY § 1: no heuristic synthesis).
+-- NULL (no heuristic synthesis).
 ALTER TABLE traces ADD COLUMN client_kind     TEXT;
 ALTER TABLE traces ADD COLUMN client_version  TEXT;
 
@@ -343,7 +341,7 @@ The writer goroutine holds the sole write connection (`db.SetMaxOpenConns(1)` fo
 
 Goal: given an unordered stream of incoming traces, group them into **conversation trees** — each tree rooted at the first turn, with descendants being follow-ups, and siblings being forks (regenerate).
 
-**"Session" here means prefix-chained turns on the wire, nothing more** — not "one task," not "one agent run," not "one user intent." See PHILOSOPHY § Scope boundaries.
+**"Session" here means prefix-chained turns on the wire, nothing more** — not "one task," not "one agent run," not "one user intent." Application-level grouping is a downstream consumer's job.
 
 ### 5.1 The session prefix
 
@@ -559,7 +557,7 @@ If `jsonl_path` has been gzipped (rotated to `<path>.gz`), the server opens the 
 
 This is the differentiator vs. SDK-based observability tools (Langfuse, Phoenix, LangSmith): they store a normalized post-hoc message and discard per-chunk timing, so they can show *what was said* but not *how it was streamed*. api-log records `t_delta_ms` on the live capture path (§7.1), so the original **pacing** is reproducible — even though individual frame bytes are reconstructed, not the wire originals.
 
-**Replay does not re-contact the upstream.** It re-emits reconstructed SSE frames to the API caller. This is explicitly *not* "replay to LLM" — that remains in PHILOSOPHY's "no" list.
+**Replay does not re-contact the upstream.** It re-emits reconstructed SSE frames to the API caller. This is explicitly *not* "replay to LLM" — re-contacting upstream is out of scope by design.
 
 ### 6.5 `GET /healthz`
 
@@ -616,7 +614,7 @@ the spec §3.3 ratification.
 
 ### 6.8 Post-v0 endpoint additions
 
-Surface that grew after v0 shipped. Each addition is justified against the §6.7 boundary and PHILOSOPHY.
+Surface that grew after v0 shipped. Each addition is justified against the §6.7 boundary.
 
 | Endpoint | Method | Phase | Notes |
 |---|---|---|---|
@@ -709,7 +707,7 @@ For each inbound HTTP request:
    The finalize trigger is a `sync.Once`-guarded function so all paths converge safely. Inside finalize:
    - Close the capture channels. Each drainer goroutine owns its tmp file and closes it when its loop exits; finalize blocks on the drainer-done channels so `buildTrace`'s later `os.Open` cannot race a torn write.
    - **Parse phase**: read the response tmp file. Determine the body form from `resp.Header.Get("Content-Type")` after stripping `Content-Encoding` if we decompressed (see §10.3): `application/json` → unmarshal as `body`; `text/event-stream` → SSE event parser (§10.6) → `events` array + `stream_done`; everything else → base64 → `body_b64`. JSON parse failure → fall back to `body_b64 + parse_error`. Parse the request body analogously.
-   - **Compute derived fields** (provenance-extracted only — see PHILOSOPHY principle 1): `model` from `req.body.model`; `key_hash` from `req.Header.Get("Authorization")` (fallback `x-api-key`); token counts from the relevant final-chunk fields per protocol; `prefix_canonical_hash` from §5.1.
+   - **Compute derived fields** (named-field extraction only, no body synthesis): `model` from `req.body.model`; `key_hash` from `req.Header.Get("Authorization")` (fallback `x-api-key`); token counts from the relevant final-chunk fields per protocol; `prefix_canonical_hash` from §5.1.
    - **Build the JSONL line** struct (using `req.Header` directly for headers — there is no header-bytes file to read).
    - Send the struct on the writer channel.
 8. **Writer goroutine** (single instance):
@@ -1114,7 +1112,7 @@ The Plugin Phase A.1 wiring (commit `4500a7d`) does NOT yet:
   `IterateBeforeRecord` returns an error (errors only logged WARN).
 - Wrap plugin calls in `defer recover()` — a buggy third-party
   plugin could leak tmp files (the upstream response IS already
-  forwarded, so PHILOSOPHY §2 is honored, but tmpDir.RemoveTraceFiles
+  forwarded, but tmpDir.RemoveTraceFiles
   is unreachable past a panic).
 
 Both are forward-looking; no third-party plugins exist in tree yet.

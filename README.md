@@ -1,39 +1,111 @@
-# api-log
+English | [中文](README.zh.md)
 
-A transparent recording proxy for any OpenAI-compatible LLM gateway. One binary. Drop it in front of your gateway. Get a structured JSONL log of every request, response, tool call, and reasoning chunk — without touching client code.
+# api-log: LLM proxy logging and API trace recorder
 
----
+[![CI](https://github.com/xiayangzhang/api-log/actions/workflows/ci.yml/badge.svg)](https://github.com/xiayangzhang/api-log/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/xiayangzhang/api-log?include_prereleases&sort=semver)](https://github.com/xiayangzhang/api-log/releases)
+[![Go version](https://img.shields.io/github/go-mod/go-version/xiayangzhang/api-log)](./go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-## One-line pitch
+api-log is a transparent HTTP recording proxy for LLM gateway observability. It sits between clients and OpenAI-compatible or Anthropic Messages gateways, forwards traffic unchanged, records each completed request/response trace as append-only JSONL, and builds a SQLite index for local search, replay, and analysis.
 
-**tcpdump for LLM gateways.** Sits in front of CPA / sub2api / new-api. Captures every Chat Completions / Responses / Anthropic Messages request, parses the JSON envelope and the SSE event stream into one JSONL line per trace, indexes it in SQLite for instant frontend queries, and gets out of the way. Tool calls, reasoning, and any other content the protocol carries live verbatim inside the captured `req` / `resp` objects — they are not promoted to top-level fields and we do not interpret them.
-
-What you do with the recordings — token accounting, eval pipelines, skill extraction, AI-assisted ad-hoc analysis — is downstream of this project's scope.
-
----
+The forwarding goroutine never inspects bodies. JSON unmarshalling, SSE event splitting, and session inference happen in a finalize step after the response has been delivered to the client. Token accounting, evaluation pipelines, and any semantic interpretation are downstream of this project's scope.
 
 ## Status
 
-**Pre-release.** v0 (capture path + session inference + read API) and v0.1 work (frontend viewer in a separate repo, plugin system, hot-reload) are shipped and running against live traffic. A v0.1.0 tag is being prepared; until then the API contract is stable but commit history may still rebase.
+Preparing the `v0.1.0` tag. The capture path, read API, viewer (separate repo), and plugin system (Phase A observer + Phase B/C mutators) are shipped and running against live traffic. The HTTP read API contract is stable; pre-tag commits may still rebase.
 
-Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the read API + on-disk layout — that's the contract. [PHILOSOPHY.md](./PHILOSOPHY.md) is the design-rationale companion — early co-author notes, useful context for *why* the boundaries are where they are, but not a strict spec. [ROADMAP.md](./ROADMAP.md) tracks what's done and what's queued.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the on-disk format and read API contract, and [ROADMAP.md](./ROADMAP.md) for what's queued.
 
----
+## vs alternatives
 
-## What this is
+| Tool | What it is | Why api-log is different |
+|---|---|---|
+| Helicone | Gateway / observability stack | api-log is only a transparent recorder; no routing, billing, auth, or hosted service. |
+| Langfuse | App-level LLM tracing platform | api-log captures HTTP traffic at the gateway boundary without SDK instrumentation. |
+| Phoenix | Evaluation / tracing / observability toolkit | api-log records raw gateway traces first; eval pipelines are downstream. |
+| LangSmith | LangChain tracing/eval platform | api-log is framework-agnostic and stores JSONL + SQLite locally. |
+| mitmproxy | General interactive proxy | api-log understands LLM JSON/SSE envelopes and writes structured traces. |
+
+api-log is not a gateway. It does not authenticate, route, retry, rate-limit, cache, or rewrite. Those live in the upstream gateway.
+
+## Quick start
+
+### Docker Compose
+
+```yaml
+# docker-compose.yml — added alongside your existing gateway
+services:
+  gateway:                                  # CPA / sub2api / new-api / your stack
+    # ... existing config ...
+    expose: ["7860"]                        # move 7860 from "ports" to "expose"
+
+  api-log:
+    image: ghcr.io/xiayangzhang/api-log:latest
+    ports:
+      - "7861:7861"                         # proxy listener (clients connect here)
+      - "7862:7862"                         # read API
+    environment:
+      APILOG_PROXY_UPSTREAM: http://gateway:7860
+    volumes:
+      - ./api-log-data:/data
+```
+
+```bash
+docker compose up -d
+```
+
+Three reference stacks live under [`deploy/`](./deploy/README.md) — `dev-stack/` (api-log + a mock LLM gateway, no real upstream needed), `demo/` (api-log in front of `sub2api`), and `bench/` (api-log alone, upstream URL via env). For a 5-minute try-it, run `deploy/dev-stack/`; that's what [`tests/integration/run.sh`](./tests/integration/run.sh) drives.
+
+### Point clients at api-log
+
+Change the client `base_url` from the gateway port (`:7860`) to the api-log proxy listener (`:7861`). No other client changes.
+
+### Verify a captured trace
+
+```bash
+# 1. Liveness — unauthenticated, k8s probe compatible
+curl -s http://localhost:7862/healthz | jq .
+
+# 2. Send one request through the proxy (replace with a real client call)
+curl -s http://localhost:7861/v1/messages \
+  -H "x-api-key: $UPSTREAM_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}'
+
+# 3. Read the auto-generated admin bearer
+TOKEN=$(cat ./api-log-data/admin_token)
+
+# 4. List recent traces from the read API
+curl -s -H "Authorization: Bearer $TOKEN" \
+  'http://localhost:7862/api/traces?limit=5' | jq '.traces[] | {id, path, status, model}'
+```
+
+The admin bearer is generated on first run and written to `data/admin_token`. Delete the file and restart to rotate.
+
+## How recording works
+
+### Traffic path
 
 ```
 client(s)  →  api-log  →  CPA / sub2api / new-api / any OpenAI-compatible gateway  →  upstream
+                ↓
+          data/<date>/<key_hash>.jsonl    (append-only, source of truth)
+          data/index.sqlite               (derived index, rebuildable)
 ```
 
-Two storage layers, in strict order of authority:
+The proxy listener accepts plain HTTP. Forwarding uses `httputil.ReverseProxy` with a custom `Transport` that tees request and response bodies into per-trace temp files. When the response finishes (success, client disconnect, or upstream error), the finalize step parses the bodies into the JSONL line shape, writes one line to today's JSONL file, and inserts the indexed columns into SQLite. See [ARCHITECTURE § 7](./ARCHITECTURE.md) for the full write path.
 
-1. **`data/<date>/<key_hash>.jsonl`** — one line per completed trace. Append-only daily file per client key. Each line is the full HTTP transaction parsed into JSON: request headers + body, response headers + body (or streaming events array), timestamps, sizes, disconnect/truncation flags.
-2. **`data/index.sqlite`** — derived cache. Mirrors the JSONL columns the frontend needs, adds derived fields (model, token counts, session `parent_id`, `session_root_id`, `key_hash`). Deletable; rebuilt from layer 1 in seconds.
+### Storage model
 
-The **forwarding goroutine never looks inside a body**. Body parsing (JSON unmarshal, SSE event splitting) happens in the per-trace finalize step, after forwarding completes and off the hot path. Semantic interpretation — cost calculation, model-family classification, "what's a high-frequency skill" — happens downstream of api-log entirely. (See PHILOSOPHY § principle 1.)
+Two layers, in strict order of authority:
 
-### A JSONL line looks like this
+1. **`data/<date>/<key_hash>.jsonl`** — one line per completed trace. Append-only daily file per client key. Each line carries the full HTTP transaction (request headers + body, response headers + body or `events[]` for streams, timestamps, sizes, truncation flags).
+2. **`data/index.sqlite`** — derived columns the read API needs (status, model, token counts, session linkage, `jsonl_path` + `jsonl_offset`). Deletable; rebuilt from layer 1 in seconds. WAL-mode, conn pool of 8.
+
+When the JSONL file and SQLite disagree, JSONL wins.
+
+### JSONL trace shape
 
 ```json
 {
@@ -46,11 +118,11 @@ The **forwarding goroutine never looks inside a body**. Body parsing (JSON unmar
   "upstream": "http://gateway:7860",
   "status":   200,
   "req": {
-    "headers": {"x-api-key": "sk-...", "anthropic-version": "2023-06-01"},
+    "headers": {"x-api-key": "sk-***", "anthropic-version": "2023-06-01"},
     "body":    {"model": "claude-sonnet-4-6", "messages": [...], "stream": true}
   },
   "resp": {
-    "headers": {"Content-Type": "text/event-stream", "X-Request-Id": "..."},
+    "headers": {"content-type": "text/event-stream", "x-request-id": "..."},
     "events":  [
       {"event": "message_start",       "data": {"message": {"id": "msg_...", ...}}, "t_delta_ms":  12},
       {"event": "content_block_delta", "data": {"delta": {"text": "Hello"}, ...},   "t_delta_ms": 234},
@@ -65,25 +137,30 @@ The **forwarding goroutine never looks inside a body**. Body parsing (JSON unmar
 }
 ```
 
----
+Header values shown above are redacted for documentation; the on-disk JSONL contains the raw bytes the client sent. See [Security](#security) below.
 
-## What this is not
+The full field reference lives in [ARCHITECTURE § 3](./ARCHITECTURE.md).
 
-- **Not a gateway.** It does not authenticate, route, retry, rate-limit, cache, or rewrite. Your gateway already does that.
-- **Not Langfuse, Phoenix, or LangSmith.** Those instrument application code from inside via SDK. `api-log` is a network-layer recorder for traffic you cannot modify the source of.
-- **Not Helicone.** Helicone shipped a full gateway stack (auth, routing, caching). `api-log` ships none of that.
-- **Not mitmproxy.** mitmproxy is protocol-agnostic and interactive. `api-log` is OpenAI / Anthropic-aware on the *read* side (parses the bodies into structured fields) while staying byte-faithful on the *capture* side. Continuous recording, not interactive debugging.
-- **Not a smart middlebox.** No prompt collision detection, no fake-cache injection, no content classification, no traffic shaping, no on-write inference.
+## Protocol coverage
 
-For the long version, see [PHILOSOPHY.md](./PHILOSOPHY.md).
+api-log forwards every HTTP request byte-faithfully. The finalize step parses bodies for a known set of LLM API shapes; unrecognized paths still record headers + raw body but skip the structured fields.
 
----
+- **OpenAI Chat Completions** (`/v1/chat/completions`) — request `messages[]`, response `choices[]`, both streamed (`data: {...}\n\n` chunks) and non-streamed.
+- **OpenAI Responses** (`/v1/responses`) — request `input[]`, response `output[]`, including SSE events such as `response.output_item.added` for tool-call extraction.
+- **Anthropic Messages** (`/v1/messages`) — request `messages[]` + `system`, response `content[]`, SSE events `message_start` / `content_block_delta` / `message_delta` / `message_stop`.
+- **SSE streams** — each `event:` / `data:` pair is split into one entry in `resp.events[]` with `t_delta_ms` recorded against the response start. Non-SSE responses land as parsed JSON in `resp.body`.
+- **After-mutation capture for streams** — when plugins mutate a streaming response (Phase B/C), api-log records the bytes the client actually received, not the upstream pre-mutation stream.
 
-## Demo
+Tool calls, reasoning blocks, and any other content these protocols carry live verbatim inside `req.body` and `resp.body` / `resp.events[]`. They are not promoted to top-level fields and api-log does not interpret them.
 
-**The JSONL is generic.** What follows are examples of what a consumer (a person at a terminal, a frontend, an AI agent) can do with the data we record — *not* features of api-log itself. api-log records the bytes; everything below is downstream.
+## Query examples
 
-**Skill / tool-call frequency across 30 days:**
+The examples below are reference snippets, not benchmarked workloads. Run them against your own data.
+
+### jq over JSONL
+
+Tool-call frequency across captured Responses-API traces:
+
 ```bash
 zcat data/2026-*/*.jsonl{,.gz} 2>/dev/null \
   | jq -r '.resp.events[]? | select(.event=="response.output_item.added")
@@ -91,96 +168,119 @@ zcat data/2026-*/*.jsonl{,.gz} 2>/dev/null \
   | sort | uniq -c | sort -rn
 ```
 
-**Traces where the response stream was cut short:**
+Streams that were cut short:
+
 ```bash
-zcat data/2026-05-27/*.jsonl 2>/dev/null \
-  | jq 'select(.disconnected==true or .resp.stream_done==false)
-        | {id, path, status, ts_start}'
+jq 'select(.disconnected==true or .resp.stream_done==false)
+    | {id, path, status, ts_start}' \
+  data/2026-05-27/*.jsonl
 ```
 
-**All traces in one session, ordered:**
+### sqlite3 over the index
+
+Recent failing traces by model and path:
+
 ```bash
 sqlite3 data/index.sqlite \
-  "SELECT jsonl_path, jsonl_offset FROM traces
+  "SELECT ts_start, model, path, status FROM traces
+   WHERE status >= 400
+   ORDER BY ts_start DESC LIMIT 20"
+```
+
+All traces in one session, in order:
+
+```bash
+sqlite3 data/index.sqlite \
+  "SELECT id, jsonl_path, jsonl_offset FROM traces
    WHERE session_root_id='01HX7K...' ORDER BY ts_start"
 ```
 
-A frontend exists to make these point-and-click — but the data shape never requires one.
+The `jsonl_path` + `jsonl_offset` pair lets a consumer seek directly to the line in the JSONL file. AI agents doing batch analysis can bypass the read API and read JSONL files off disk.
 
----
+### Replay a recorded SSE stream
 
-## Deploy concept
-
-```yaml
-# docker-compose.yml — ~6 new lines added to your existing gateway setup
-services:
-  gateway:                                  # CPA / sub2api / new-api / etc.
-    # ... your existing config ...
-    expose: ["7860"]                        # move 7860 from "ports" to "expose"
-
-  api-log:                                  # ← new
-    image: ghcr.io/xiayangzhang/api-log:latest
-    ports:
-      - "7861:7861"                         # proxy listener (clients connect here)
-      - "7862:7862"                         # read API
-    environment:
-      APILOG_PROXY_UPSTREAM: http://gateway:7860
-    volumes:
-      - ./api-log-data:/data
+```bash
+curl -N -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:7862/api/traces/01HX7K8MS.../replay?speed=2"
 ```
 
-Then update clients' `base_url` from `:7860` to `:7861`. That's the install.
-
-Three reference stacks live under [`deploy/`](./deploy/README.md) — `dev-stack/` (api-log + a mock LLM gateway, no real upstream needed), `demo/` (api-log in front of `sub2api` as a sibling clone), and `bench/` (api-log alone, upstream URL supplied via env). For a 5-minute try-it, run `deploy/dev-stack/` — it's what the integration test in [`tests/integration/run.sh`](./tests/integration/run.sh) drives.
-
-For bare-metal: change one port number in your gateway config, run a single binary. Same outcome.
-
-**Plain HTTP between containers on the same host is the primary supported topology.** If you need TLS or cross-host routing, terminate it with whatever reverse proxy you already run; api-log itself listens HTTP only.
-
-### Operator note: bearer tokens land on disk
-
-The JSONL files contain the **unredacted** `Authorization` / `x-api-key` headers exactly as the client sent them. api-log does not redact anything from the capture path — that is a deliberate design choice ([PHILOSOPHY § the "no" list](./PHILOSOPHY.md)). File-system permissions on `data/` are the operator's responsibility; treat that directory the way you would treat a `~/.ssh/` directory or a file holding production API keys. If you need redaction, run a downstream sidecar over the JSONL files; do not ask api-log to add a configurable filter.
-
----
+`/api/traces/:id/replay` re-emits the recorded SSE frames at original per-chunk pacing (or `speed` × faster). `speed=2` halves the delays; `nodelay=1` dumps every event back-to-back. The replay is to the API caller; it never re-contacts the upstream LLM. See [ARCHITECTURE § 6.4](./ARCHITECTURE.md) for the full semantics, including how reparsed traces handle missing `t_delta_ms`.
 
 ## Read API
 
-See [ARCHITECTURE.md § 6](./ARCHITECTURE.md) for the full read API surface (current count: 13+ endpoints; `/api/export` is the primary download surface).
+The read API listens on a separate port (`:7862` by default) from the proxy. Thirteen routes total; the full surface lives in [ARCHITECTURE § 6](./ARCHITECTURE.md). Highlights:
 
-`/api/traces/:id/replay` is the differentiator vs. SDK-based observability tools — it re-emits the recorded SSE stream at original per-chunk pacing using captured `t_delta_ms`. Replay is **to the API caller** (a viewer), never back to the upstream LLM.
+- `GET /healthz` — unauthenticated; exposes in-memory drop / overflow counters so operators can detect capture degradation without grepping logs.
+- `GET /api/traces` — list, SQLite-backed, supports `since` / `until` / `status` (exact or `2xx` / `4xx` / `5xx` bucket) / `model` / `path` (trailing `*` for prefix) / `key_hash` / `session_root_id` / `project` / `limit` / cursor pagination.
+- `GET /api/traces/:id` — detail; returns `{row, trace}` so callers get both the SQLite row and the parsed JSONL line in one round trip.
+- `GET /api/traces/:id/replay` — pacing-preserving SSE replay.
+- `GET /api/sessions` — session summaries grouped by `session_root_id`. Row-level aggregation only; not a tree walk.
+- `GET /api/export` — streams a zip of matching JSONL lines + bundled `agent/CLAUDE.md` for offline / AI-assisted analysis.
+- `GET/PUT /api/config/plugins` (+ `PUT /api/config/plugins/:id`, `DELETE /api/config/plugins`, `GET /api/plugins/types`) — hot-reload of `text-replace` / `text-append` / `path-filter` plugins. YAML remains the declarative truth; runtime overrides persist to `data/runtime_overrides.json`. Off by default.
 
-`/api/traces` hits SQLite for millisecond response times. `/api/traces/:id` joins SQLite with one seeked read into the JSONL file. AI agents doing batch analysis can bypass the API entirely and read JSONL files directly off disk.
+All read endpoints except `/healthz` require `Authorization: Bearer <data/admin_token>` and respond with `Cache-Control: no-store`.
 
-api-log ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the separate `api-log-viewer` project; the binary contains zero HTML. This is deliberate (PHILOSOPHY § principles 4 and 5).
+api-log ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the separate [api-log-viewer](https://github.com/xiayangzhang/api-log-viewer) project; the binary contains zero HTML.
 
----
+## Security
 
-## Design documents
+**Bearer tokens land on disk unredacted.** The JSONL files contain the raw `Authorization` / `x-api-key` headers exactly as the client sent them. api-log does not redact anything from the capture path. Treat the `data/` directory the way you would treat `~/.ssh/` or a file holding production API keys:
 
-- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — The contract. Data model, on-disk layout, JSONL line shape, SQLite schema, session inference, write path, read API, concurrency, failure modes, implementation notes. Start here.
-- **[PHILOSOPHY.md](./PHILOSOPHY.md)** — Design-rationale companion. Position, the seven principles, the "no" list, scope boundaries, why we rejected each alternative. Early co-author notes — useful for understanding *why* the architecture lands where it does, but not a strict spec.
+- Mount `data/` to a path with restrictive filesystem permissions (`chmod 700` or tighter).
+- Do not expose the proxy listener (`:7861`) or the read API listener (`:7862`) to untrusted networks without a reverse proxy enforcing transport security and access control.
+- The auto-generated admin bearer at `data/admin_token` is the only credential gating the read API. Rotate it by deleting the file and restarting.
+- Plain HTTP between containers on the same host is the primary supported topology. If you need TLS or cross-host routing, terminate it with whatever reverse proxy you already run; api-log itself listens HTTP only.
 
----
+Redaction is a deliberate non-goal of the capture path. If you need redacted traces, run a sidecar over the JSONL files; the on-disk format is documented and stable.
+
+See [SECURITY.md](./SECURITY.md) for the threat model and disclosure process.
+
+## Development
+
+```bash
+git clone https://github.com/xiayangzhang/api-log.git
+cd api-log
+
+# unit + integration tests (race detector on)
+go test ./...
+
+# lint (golangci-lint v2)
+golangci-lint run
+
+# build
+go build -o bin/api-log ./cmd/api-log
+
+# the dev-stack integration harness
+./tests/integration/run.sh
+```
+
+The project ships 23 Go packages, race-clean tests, and CI lint via `golangci-lint v2`. CI runs on every push and PR; see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 
 ## Roadmap
 
 - [x] **v0** — capture path (parse + JSONL write + SQLite mirror), session inference, minimal read API.
-- [x] **v0.1** — `api-log-viewer` (separate project) — multi-instance aggregation, session-tree visualization, tool-call rendering, SSE replay rendering, AI-assisted ad-hoc analysis.
-- [x] **v0.1 plugins** — `text-replace` / `text-append` / `path-filter` with hot-reload via `PUT /api/config/plugins`. Off by default; opt-in via YAML or runtime API. See [PHILOSOPHY § 2 amendment](./PHILOSOPHY.md) for the operator-mutation boundary.
+- [x] **v0.1 viewer** — [api-log-viewer](https://github.com/xiayangzhang/api-log-viewer) — multi-instance aggregation, session-tree visualization, tool-call rendering, SSE replay.
+- [x] **v0.1 plugins** — `text-replace` / `text-append` / `path-filter` with hot-reload via `PUT /api/config/plugins`. Off by default.
 - [ ] **v0.2** — optional per-gateway **bridge adapters** (separate projects) — join external data (CPA's Redis usage queue, new-api's MySQL log table) into api-log traces by `key_hash`. The core proxy stays gateway-agnostic.
 
----
+See [ROADMAP.md](./ROADMAP.md) for the full list including the `v0.1.0-deferred` section.
 
 ## Acknowledgements
 
-The architecture borrows ideas from:
+### Design influence
 
 - **tcpdump / pcap** — append-only capture with deferred interpretation
 - **CLIProxyAPI (CPA)** — single-binary, single-config aesthetic
 - **Claude Code / Codex CLI** — local JSONL session files as a usable format
 - **Langfuse** — the LLM-observability surface, against which we deliberately differ on the capture-vs-instrument axis
 
----
+### Live-traffic iteration partner
+
+- **sub2api** — primary upstream gateway used to validate the capture path against live traffic; the path-filter pattern set and the client-identification taxonomy were tuned against its real-traffic shapes.
+
+### Development assistance
+
+This codebase and its documentation were developed with **Claude Opus 4.8** (Anthropic) as the primary pair-programmer for both code and prose, and **GPT-5.5** via Codex CLI as a research and review assistant — adversarial pre-release review, README structural analysis against reference OSS projects, and fact-check cross-checks. The choices on what to keep, cut, or amend are the human author's; AI assistance is named here for transparency, not as authorship.
 
 ## License
 
