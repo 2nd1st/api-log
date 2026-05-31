@@ -530,7 +530,16 @@ List, backed by SQLite only — never opens JSONL on this path. Returns the SQLi
 
 ### 6.3 `GET /api/traces/:id`
 
-Detail. Reads SQLite for the row → opens `jsonl_path` → seeks to `jsonl_offset` (the **pre-write** offset, i.e. where the line starts) → reads one line → unmarshals → returns the full trace object.
+Detail. Reads SQLite for the row → opens `jsonl_path` → seeks to `jsonl_offset` (the **pre-write** offset, i.e. where the line starts) → reads one line → unmarshals → returns a two-field envelope:
+
+```json
+{
+  "row":   { ...flat SQLite row, same shape as one element of §6.2's traces[]... },
+  "trace": { ...the parsed JSONL line as defined in §3, including req + resp bodies and events[]... }
+}
+```
+
+Both halves are included so the caller can choose either side without a second round trip. `row` carries the indexed columns the list view already shows (token totals, session linkage, `client_kind`, `jsonl_path` / `jsonl_offset`); `trace` carries the request and response bodies that only live inside the JSONL line. A list-view consumer that already has the row in hand can ignore `row` and read `trace`; a consumer that only needs the bodies can ignore the SQLite-derived columns. Field names and types in each half are stable per §6.2 and §3 respectively.
 
 If `jsonl_path` has been gzipped (rotated to `<path>.gz`), the server opens the gz file and streams forward to `jsonl_offset` in the **uncompressed** stream. Note: gzip preserves uncompressed offsets — the byte offset stored at write time (in the original `.jsonl`) remains valid as an *uncompressed-stream* offset after gzip; SQLite does not need to be updated on rotation. The lookup is `O(jsonl_offset)` per detail fetch on the gzipped file; acceptable because gzipped files only contain *prior* days. If detail latency on old data becomes a real problem, v0.x adds a per-gz random-access index.
 
@@ -611,7 +620,7 @@ Surface that grew after v0 shipped. Each addition is justified against the §6.7
 
 | Endpoint | Method | Phase | Notes |
 |---|---|---|---|
-| `/api/sessions` | GET | M3 / post-v0 | Lists session summaries grouped by `session_root_id`. Row-level aggregation only (n_turns, first_ts, last_ts, distinct_keys, ok_count, err_count). NOT a tree walk — consumers traverse parent_id themselves via `/api/traces/:id`. |
+| `/api/sessions` | GET | M3 / post-v0 | Lists session summaries grouped by `session_root_id`, latest-activity first. Row-level aggregation only — NOT a tree walk; consumers traverse `parent_id` themselves via `/api/traces/:id`. Query params: `limit` (default 100, max 500), `since` (RFC3339; constraint on the session's last-activity timestamp). Response: `{"sessions":[{...}]}` where each entry carries `session_root_id`, `n_turns`, `first_ts`, `last_ts`, `last_path`, `last_status`, `last_model`, `distinct_key_count`, `ok_count`, `err_count`. The three `last_*` fields are the latest trace's path / status / model copied from the indexed columns so the viewer can render a one-line session summary without a second fetch. `distinct_key_count` is the count of distinct `key_hash` values seen in the session — non-zero greater-than-1 means multiple keys touched the same prefix chain (typically the same operator across two clients). |
 | `/api/export` | GET | I (2026-05-29) | Streams a zip of matching JSONL lines + bundled `agent/CLAUDE.md` + `agent/jq-cheatsheet.md` + `README.md`. Same filter set as `/api/traces`. Per §6.7 server-stream rule: the response is *stream-shaped* (Content-Type: application/zip) but it is NOT SSE — it's an HTTP/1.1 response with chunked transfer-encoding that the archive/zip writer emits to. This is justified: zip is a byte-level streaming format that lets the server keep memory bounded for large filter results. |
 | `/api/media/{trace_id}/{idx}` | GET | K (2026-05-30) | Streams a single extracted media file from disk with Content-Type derived from the extension via `mime.TypeByExtension`. 404 when the trace has no extracted media at that idx (the trace was recorded with `save_attachments=false`, or the field exists in the body but extraction was skipped per §protocol-skip-list). |
 | `/api/config/media` | GET | K | Returns `{save_attachments: bool, source: "default"\|"yaml"\|"env"\|"override"}`. Read-only view of the effective runtime configuration. |

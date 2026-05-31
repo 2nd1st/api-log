@@ -85,5 +85,5 @@ operator must understand and manage. Reports about these will be closed.
 
 ## Supported versions
 
-v0 is in development; no version is currently supported in the
-production-security sense. Will be filled in once v0 ships.
+Only the latest tagged release receives security fixes. Pre-tag `main`
+is best-effort and may rebase before the v0.1.0 tag.

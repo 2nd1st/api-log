@@ -16,7 +16,7 @@ What you do with the recordings — token accounting, eval pipelines, skill extr
 
 **Pre-release.** v0 (capture path + session inference + read API) and v0.1 work (frontend viewer in a separate repo, plugin system, hot-reload) are shipped and running against live traffic. A v0.1.0 tag is being prepared; until then the API contract is stable but commit history may still rebase.
 
-Read [PHILOSOPHY.md](./PHILOSOPHY.md) first, [ARCHITECTURE.md](./ARCHITECTURE.md) second. [ROADMAP.md](./ROADMAP.md) tracks what's done and what's queued.
+Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the read API + on-disk layout — that's the contract. [PHILOSOPHY.md](./PHILOSOPHY.md) is the design-rationale companion — early co-author notes, useful context for *why* the boundaries are where they are, but not a strict spec. [ROADMAP.md](./ROADMAP.md) tracks what's done and what's queued.
 
 ---
 
@@ -131,7 +131,7 @@ services:
 
 Then update clients' `base_url` from `:7860` to `:7861`. That's the install.
 
-A ready-to-edit version lives at [`deploy/demo/docker-compose.yml`](./deploy/demo/docker-compose.yml). Its skeleton expects `sub2api` cloned as a sibling directory (`../sub2api`); replace that build context with whatever upstream you front. The local dev stack at [`deploy/dev-stack/docker-compose.yml`](./deploy/dev-stack/docker-compose.yml) wires api-log to a mock LLM gateway (`tools/mockup`) and is what the integration test in [`tests/integration/run.sh`](./tests/integration/run.sh) drives.
+Three reference stacks live under [`deploy/`](./deploy/README.md) — `dev-stack/` (api-log + a mock LLM gateway, no real upstream needed), `demo/` (api-log in front of `sub2api` as a sibling clone), and `bench/` (api-log alone, upstream URL supplied via env). For a 5-minute try-it, run `deploy/dev-stack/` — it's what the integration test in [`tests/integration/run.sh`](./tests/integration/run.sh) drives.
 
 For bare-metal: change one port number in your gateway config, run a single binary. Same outcome.
 
@@ -157,8 +157,8 @@ api-log ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the
 
 ## Design documents
 
-- **[PHILOSOPHY.md](./PHILOSOPHY.md)** — Position, seven principles, the "no" list, scope boundaries, why we rejected each alternative, engineering standards. **Read this first.**
-- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — Data model, on-disk layout, JSONL line shape, SQLite schema, session inference, write path, read API, concurrency, failure modes, implementation notes.
+- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — The contract. Data model, on-disk layout, JSONL line shape, SQLite schema, session inference, write path, read API, concurrency, failure modes, implementation notes. Start here.
+- **[PHILOSOPHY.md](./PHILOSOPHY.md)** — Design-rationale companion. Position, the seven principles, the "no" list, scope boundaries, why we rejected each alternative. Early co-author notes — useful for understanding *why* the architecture lands where it does, but not a strict spec.
 
 ---
 
