@@ -1,8 +1,8 @@
 # Phase K: Media Extraction Contract Specification
 
-**Date:** 2026-05-30  
-**Status:** Implementation contract for all backend agents  
-**Scope:** Deterministic media file extraction from API request/response bodies per protocol
+**Status:** Ratified implementation contract.
+**Date:** 2026-05-30 (initial ratification).
+**Scope:** Deterministic media file extraction from API request/response bodies per protocol.
 
 ---
 
@@ -85,7 +85,7 @@ The following MUST NOT be extracted:
 
 | Shape | Reason | Reference |
 |-------|--------|-----------|
-| `body_b64` in request/response when it is the ONLY body (no parsed JSON) | Unparseable JSON container; not an attachment per operator decision 2026-05-30 | Backend §2 |
+| `body_b64` in request/response when it is the ONLY body (no parsed JSON) | Unparseable JSON container; not treated as an attachment. The body is preserved in the JSONL row as `body_b64`. | Backend §2 |
 | `https://…` URLs (image_url.url, fileData.fileUri, etc.) | No local content to extract; remote fetch is out of scope | Backend §1 |
 | `file:` URIs (Anthropic file references) | File is on remote provider's server; we don't have it | Implicit |
 | Plaintext document content (Anthropic `source.type="text"`) | Not binary; no extraction needed | Design constraint |
@@ -392,7 +392,7 @@ export.zip
 **Notes:**
 - Exporter checks for media directory existence; if absent, continues silently.
 - No extraction happens at export time; all files are pre-extracted at finalize.
-- Bundle must remain <80 KB gzip (with media files included).
+- Media files in the bundle are streamed; the export zip is built lazily so memory pressure is bounded by chunk size, not total payload.
 
 ---
 
@@ -430,7 +430,7 @@ export.zip
 
 ## 12. References
 
-- Backend PHILOSOPHY §1, §2, §6: extraction is deterministic, non-blocking, filesystem-based
+- Backend invariants: extraction is deterministic, non-blocking, filesystem-based (named protocol fields only; never block forwarding; JSONL row is the canonical record, media files are a derived cache).
 - Operator decision 2026-05-30: `body_b64` is not an attachment; `save_attachments: true` by default
-- Viewer PHILOSOPHY §5: single accent design; no changes to media display UX beyond loading files from /api/media
+- Viewer design language: single-accent restrained palette; no changes to media display UX beyond loading files from `/api/media`.
 

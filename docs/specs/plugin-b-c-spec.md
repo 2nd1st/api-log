@@ -1,44 +1,41 @@
 # Plugin Phase B + C Contract Specification
 
-**Date:** 2026-05-30
-**Status:** Frozen contract for BUILD-phase implementation
-**Supersedes:** the 5-hook plugin model sketched in `uiux-research/plugin.md` §§ 2.1–2.6
-**Authors / ratifiers:** operator (decisions stamped 2026-05-30), Claude (drafter)
-**Read order:** this doc + Phase A scaffold (`internal/plugin/plugin.go`) + Phase K media contract (`uiux-research/phase-k-media-contract.md`) for the runtime-overrides pattern.
+**Status:** Ratified contract; BUILD-phase implementation.
+**Date:** 2026-05-30 (initial ratification); subsequent amendments tracked in CHANGELOG.
 
 ---
 
 ## 1. Context
 
-### 1.1 Why now
+### 1.1 Why a two-hook design
 
-Phase A landed an observe-class plugin scaffold (`internal/plugin/plugin.go`): `Plugin` base interface + `ObserveBeforeRecord` (post-finalize, pre-TrySend; can drop a recording) + `ObserveAfterRecord` (post-write-ack; side-effecting only). The scaffold is not wired into the proxy hot path — Phase A.1 adds the call sites — but it lets two facts about the project finally sit on disk:
+Phase A landed an observe-class plugin scaffold (`internal/plugin/plugin.go`): `Plugin` base interface + `ObserveBeforeRecord` (post-finalize, pre-TrySend; can drop a recording) + `ObserveAfterRecord` (post-write-ack; side-effecting only). The scaffold lets two facts about the project sit on disk:
 
-1. The interfere-class hooks the original `plugin.md` § 2.1 / § 2.2 sketched (mutate_req, before_forward, etc.) need a philosophy amendment to ship. They were intentionally left out.
-2. The operator has concrete first-mover use cases (watermark, prompt injection, redaction, per-IP DDoS gate) that require interference, not just observation.
+1. The interfere-class hooks an earlier design draft sketched (`mutate_req`, `before_forward`, etc.) needed an explicit operator-opt-in surface before shipping; they were intentionally left out of the observe-class scaffold.
+2. Concrete first-mover use cases (watermark, prompt injection, redaction, per-IP gate) require interference, not just observation.
 
-This spec writes the interfere-class contract the operator has now ratified. It freezes the API surface that BUILD-phase work packages will implement, before any code goes into the hot path that can rewrite or short-circuit a request.
+This spec writes the interfere-class contract. It freezes the API surface that BUILD-phase work packages implement, before any code goes into the hot path that can rewrite or short-circuit a request.
 
 ### 1.2 What this solves
 
-Three concrete user problems, in priority order:
+Three concrete operator problems, in priority order:
 
-1. **Watermark.** Operator wants to append a small text marker to assistant responses leaving the proxy (provenance / "this answer came from my proxy"). This is the THE priority first plugin — operator quote: *"我们就简单的做个水印功能就好了"*.
-2. **Prompt injection.** Operator wants to prepend system prompts or merge instructions into the request before forwarding (e.g. enforce a house style, inject persona, force tool preamble). This is the BEFORE-hook flagship use case.
-3. **Per-IP DDoS / abuse gating.** Now that the 2026-05-30 XFF smart-resolution fix lands the real client IP into the recorded trace, the IP is reachable for a per-IP gate. Operator wants the option to register an off-by-default `rate_limit_ip` plugin that 4xx's offenders before forwarding.
+1. **Watermark.** Append a small text marker to assistant responses leaving the proxy (provenance / "this answer came from this proxy"). Priority first plugin.
+2. **Prompt injection.** Prepend system prompts or merge instructions into the request before forwarding (e.g. enforce a house style, inject persona, force tool preamble). BEFORE-hook flagship use case.
+3. **Per-IP gate.** With XFF smart-resolution landing the real client IP into the recorded trace, the IP is reachable for a per-IP gate. Off-by-default `rate_limit_ip` plugin that 4xx's offenders before forwarding.
 
 Other use cases (redaction, tool whitelist, skill injection, generic interception) ride the same contract.
 
 ### 1.3 Who consumes this
 
-- **api-log backend** (`/Volumes/leoyun/personal-projects/api-log-project/api-log/`): implements the hook interfaces, the registry, the parsed-content builders, and the proxy-loop call sites.
-- **api-log-viewer** (`/Volumes/leoyun/personal-projects/api-log-project/api-log-viewer/`): implements the Settings → Plugins panel that lets the operator add / edit / enable / disable plugin instances.
-- **operator** (Leo): reads this spec to confirm the BUILD plan matches what was asked for, edits `config.yaml` + uses the viewer Settings UI to drive plugin behavior.
-- **future plugin authors** (third parties / Leo's later additions): read this spec to know what the contract guarantees about call ordering, fail semantics, and parsed-content shape.
+- **api-log backend**: implements the hook interfaces, the registry, the parsed-content builders, and the proxy-loop call sites.
+- **api-log-viewer**: implements the Settings → Plugins panel that lets the operator add / edit / enable / disable plugin instances.
+- **operator**: reads this spec to confirm the BUILD plan matches what was asked for, edits `config.yaml` + uses the viewer Settings UI to drive plugin behavior.
+- **future plugin authors**: read this spec to know what the contract guarantees about call ordering, fail semantics, and parsed-content shape.
 
 ### 1.4 Supersession note
 
-The original `uiux-research/plugin.md` proposed five hooks (`mutate_req`, `before_forward`, `after_forward`, `before_record`, `after_record`). The operator collapsed this to **two** hooks on 2026-05-30. The five-hook design is OBSOLETE for greenfield work; only the Phase A observe-class subset survives, repurposed as a separate **Observer** class that coexists with the new BEFORE / AFTER hooks. See § 5 below for how `pathfilter` (the only existing Phase A plugin) lives in the new world.
+An earlier design draft proposed five hooks (`mutate_req`, `before_forward`, `after_forward`, `before_record`, `after_record`). That five-hook design was collapsed to **two** hooks on 2026-05-30. The five-hook design is OBSOLETE for greenfield work; only the Phase A observe-class subset survives, repurposed as a separate **Observer** class that coexists with the new BEFORE / AFTER hooks. See § 5 below for how `pathfilter` (the only existing Phase A plugin) lives in the new world.
 
 ---
 
@@ -529,7 +526,7 @@ func safeCallBefore(ctx context.Context, inst *Instance, req *ParsedRequest) (re
 }
 ```
 
-Same shape for AFTER. This bundles the R7 advisor's earlier "plugin panic isolation" flag — operator quote: *"和 #34 一起讨论"* → it's in this contract.
+Same shape for AFTER. The plugin-panic isolation requirement is captured here in this contract.
 
 ### 4.3 No trace is ever dropped due to plugin failure
 
@@ -545,9 +542,9 @@ A plugin whose `Init(cfg)` returns an error fails process start (Phase A semanti
 
 ### 5.1 Post-mutation only
 
-Operator-ratified: **no mutation log**. The recorded JSONL line carries the request and response state as it actually flowed (post-BEFORE-chain request, post-AFTER-chain response). The operator's reasoning, quoted: *"我们不需要额外 record mutation 既然是修改了 我们直接按照修改的记录就好了"*.
+**No mutation log.** The recorded JSONL line carries the request and response state as it actually flowed (post-BEFORE-chain request, post-AFTER-chain response). Plugins do not write a separate pre/post diff entry.
 
-This is a relaxation of PHILOSOPHY §6 ("filesystem is truth"). The trade-off: we lose the ability to audit what was changed, in exchange for simpler trace shape and smaller files. This trade is explicit; § 6 below has the amendment text.
+The trade-off: we forgo the ability to audit what was changed, in exchange for simpler trace shape and smaller files. The rule is documented in § 6 below.
 
 ### 5.2 Intercepted traces ARE recorded
 
@@ -595,43 +592,29 @@ Once the writer has finalized the JSONL line, no plugin can amend it. AFTER plug
 
 ---
 
-## 6. PHILOSOPHY amendments
+## 6. Recording behavior under plugins
 
-Two amendments to add to `PHILOSOPHY.md` (the file lives in the api-log repo). The text below is verbatim, ready to paste under each principle. The amendment-list at the bottom of PHILOSOPHY.md is also updated.
+Four ratified rules govern how plugin presence affects the JSONL record.
 
-### 6.1 §2 amendment — "Capture, never interferes"
+### 6.1 Plugins are explicit operator opt-in
 
-Current §2 text (truncated to the relevant paragraph):
+Plugins MAY interfere with requests and responses through the BEFORE (post-receive, pre-forward) and AFTER (post-upstream-response, pre-client-send) hooks. Interference is opt-in at the config level — no plugin runs unless the operator has declared it in `config.yaml` or `runtime_overrides.json` — and is bounded by the two hook points described in this document. The capture path itself never independently rewrites, retries, rate-limits, or routes. What plugins do is recorded as the post-mutation state; the operator opted in and accepts that the recording reflects the new behavior, not a fictional pre-mutation baseline.
 
-> We do not retry. We do not cache. We do not rate-limit. We do not route. We do not rewrite. We do not enrich.
+### 6.2 Mutations are recorded post-mutation only
 
-**Append the following paragraph:**
+The JSONL line reflects the post-mutation state — what actually flowed after the BEFORE chain ran and what the client actually received after the AFTER chain ran. Plugin mutations are NOT separately recorded; there is no pre/post diff. This is a deliberate trade-off: simpler trace records and smaller files in exchange for foregoing pre-mutation audit. Operators who need pre-mutation audit trails run their plugins under a dev profile that logs separately.
 
-> Explicit operator-configured plugins registered at startup MAY interfere with requests and responses through the BEFORE (post-receive, pre-forward) and AFTER (post-upstream-response, pre-client-send) hooks. Such interference is OPT-IN at the config level — no plugin runs unless the operator has declared it in `config.yaml` or `runtime_overrides.json` — and is bounded by the two hook points described in `uiux-research/plugin-b-c-spec.md`. The original spirit of §2 holds: the capture path itself never independently rewrites, retries, rate-limits, or routes. The recorder is honest about what passed through it. What plugins do is recorded as the post-mutation state; the operator opted in and accepts that the recording reflects the new behavior, not a fictional pre-mutation baseline.
+### 6.3 Named-field discipline unchanged
 
-### 6.2 §6 amendment — "The filesystem is the truth"
+Plugin mutations modify named fields the parser already understands; they do not introduce synthesized values. A watermark plugin appending to `messages[-1].content` is editing a named field; it is not synthesizing one. The "named-fields-only, no body synthesis" discipline that constrains the parser also constrains plugins.
 
-Current §6 text (truncated):
+### 6.4 Intercepted requests are marked
 
-> Each line is a complete parsed trace... it can be deleted at any moment and rebuilt from the JSONL files in seconds.
+When an AFTER plugin returns an `intercept` action (responding directly to the client without contacting upstream), the JSONL line carries a top-level `plugin_intercepted: {type, id, hook}` marker (see § 5.2). Without this, intercepted traces would be indistinguishable from genuine upstream rejections.
 
-**Append the following paragraph:**
+### 6.5 Redaction policy
 
-> Plugin mutations are NOT separately recorded. The JSONL line reflects the post-mutation state — what actually flowed after the BEFORE chain ran and what the client actually received after the AFTER chain ran. This is a deliberate trade-off: we forgo the ability to audit pre/post mutation diffs in exchange for simpler trace records and smaller files. Operators who need pre-mutation audit trails run their plugins under a dev profile that logs separately. Intercepted requests are marked on the JSONL line with a `plugin_intercepted` field (see plugin-b-c-spec § 5.2) so the operator can distinguish plugin-handled responses from genuine upstream responses.
-
-### 6.3 §1 amendment — none
-
-Operator confirmed: §1 ("named fields, no synthesis") is UNCHANGED. Plugin mutations modify named fields the parser already understands; they don't introduce synthesized values. A watermark plugin appending to `messages[-1].content` is editing a named field; it is not synthesizing one.
-
-### 6.4 No-list amendment
-
-The "things we will never add" list in PHILOSOPHY (around the §2 area) currently includes:
-
-> - No configurable header / body redaction filters.
-
-**Change to:**
-
-> - No configurable header / body redaction filters in the capture path itself. Redaction MAY be implemented as an operator-opt-in plugin (see plugin-b-c-spec.md); the recorded JSONL line reflects the post-redaction state.
+Body / header redaction is not in the capture path itself. Redaction MAY be implemented as an operator-opt-in plugin under the rules above; when it is, the recorded JSONL line reflects the post-redaction state.
 
 ---
 
@@ -641,9 +624,9 @@ Three plugins ship in the first BUILD commit. Two of them are operator-priority;
 
 ### 7.1 `text-replace` (BOTH hooks)
 
-**Priority:** Operator-defined MVP #1 — concrete dual-direction test of the hook framework. Operator's two example replacements:
-- upstream: replace `"你"` with `"世界上最好最好的ai"` in user-supplied content
-- downstream: replace a configured needle with `"世界上最好的好哥哥"` in assistant content
+**Priority:** Operator-defined MVP #1 — concrete dual-direction test of the hook framework. Two example replacements:
+- upstream: replace `"please"` with `"kindly"` in user-supplied content (trivial word-swap demo)
+- downstream: replace any occurrence of an internal codename with a redacted placeholder before the response leaves the proxy
 
 **Behavior:** A single plugin instance implements BOTH `BeforePlugin` and `AfterPlugin`. The `before` half walks `ParsedRequest.Messages[*].Content` (text parts only) and runs `strings.ReplaceAll` per match rule. The `after` half does the same on `ParsedResponse.Content` (and on each streaming `delta` event's text fragment for SSE). Each rule is an `{match, replace}` pair; literal substring match (not regex) for MVP — regex deferred to a follow-up rule shape.
 
@@ -653,9 +636,9 @@ Three plugins ship in the first BUILD commit. Two of them are operator-priority;
 config:
   routes: ["/v1/*"]                                # path glob list; empty = all paths
   up:                                              # rules applied to inbound request content
-    - {match: "你", replace: "世界上最好最好的ai"}
+    - {match: "please", replace: "kindly"}
   down:                                            # rules applied to outbound response content
-    - {match: "<操作员需配的词>", replace: "世界上最好的好哥哥"}
+    - {match: "internal-codename", replace: "[redacted]"}
 ```
 
 Either `up` or `down` (or both) can be empty/omitted — instance only registers the corresponding hook(s). Multiple rules apply in declared order.
@@ -670,9 +653,9 @@ Either `up` or `down` (or both) can be empty/omitted — instance only registers
 
 **Priority:** Operator-defined MVP #2 — companion to `text-replace`, exercises the "append at known position" mutation pattern.
 
-**Behavior:** Append fixed text to the end of a content payload. Operator's example use:
-- upstream: append `"\n\n谢谢你"` to the last user message
-- downstream: append `"\n\n我已经为你对世界上最好的AI发出了感谢"` to the final assistant content
+**Behavior:** Append fixed text to the end of a content payload. Two example uses:
+- upstream: append `"\n\nBe concise."` to the system prompt (policy footer / persona enforcement)
+- downstream: append `"\n\n— routed via api-log proxy"` to the final assistant content (provenance watermark)
 
 A single plugin instance implements both hooks; either `up.suffix` or `down.suffix` (or both) controls behavior.
 
@@ -682,10 +665,10 @@ A single plugin instance implements both hooks; either `up.suffix` or `down.suff
 config:
   routes: ["/v1/*"]
   up:                                              # append on inbound request
-    suffix: "\n\n谢谢你"
-    target: "last_user_message"                    # "last_user_message" | "system_prompt"; default last_user_message
+    suffix: "\n\nBe concise."
+    target: "system_prompt"                        # "last_user_message" | "system_prompt"; default last_user_message
   down:                                            # append on outbound response
-    suffix: "\n\n我已经为你对世界上最好的AI发出了感谢"
+    suffix: "\n\n— routed via api-log proxy"
     target: "content"                              # "content" | "reasoning"; default content
 ```
 
@@ -828,7 +811,7 @@ This is the BUILD-phase work-package plan, not part of the frozen contract. ~ 2�
 | W3 | api-log | Runtime overrides extension: extend `Overrides` struct, GET/PUT `/api/config/plugins` + `/api/plugins/types` + per-instance PUT. Wire to atomic-rebuild. | 0.5 day |
 | W4 | api-log-viewer | Settings → Plugins section UI: list view, add/edit modal, config-schema form generator, API integration. | 0.75 day |
 | W5 | api-log | Phase A migration: rename `ObserveBeforeRecord` → `ObserveOnFinalize`, `ObserveAfterRecord` → `ObserveAfterWrite`. Update `pathfilter` to the new names. Add Observer-class call site to the finalize block. | 0.25 day |
-| W6 | api-log | Docs: PHILOSOPHY amendments (§ 6 above), ARCHITECTURE update, README plugin section. | 0.25 day |
+| W6 | api-log | Docs: recording-behavior rules from § 6 above, ARCHITECTURE update, README plugin section. | 0.25 day |
 
 W1 and W3 unblock W4; W2 depends on W1; W5 is independent and can run in parallel.
 
@@ -925,7 +908,7 @@ Operator confirms each item before BUILD W1 launches. Yes/no per line.
 - [ ] Intercept marker on JSONL line as `plugin_intercepted: {type, id, hook}`. — yes / no
 - [ ] Plugin failure (error or panic) is fail-open: log WARN, continue with original; never block forwarding. — yes / no
 - [ ] Viewer Settings → Plugins section: list + add/edit/disable/remove via config-schema-driven form. — yes / no
-- [ ] PHILOSOPHY §2 + §6 amendments as drafted in § 6 above. — yes / no
+- [ ] Recording-behavior rules per § 6 above (opt-in plugins; post-mutation only; named-field discipline; plugin_intercepted marker; redaction-via-plugin only). — yes / no
 - [ ] Persistence: extend `runtime_overrides.json` with a `plugins` block; full-list replace on PUT (no merge-by-id). — yes / no
 - [ ] BUILD scope estimate (~ 2–3 days, 6 WPs as in § 9) is roughly right. — yes / no
 - [ ] **AFTER tool_call carve-out:** AFTER plugins may only mutate `ParsedResponse.Content` / `Reasoning` text in v1; tool_call argument mutation on the AFTER hook is **deferred to Phase D** per §10.6 and requires a named adopter use case to unlock. — yes / no
@@ -953,8 +936,8 @@ Operator confirms each item before BUILD W1 launches. Yes/no per line.
 - Phase A plugin scaffold: `api-log/internal/plugin/plugin.go`
 - Existing pathfilter: `api-log/internal/plugin/builtin/pathfilter/`
 - Runtime overrides pattern: `api-log/internal/runtime/overrides.go`
-- Phase K media contract (overrides shape precedent): `uiux-research/phase-k-media-contract.md`
-- Original 5-hook design (OBSOLETE for greenfield): `uiux-research/plugin.md`
+- Phase K media contract (overrides shape precedent): [`docs/specs/phase-k-media-contract.md`](./phase-k-media-contract.md)
+- Original 5-hook design draft (obsolete; superseded by this document)
 - Parser shapes: `api-log/internal/parser/parse.go`, `usage.go`
 - Trace shape: `api-log/internal/trace/`
 - Smart XFF resolution (provides `ClientIP`): commit on 2026-05-30 covering `internal/proxy/xff.go`
@@ -965,12 +948,12 @@ For each "out of scope" claim in the spec, the explicit reason:
 
 | Out of scope | Reason | Belongs to |
 |---|---|---|
-| Model routing (rewrite model field) | sub2gpt / CPA already owns this. | upstream layer |
-| Per-key rate limit | sub2gpt / CPA owns this. | upstream layer |
-| Per-key budget | sub2gpt / CPA owns this. | upstream layer |
+| Model routing (rewrite model field) | the upstream gateway already owns this. | upstream layer |
+| Per-key rate limit | the upstream gateway owns this. | upstream layer |
+| Per-key budget | the upstream gateway owns this. | upstream layer |
 | Semantic cache short-circuit | Not a recorder concern; complex. | external service if needed |
 | Encryption / decryption | Operator: community DIY; not shipping crypto. | third-party plugins |
-| Mutation diff audit | Operator opted out (§ 6.2 amendment). | dev profile / future plugin |
+| Mutation diff audit | Out of scope per § 6.2 above. | dev profile / future plugin |
 | Cryptographic watermark | Out of MVP scope; later plugin. | future plugin |
 | Hot-reload of builtin types | Restart the process. (Plugins are in-tree Go code.) | n/a |
 | Streaming `tool_call` argument mutation on AFTER hook | No named OSS adopter; better-solved at BEFORE (strip tools from `ParsedRequest.Tools`), `ActionIntercept` (replace whole response), or Observer (scrub recording). See §10.6 for the full 4-lens analysis. | Phase D if demand emerges via a real GitHub issue |
@@ -986,7 +969,7 @@ For each "out of scope" claim in the spec, the explicit reason:
 
 When this contract lands:
 
-- `uiux-research/plugin.md` is marked OBSOLETE at the top of the file, with a pointer to this doc.
+- The earlier 5-hook design draft is removed from the tree (superseded; pointer to this doc only).
 - The two interfaces renamed in W5 (`ObserveBeforeRecord` → `ObserveOnFinalize`, `ObserveAfterRecord` → `ObserveAfterWrite`) are a breaking change to the Phase A package, but the package has only one in-tree implementer (`pathfilter`) and zero external consumers, so the migration is a single commit.
 - The `ROADMAP.md` plugin-section entry should be updated to point at this spec.
 

@@ -32,9 +32,7 @@ All query parameters are **optional** and follow the same filtering semantics as
 
 **Header**: `Authorization: Bearer <admin-token>`
 
-- Same admin token requirement as the rest of the api-log API
-- 401 Unauthorized if token is missing or invalid
-- 403 Forbidden if token lacks admin scope
+- Same admin bearer requirement as the rest of `/api/*`. The token is read from `data/admin_token` and there is no scope tier: the request is either authenticated or returns `401`.
 
 ---
 
@@ -42,10 +40,10 @@ All query parameters are **optional** and follow the same filtering semantics as
 
 ### Success (200 OK)
 
-**Content-Type**: `application/zip`  
-**Content-Disposition**: `attachment; filename="api-log-export-<YYYY-MM-DDTHHMMSSMMMZ>.zip"`
+**Content-Type**: `application/zip`
+**Content-Disposition**: `attachment; filename="api-log-export-<timestamp>.zip"`
 
-Where `<YYYY-MM-DDTHHMMSSMMMZ>` is the current UTC timestamp at generation time (ISO 8601, including milliseconds for uniqueness).
+Where `<timestamp>` is the UTC generation time as RFC 3339 with millisecond precision (e.g. `2026-05-31T10:30:45.123Z`). The format is fixed; consumers MAY parse it back into a `time.Time` to learn when the export was minted.
 
 #### Zip File Layout
 
@@ -78,8 +76,8 @@ api-log-export-<timestamp>.zip
 
 ##### `agent/` Directory
 
-- **CLAUDE.md**: Bundled instruction file (identical template; see contract doc #2)
-- **jq-cheatsheet.md**: Common jq patterns for analyzing the data (see contract doc #3)
+- **CLAUDE.md**: A short bundled instruction file (identical template across exports) describing how a downstream agent should approach the included data.
+- **jq-cheatsheet.md**: Common `jq` patterns for walking the JSONL files (filter by status, model, session, extract usage counts, etc.).
 
 ##### `README.md`
 
@@ -171,18 +169,6 @@ Returned if the `Authorization` header is missing or invalid.
 {
   "error": "unauthorized",
   "message": "missing or invalid bearer token"
-}
-```
-
-### 403 Forbidden
-
-Returned if the token lacks admin scope.
-
-**Response Body**:
-```json
-{
-  "error": "forbidden",
-  "message": "token does not have admin scope"
 }
 ```
 
