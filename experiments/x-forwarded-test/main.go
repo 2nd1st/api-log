@@ -15,9 +15,9 @@ import (
 func main() {
 	// Backend echoes the headers it actually received.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "X-Forwarded-For:   %q\n", r.Header.Get("X-Forwarded-For"))
-		fmt.Fprintf(w, "X-Forwarded-Host:  %q\n", r.Header.Get("X-Forwarded-Host"))
-		fmt.Fprintf(w, "X-Forwarded-Proto: %q\n", r.Header.Get("X-Forwarded-Proto"))
+		_, _ = fmt.Fprintf(w, "X-Forwarded-For:   %q\n", r.Header.Get("X-Forwarded-For"))
+		_, _ = fmt.Fprintf(w, "X-Forwarded-Host:  %q\n", r.Header.Get("X-Forwarded-Host"))
+		_, _ = fmt.Fprintf(w, "X-Forwarded-Proto: %q\n", r.Header.Get("X-Forwarded-Proto"))
 	}))
 	defer backend.Close()
 

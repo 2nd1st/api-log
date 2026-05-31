@@ -682,7 +682,7 @@ func buildTrace(traceID string, st *traceState, upstreamURL string, finalStatus 
 	if err != nil {
 		return trace.Trace{}, fmt.Errorf("open req tmp: %w", err)
 	}
-	defer reqF.Close()
+	defer func() { _ = reqF.Close() }()
 	reqBody, err := parser.ParseRequest(reqF, st.reqHeader)
 	if err != nil {
 		return trace.Trace{}, fmt.Errorf("parse req: %w", err)
@@ -692,7 +692,7 @@ func buildTrace(traceID string, st *traceState, upstreamURL string, finalStatus 
 	if err != nil {
 		return trace.Trace{}, fmt.Errorf("open resp tmp: %w", err)
 	}
-	defer respF.Close()
+	defer func() { _ = respF.Close() }()
 	respBody, err := parser.ParseResponse(respF, st.respHeader, parser.ParseOpts{
 		ChunkTimings: st.respResult.ChunkTimings,
 		TsStart:      st.tsStart,
