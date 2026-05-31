@@ -1,5 +1,5 @@
 // Command api-log is the transparent recording proxy described in
-// ../../README.md, ../../PHILOSOPHY.md, and ../../ARCHITECTURE.md.
+// ../../README.md and ../../ARCHITECTURE.md.
 //
 // v0 milestone scope:
 //   M1 (done): forwarding + body capture to tmp files.

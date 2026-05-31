@@ -136,7 +136,7 @@ func rootPointer(w http.ResponseWriter, _ *http.Request) {
 		"viewer":  "https://github.com/xiayangzhang/api-log-viewer",
 		"api":     "/api",
 		"healthz": "/healthz",
-		"docs":    "see PHILOSOPHY.md and ARCHITECTURE.md in this repo",
+		"docs":    "see ARCHITECTURE.md in this repo",
 	})
 }
 
