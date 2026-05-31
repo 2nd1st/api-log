@@ -82,9 +82,15 @@ only the canonical module + GitHub URL move.
 
 ## Secret hygiene (filter-repo, one-time)
 
-The git history contains the leaked sub2api user keys removed from
-HEAD in commit `3f22001`. These must be scrubbed from history before
-any push to a public remote.
+Two scrub targets must clear history before any push to a public
+remote:
+
+1. **Leaked sub2api user keys** removed from HEAD in commit
+   `3f22001` but still in earlier objects.
+2. **Internal-only docs** that were tracked at one point and then
+   moved to the gitignored `docs/internal/` tree (pre-release review
+   punch list, the Phase L UI revamp internal spec, and the
+   superseded plugin design sketch).
 
 ```bash
 # Prereq: install git-filter-repo (https://github.com/newren/git-filter-repo)
@@ -96,11 +102,22 @@ literal:sk-REDACTED==>sk-REDACTED
 literal:sk-REDACTED==>sk-REDACTED
 EOF
 
+# List of internal-only paths to drop from history
+cat > /tmp/internal-paths.txt <<EOF
+docs/reviews/v0.1.0-pre-release.md
+docs/specs/phase-l-spec.md
+docs/specs/plugin.md
+EOF
+
 # Take a backup before rewriting
 git clone --mirror . /tmp/api-log-backup-$(date +%s).git
 
-# Rewrite all history
-git filter-repo --replace-text /tmp/key-scrub.txt --force
+# Rewrite all history — both key scrub and internal-path drop in
+# one filter-repo invocation
+git filter-repo \
+  --replace-text /tmp/key-scrub.txt \
+  --invert-paths --paths-from-file /tmp/internal-paths.txt \
+  --force
 
 # Force-push to gitea (destroys history!) — this is a deliberate
 # one-time event during the pre-public-push window

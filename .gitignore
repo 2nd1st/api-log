@@ -41,3 +41,6 @@
 /experiments/x-forwarded-test/go.sum
 /experiments/x-forwarded-test/*.bin
 /.tmp-screenshots/
+
+# Internal-only docs — kept locally, not published to OSS
+/docs/internal/

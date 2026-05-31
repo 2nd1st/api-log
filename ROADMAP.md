@@ -100,13 +100,12 @@ without changes. Shipping is the missing piece:
 
 ## v0.1.0 review — deferred items
 
-Output of the 10-lens cross-repo adversarial review (workflow
-`wv354526x`, 81 surviving findings — full punch list at
-[docs/reviews/v0.1.0-pre-release.md](./docs/reviews/v0.1.0-pre-release.md)).
-Critical + Important items that block / belong-in the v0.1.0 tag
-landed in Buckets A–C (commits `b6a8cdf` through Bucket C). What
-follows are items the operator consciously deferred to post-v0.1.0
-because they're (a) larger than fits the tag window or (b) not
+Output of a pre-release adversarial review (81 findings). The
+Critical + Important items that blocked / belonged-in the v0.1.0
+tag landed in commits `b6a8cdf` through the v0.1.0 prep window —
+see CHANGELOG.md for the per-commit walk. What follows are items
+the operator consciously deferred to post-v0.1.0 because they're
+(a) larger than fits the tag window or (b) not
 contract-breaking. None block the tag; each is a real follow-up.
 
 ### Release engineering
