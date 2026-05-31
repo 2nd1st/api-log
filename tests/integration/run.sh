@@ -96,16 +96,23 @@ echo "    last status from api listener: ${SEEN_STATUS:-<none>}"
 # avoids the problem entirely.
 TOKEN_FILE="$HOST_DATA/admin_token"
 for i in $(seq 1 30); do
-  if [ -s "$TOKEN_FILE" ]; then break; fi
+  if [ -s "$TOKEN_FILE" ] 2>/dev/null || sudo test -s "$TOKEN_FILE" 2>/dev/null; then break; fi
   sleep 0.2
 done
-if [ ! -s "$TOKEN_FILE" ]; then
-  echo "FATAL: admin_token never appeared at $TOKEN_FILE"
+# The container writes the token as root on first run; on CI the
+# runner user can't read root-owned bind-mounted files. Use sudo if
+# the direct read fails.
+if [ -r "$TOKEN_FILE" ]; then
+  TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+else
+  TOKEN="$(sudo tr -d '[:space:]' < "$TOKEN_FILE" 2>/dev/null || true)"
+fi
+if [ -z "$TOKEN" ]; then
+  echo "FATAL: admin_token never appeared / readable at $TOKEN_FILE"
   echo "--- api-log logs ---"
   $COMPOSE logs --tail=80 api-log || true
   exit 1
 fi
-TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
 echo "    admin_token=${TOKEN:0:8}..."
 
 AUTH="Authorization: Bearer $TOKEN"
