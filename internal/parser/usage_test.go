@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leoyun/api-log/internal/sse"
-	"github.com/leoyun/api-log/internal/trace"
+	"github.com/xiayangzhang/api-log/internal/sse"
+	"github.com/xiayangzhang/api-log/internal/trace"
 )
 
 // Fixtures below are mostly real shapes copied from sub2api dev-stack

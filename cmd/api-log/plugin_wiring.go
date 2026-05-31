@@ -25,19 +25,19 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/leoyun/api-log/internal/api"
-	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
-	"github.com/leoyun/api-log/internal/proxy"
-	"github.com/leoyun/api-log/internal/runtime"
-	"github.com/leoyun/api-log/internal/sse"
-	"github.com/leoyun/api-log/internal/trace"
+	"github.com/xiayangzhang/api-log/internal/api"
+	pluginv2 "github.com/xiayangzhang/api-log/internal/plugin/v2"
+	"github.com/xiayangzhang/api-log/internal/proxy"
+	"github.com/xiayangzhang/api-log/internal/runtime"
+	"github.com/xiayangzhang/api-log/internal/sse"
+	"github.com/xiayangzhang/api-log/internal/trace"
 
 	// Side-effect import: each builtin registers its Ctor at init() via
 	// v2.RegisterBuiltin. Importing here is how main pulls them into the
 	// process-wide builtin map without coupling main to each package's
 	// internals.
-	_ "github.com/leoyun/api-log/internal/plugin/v2/builtin/textappend"
-	_ "github.com/leoyun/api-log/internal/plugin/v2/builtin/textreplace"
+	_ "github.com/xiayangzhang/api-log/internal/plugin/v2/builtin/textappend"
+	_ "github.com/xiayangzhang/api-log/internal/plugin/v2/builtin/textreplace"
 )
 
 // interceptSlotKey carries an InterceptInfo from the BEFORE / AFTER

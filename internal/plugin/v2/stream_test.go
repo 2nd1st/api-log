@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leoyun/api-log/internal/sse"
+	"github.com/xiayangzhang/api-log/internal/sse"
 )
 
 // ----- Classifier coverage per protocol ---------------------------

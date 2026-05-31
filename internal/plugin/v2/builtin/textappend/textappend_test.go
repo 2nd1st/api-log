@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	v2 "github.com/leoyun/api-log/internal/plugin/v2"
-	"github.com/leoyun/api-log/internal/sse"
+	v2 "github.com/xiayangzhang/api-log/internal/plugin/v2"
+	"github.com/xiayangzhang/api-log/internal/sse"
 )
 
 func mkReq(path string, msgs []v2.Message, system string) *v2.ParsedRequest {

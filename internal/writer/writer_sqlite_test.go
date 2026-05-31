@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leoyun/api-log/internal/store/sqlite"
-	"github.com/leoyun/api-log/internal/trace"
+	"github.com/xiayangzhang/api-log/internal/store/sqlite"
+	"github.com/xiayangzhang/api-log/internal/trace"
 	_ "modernc.org/sqlite"
 )
 

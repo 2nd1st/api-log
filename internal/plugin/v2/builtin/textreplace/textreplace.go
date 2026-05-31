@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"strings"
 
-	v2 "github.com/leoyun/api-log/internal/plugin/v2"
+	v2 "github.com/xiayangzhang/api-log/internal/plugin/v2"
 )
 
 // Type is the operator-facing type name registered with v2.RegisterBuiltin.

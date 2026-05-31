@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leoyun/api-log/internal/sse"
+	"github.com/xiayangzhang/api-log/internal/sse"
 )
 
 func TestMarshalShape(t *testing.T) {

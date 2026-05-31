@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/leoyun/api-log/internal/parser"
-	"github.com/leoyun/api-log/internal/sse"
+	"github.com/xiayangzhang/api-log/internal/parser"
+	"github.com/xiayangzhang/api-log/internal/sse"
 )
 
 // Action is the verdict a plugin returns from a hook call.

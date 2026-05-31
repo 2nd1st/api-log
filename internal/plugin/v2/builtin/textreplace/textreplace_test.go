@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	v2 "github.com/leoyun/api-log/internal/plugin/v2"
-	"github.com/leoyun/api-log/internal/sse"
+	v2 "github.com/xiayangzhang/api-log/internal/plugin/v2"
+	"github.com/xiayangzhang/api-log/internal/sse"
 )
 
 // mkReq is a small helper for the common case: one user turn with

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/leoyun/api-log/internal/trace"
+	"github.com/xiayangzhang/api-log/internal/trace"
 )
 
 // stubBefore is a test Plugin that implements ObserveOnFinalize.

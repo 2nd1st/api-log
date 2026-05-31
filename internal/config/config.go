@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/leoyun/api-log/internal/plugin/builtin/pathfilter"
+	"github.com/xiayangzhang/api-log/internal/plugin/builtin/pathfilter"
 )
 
 // Config is the parsed runtime config.

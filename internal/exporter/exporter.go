@@ -29,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leoyun/api-log/internal/store/sqlite"
+	"github.com/xiayangzhang/api-log/internal/store/sqlite"
 )
 
 //go:embed templates/CLAUDE.md templates/jq-cheatsheet.md

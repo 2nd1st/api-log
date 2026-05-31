@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/leoyun/api-log/internal/trace"
+	"github.com/xiayangzhang/api-log/internal/trace"
 )
 
 func TestInit_NilCfg(t *testing.T) {

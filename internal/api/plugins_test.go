@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leoyun/api-log/internal/counters"
-	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
-	"github.com/leoyun/api-log/internal/runtime"
-	"github.com/leoyun/api-log/internal/store/sqlite"
+	"github.com/xiayangzhang/api-log/internal/counters"
+	pluginv2 "github.com/xiayangzhang/api-log/internal/plugin/v2"
+	"github.com/xiayangzhang/api-log/internal/runtime"
+	"github.com/xiayangzhang/api-log/internal/store/sqlite"
 )
 
 // newPluginsTestServer is a focused harness for the four plugin

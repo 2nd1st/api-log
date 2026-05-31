@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leoyun/api-log/internal/trace"
+	"github.com/xiayangzhang/api-log/internal/trace"
 )
 
 func TestParseRequestJSONBody(t *testing.T) {

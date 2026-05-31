@@ -41,7 +41,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/leoyun/api-log/internal/trace"
+	"github.com/xiayangzhang/api-log/internal/trace"
 )
 
 // UsageInfo is the contract for usage extraction. Each field is a pointer

@@ -36,8 +36,8 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/leoyun/api-log/internal/ids"
-	"github.com/leoyun/api-log/internal/trace"
+	"github.com/xiayangzhang/api-log/internal/ids"
+	"github.com/xiayangzhang/api-log/internal/trace"
 )
 
 // Config is the extractor's runtime configuration. Wired by main from the

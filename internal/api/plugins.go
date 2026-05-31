@@ -46,8 +46,8 @@ import (
 	"net/http"
 	"strconv"
 
-	pluginv2 "github.com/leoyun/api-log/internal/plugin/v2"
-	"github.com/leoyun/api-log/internal/runtime"
+	pluginv2 "github.com/xiayangzhang/api-log/internal/plugin/v2"
+	"github.com/xiayangzhang/api-log/internal/runtime"
 )
 
 // pluginConfigMaxBytes caps the JSON body on the PUT
