@@ -105,7 +105,10 @@ done
 if [ -r "$TOKEN_FILE" ]; then
   TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
 else
-  TOKEN="$(sudo tr -d '[:space:]' < "$TOKEN_FILE" 2>/dev/null || true)"
+  # Bash opens the < redirect BEFORE sudo runs, so `sudo tr < file`
+  # fails when the runner user can't read the file. Read via sudo
+  # cat first, then pipe to tr.
+  TOKEN="$(sudo cat "$TOKEN_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
 fi
 if [ -z "$TOKEN" ]; then
   echo "FATAL: admin_token never appeared / readable at $TOKEN_FILE"

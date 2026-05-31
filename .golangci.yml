@@ -22,6 +22,29 @@ linters:
       disabled-checks:
         - ifElseChain
         - singleCaseSwitch
+    errcheck:
+      # Ignore the common Go idioms where we don't care about the
+      # return value: deferred Close calls, response-body teardown,
+      # and write-to-discard-style Fprintf.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        - (*net/http.Response.Body).Close
+        - fmt.Fprintf
+        - fmt.Fprint
+        - fmt.Fprintln
+
+  exclusions:
+    rules:
+      # Tests + experiments are exploratory; the errcheck noise there
+      # is not load-bearing.
+      - path: _test\.go$
+        linters:
+          - errcheck
+      - path: ^experiments/
+        linters:
+          - errcheck
 
 formatters:
   enable:
