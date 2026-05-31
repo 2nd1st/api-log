@@ -2,6 +2,8 @@ English | [中文](README.zh.md)
 
 # api-log: LLM proxy logging and API trace recorder
 
+![api-log — tcpdump for LLM gateways](./docs/banner.png)
+
 [![CI](https://github.com/xiayangzhang/api-log/actions/workflows/ci.yml/badge.svg)](https://github.com/xiayangzhang/api-log/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/xiayangzhang/api-log?include_prereleases&sort=semver)](https://github.com/xiayangzhang/api-log/releases)
 [![Go version](https://img.shields.io/github/go-mod/go-version/xiayangzhang/api-log)](./go.mod)
