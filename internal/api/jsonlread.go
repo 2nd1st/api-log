@@ -62,7 +62,7 @@ func readJSONLFromGz(path string, offset int64) (json.RawMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open gzip: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	if offset > 0 {
 		// Advance the uncompressed stream. Use a single big chunk size
 		// to amortize CopyN's per-loop overhead.

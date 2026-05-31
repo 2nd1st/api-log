@@ -97,8 +97,8 @@ func withFakeGitHub(t *testing.T, fg *fakeGitHub) {
 
 func TestEnsureCache_HappyPath(t *testing.T) {
 	zipBytes := buildZip(t, map[string]string{
-		"index.html":     "<html>hi</html>",
-		"assets/app.js":  "console.log(1)",
+		"index.html":    "<html>hi</html>",
+		"assets/app.js": "console.log(1)",
 	})
 	sum := hexSha256(zipBytes)
 	fg := newFakeGitHub(t, "2nd1st/api-log-viewer", "v0.1.0", zipBytes)

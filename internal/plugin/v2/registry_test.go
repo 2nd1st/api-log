@@ -17,16 +17,16 @@ import (
 // shared call log).
 
 type fakePlugin struct {
-	name           string
-	beforeAction   Action
-	beforeMutator  func(req *ParsedRequest) *ParsedRequest
+	name            string
+	beforeAction    Action
+	beforeMutator   func(req *ParsedRequest) *ParsedRequest
 	beforeIntercept *InterceptResponse
-	afterAction    Action
-	afterMutator   func(req *ParsedRequest, ac *AfterContext) *ParsedResponse
-	afterIntercept *InterceptResponse
-	afterRegister  func(req *ParsedRequest, ac *AfterContext)
-	panicOnBefore  bool
-	panicOnAfter   bool
+	afterAction     Action
+	afterMutator    func(req *ParsedRequest, ac *AfterContext) *ParsedResponse
+	afterIntercept  *InterceptResponse
+	afterRegister   func(req *ParsedRequest, ac *AfterContext)
+	panicOnBefore   bool
+	panicOnAfter    bool
 
 	mu        sync.Mutex
 	beforeLog []string
@@ -230,8 +230,8 @@ func TestIterateBefore_MutateCascades(t *testing.T) {
 
 func TestIterateBefore_InterceptShortCircuits(t *testing.T) {
 	p1 := &fakePlugin{
-		name:           "p1",
-		beforeAction:   ActionIntercept,
+		name:            "p1",
+		beforeAction:    ActionIntercept,
 		beforeIntercept: &InterceptResponse{Status: 429, Body: []byte("rate-limited")},
 	}
 	p2 := &fakePlugin{name: "p2", beforeAction: ActionContinue}

@@ -24,11 +24,11 @@ type Scanner struct {
 	br *bufio.Reader
 
 	// offset bookkeeping mirrors Parse.
-	offset      int64
-	eventStart  int64
-	curEvent    string
-	curDataBuf  bytes.Buffer
-	hasData     bool
+	offset     int64
+	eventStart int64
+	curEvent   string
+	curDataBuf bytes.Buffer
+	hasData    bool
 
 	pending Event
 	hasPend bool
@@ -36,10 +36,6 @@ type Scanner struct {
 	// streamDone latches once a terminator vocabulary item fires so the
 	// caller can ask whether the upstream ended cleanly.
 	streamDone bool
-	// emittedTerminal latches once a ClassTerminal-shaped event has been
-	// surfaced via Next, so EmitBeforeFinish can fire ONCE on EOF when
-	// the upstream protocol has no named terminator (Chat).
-	emittedTerminal bool
 }
 
 // NewScanner returns a Scanner over r. Buffer size matches Parse's 64

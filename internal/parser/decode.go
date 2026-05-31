@@ -63,7 +63,7 @@ func decodeOne(link string, in []byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("gzip: %w", err)
 		}
-		defer gz.Close()
+		defer func() { _ = gz.Close() }()
 		out, err := io.ReadAll(gz)
 		if err != nil {
 			return nil, fmt.Errorf("gzip read: %w", err)

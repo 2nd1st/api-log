@@ -12,14 +12,14 @@ import (
 
 func TestMarshalShape(t *testing.T) {
 	tr := Trace{
-		ID:      "01HX7K8MSABCDEF",
-		TsStart: time.Date(2026, 5, 27, 10, 23, 45, 123_000_000, time.UTC),
-		TsEnd:   time.Date(2026, 5, 27, 10, 23, 46, 357_000_000, time.UTC),
-		Client:  "172.17.0.5:54321",
-		Method:  "POST",
-		Path:    "/v1/messages",
+		ID:       "01HX7K8MSABCDEF",
+		TsStart:  time.Date(2026, 5, 27, 10, 23, 45, 123_000_000, time.UTC),
+		TsEnd:    time.Date(2026, 5, 27, 10, 23, 46, 357_000_000, time.UTC),
+		Client:   "172.17.0.5:54321",
+		Method:   "POST",
+		Path:     "/v1/messages",
 		Upstream: "http://gateway:7860",
-		Status:  200,
+		Status:   200,
 		Req: Body{
 			Headers: Headers{
 				"Authorization": {"Bearer sk-..."},

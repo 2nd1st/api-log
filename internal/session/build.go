@@ -193,8 +193,8 @@ func buildUserTurnFromString(content string) (json.RawMessage, bool) {
 
 func buildOpaqueTurn(field string, value json.RawMessage) (json.RawMessage, bool) {
 	b, err := json.Marshal(map[string]any{
-		"role":  "user",
-		field:   json.RawMessage(value),
+		"role": "user",
+		field:  json.RawMessage(value),
 	})
 	if err != nil {
 		return nil, false

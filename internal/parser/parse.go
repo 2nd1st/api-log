@@ -197,4 +197,3 @@ func isJSONContentType(ct string) bool {
 	}
 	return false
 }
-

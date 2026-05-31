@@ -85,9 +85,9 @@ func TestDrainHonorsMaxBodyBytes(t *testing.T) {
 	var buf bytes.Buffer
 
 	go func() {
-		ch <- Chunk{At: time.Now(), Data: []byte("aaaa")}      // 4 bytes
-		ch <- Chunk{At: time.Now(), Data: []byte("bbbbbbbb")}  // 8 bytes — will exceed cap
-		ch <- Chunk{At: time.Now(), Data: []byte("c")}         // dropped, post-truncate
+		ch <- Chunk{At: time.Now(), Data: []byte("aaaa")}     // 4 bytes
+		ch <- Chunk{At: time.Now(), Data: []byte("bbbbbbbb")} // 8 bytes — will exceed cap
+		ch <- Chunk{At: time.Now(), Data: []byte("c")}        // dropped, post-truncate
 		close(ch)
 	}()
 

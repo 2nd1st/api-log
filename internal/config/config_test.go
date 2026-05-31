@@ -147,4 +147,3 @@ func TestMediaEnvOverrideInvalid(t *testing.T) {
 		t.Fatal("Load() with bad media env should error, got nil")
 	}
 }
-

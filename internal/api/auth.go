@@ -8,7 +8,9 @@ import (
 )
 
 // authMW wraps handler in a bearer-token check.
-//   Authorization: Bearer <token>
+//
+//	Authorization: Bearer <token>
+//
 // Missing or wrong → 401 with {"error":"unauthorized"}.
 // Constant-time comparison; see admin.CompareConst.
 func authMW(expectedToken string, handler http.Handler) http.Handler {

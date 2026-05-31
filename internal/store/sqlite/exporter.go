@@ -43,7 +43,7 @@ func (s *Store) AllMatching(filters ListFilters, hardCap int) ([]Row, error) {
 	if err != nil {
 		return nil, fmt.Errorf("all-matching query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]Row, 0, 128)
 	for rows.Next() {

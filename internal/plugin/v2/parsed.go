@@ -104,10 +104,10 @@ type chatReqShape struct {
 }
 
 type chatReqMsg struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"`
-	Name       string          `json:"name"`
-	ToolCallID string          `json:"tool_call_id"`
+	Role       string            `json:"role"`
+	Content    json.RawMessage   `json:"content"`
+	Name       string            `json:"name"`
+	ToolCallID string            `json:"tool_call_id"`
 	ToolCalls  []chatReqToolCall `json:"tool_calls"`
 }
 
@@ -266,9 +266,9 @@ type chatRespShape struct {
 
 type chatRespChoice struct {
 	Message *struct {
-		Role      string             `json:"role"`
-		Content   json.RawMessage    `json:"content"`
-		ToolCalls []chatReqToolCall  `json:"tool_calls"`
+		Role      string            `json:"role"`
+		Content   json.RawMessage   `json:"content"`
+		ToolCalls []chatReqToolCall `json:"tool_calls"`
 	} `json:"message"`
 	FinishReason *string `json:"finish_reason"`
 }
@@ -365,11 +365,11 @@ func parseChatResponse(t trace.Trace, resp *ParsedResponse) {
 // --- Anthropic Messages ---------------------------------------------
 
 type messagesReqShape struct {
-	Model    string          `json:"model"`
-	System   json.RawMessage `json:"system"`
-	Messages []messagesReqMsg `json:"messages"`
+	Model    string            `json:"model"`
+	System   json.RawMessage   `json:"system"`
+	Messages []messagesReqMsg  `json:"messages"`
 	Tools    []messagesReqTool `json:"tools"`
-	Stream   *bool           `json:"stream"`
+	Stream   *bool             `json:"stream"`
 }
 
 type messagesReqMsg struct {
@@ -462,9 +462,9 @@ func messagesParseContent(raw json.RawMessage) []ContentPart {
 			out = append(out, cp)
 		case "tool_use":
 			out = append(out, ContentPart{
-				Type: "tool_use",
+				Type:    "tool_use",
 				ToolUse: &ToolUse{ID: probe.ID, Name: probe.Name, Input: probe.Input},
-				Raw:    item,
+				Raw:     item,
 			})
 		case "tool_result":
 			out = append(out, ContentPart{
@@ -514,9 +514,9 @@ func parseMessagesResponse(t trace.Trace, resp *ParsedResponse) {
 	}
 	// Streaming: walk content_block_* events, building blocks by index.
 	type blockAccum struct {
-		Kind    string // "text" | "thinking" | "tool_use"
-		Text    strings.Builder
-		ToolID  string
+		Kind     string // "text" | "thinking" | "tool_use"
+		Text     strings.Builder
+		ToolID   string
 		ToolName string
 		ToolArgs strings.Builder
 	}
@@ -627,11 +627,11 @@ func collectMessagesBlocks(blocks []json.RawMessage, resp *ParsedResponse) {
 // array of typed input parts. We normalize to Messages similar to Chat.
 
 type responsesReqShape struct {
-	Model        string          `json:"model"`
-	Instructions string          `json:"instructions"`
-	Input        json.RawMessage `json:"input"`
+	Model        string             `json:"model"`
+	Instructions string             `json:"instructions"`
+	Input        json.RawMessage    `json:"input"`
 	Tools        []responsesReqTool `json:"tools"`
-	Stream       *bool           `json:"stream"`
+	Stream       *bool              `json:"stream"`
 }
 
 type responsesReqTool struct {
@@ -722,9 +722,9 @@ func responsesParseContent(raw json.RawMessage) []ContentPart {
 	out := make([]ContentPart, 0, len(arr))
 	for _, item := range arr {
 		var probe struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			ImageURL string `json:"image_url"`
+			Type      string `json:"type"`
+			Text      string `json:"text"`
+			ImageURL  string `json:"image_url"`
 			InputText string `json:"input_text"`
 		}
 		if err := json.Unmarshal(item, &probe); err != nil {

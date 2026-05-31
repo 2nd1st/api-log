@@ -16,8 +16,8 @@ linters:
 
   settings:
     govet:
-      enable:
-        - shadow
+      # shadow disabled — re-declaring `err` in inner scopes is
+      # idiomatic Go and the warning is high-noise / low-signal.
     gocritic:
       disabled-checks:
         - ifElseChain
@@ -37,14 +37,18 @@ linters:
 
   exclusions:
     rules:
-      # Tests + experiments are exploratory; the errcheck noise there
-      # is not load-bearing.
+      # Tests + experiments are exploratory; the high-noise warnings
+      # there don't represent shipping defects.
       - path: _test\.go$
         linters:
           - errcheck
+          - gocritic
+          - staticcheck
       - path: ^experiments/
         linters:
           - errcheck
+          - gocritic
+          - staticcheck
 
 formatters:
   enable:

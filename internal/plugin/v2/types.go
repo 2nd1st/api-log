@@ -41,11 +41,11 @@ const (
 type Protocol int
 
 const (
-	ProtocolUnknown Protocol = iota
-	ProtocolChat             // OpenAI /v1/chat/completions
-	ProtocolMessages         // Anthropic /v1/messages
-	ProtocolResponses        // OpenAI /v1/responses
-	ProtocolGemini           // Google /v1beta/.../:(stream)generateContent
+	ProtocolUnknown   Protocol = iota
+	ProtocolChat               // OpenAI /v1/chat/completions
+	ProtocolMessages           // Anthropic /v1/messages
+	ProtocolResponses          // OpenAI /v1/responses
+	ProtocolGemini             // Google /v1beta/.../:(stream)generateContent
 )
 
 // String makes Protocol log-friendly. Stable strings; do not change.

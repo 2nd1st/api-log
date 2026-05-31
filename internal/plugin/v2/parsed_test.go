@@ -28,13 +28,13 @@ func mkTrace(path, reqBody, respBody string, events []sse.Event) trace.Trace {
 
 func TestDetectProtocol(t *testing.T) {
 	cases := map[string]Protocol{
-		"/v1/chat/completions":                                ProtocolChat,
-		"/v1/messages":                                        ProtocolMessages,
-		"/v1/messages?beta=true":                              ProtocolMessages,
-		"/v1/responses":                                       ProtocolResponses,
+		"/v1/chat/completions":   ProtocolChat,
+		"/v1/messages":           ProtocolMessages,
+		"/v1/messages?beta=true": ProtocolMessages,
+		"/v1/responses":          ProtocolResponses,
 		"/v1beta/models/gemini-2.0-flash:generateContent":     ProtocolGemini,
 		"/v1beta/models/gemini-1.5-pro:streamGenerateContent": ProtocolGemini,
-		"/healthz":                                            ProtocolUnknown,
+		"/healthz": ProtocolUnknown,
 	}
 	for path, want := range cases {
 		if got := DetectProtocol(path); got != want {

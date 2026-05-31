@@ -17,9 +17,9 @@ const AllZeroKeyHash = "0000000000000000"
 
 // KeyHashFromHeaders computes the canonical key_hash for a request's auth
 // headers. Preference order (per ARCHITECTURE § 2):
-//   1. Authorization header value (including any "Bearer " prefix)
-//   2. x-api-key header value
-//   3. empty string → AllZeroKeyHash
+//  1. Authorization header value (including any "Bearer " prefix)
+//  2. x-api-key header value
+//  3. empty string → AllZeroKeyHash
 //
 // The hash is the lowercase hex of sha256 truncated to KeyHashLen chars.
 func KeyHashFromHeaders(h http.Header) string {

@@ -2,9 +2,10 @@
 // ../../README.md and ../../ARCHITECTURE.md.
 //
 // v0 milestone scope:
-//   M1 (done): forwarding + body capture to tmp files.
-//   M2 (this commit): finalize parse + JSONL writer → traces land on disk.
-//   M3+:           SQLite mirror + session inference; read API; replay.
+//
+//	M1 (done): forwarding + body capture to tmp files.
+//	M2 (this commit): finalize parse + JSONL writer → traces land on disk.
+//	M3+:           SQLite mirror + session inference; read API; replay.
 package main
 
 import (
@@ -705,10 +706,7 @@ func buildTrace(traceID string, st *traceState, upstreamURL string, finalStatus 
 	// for a clean stream (i.e. truncation cap), OR if the response was
 	// streaming and we never saw a clean terminator. For M2 we approximate:
 	// disconnected ⇔ resp had Content-Type SSE and StreamDone == false.
-	disconnected := false
-	if respBody.StreamDone != nil && !*respBody.StreamDone {
-		disconnected = true
-	}
+	disconnected := respBody.StreamDone != nil && !*respBody.StreamDone
 
 	return trace.Trace{
 		ID:            traceID,

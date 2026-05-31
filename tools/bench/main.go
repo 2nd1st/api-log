@@ -6,11 +6,12 @@
 // the orchestrator to ingest.
 //
 // Typical use:
-//   bench -upstream http://localhost:7861 \
-//         -key sk-... -conc 50 -count 20 \
-//         -chat-model gpt-4o-mini \
-//         -anthropic-model claude-haiku-4-5 \
-//         -responses-model gpt-4o-mini
+//
+//	bench -upstream http://localhost:7861 \
+//	      -key sk-... -conc 50 -count 20 \
+//	      -chat-model gpt-4o-mini \
+//	      -anthropic-model claude-haiku-4-5 \
+//	      -responses-model gpt-4o-mini
 //
 // The bench is upstream-agnostic: point -upstream at the api-log proxy
 // (default) to measure end-to-end including the proxy, or at the
@@ -47,20 +48,20 @@ type sample struct {
 }
 
 type opts struct {
-	Upstream        string
-	Keys            []string
-	AuthHeader      string
-	Conc            int
-	Count           int
-	Protocols       []string
-	ChatModel       string
-	AnthropicModel  string
-	ResponsesModel  string
-	MaxTokens       int
-	PerReqTimeout   time.Duration
-	Seed            int64
-	JSONOut         string
-	Chain           bool // if set, chat-nostream requests carry the growing per-worker conversation so session inference can find parents.
+	Upstream       string
+	Keys           []string
+	AuthHeader     string
+	Conc           int
+	Count          int
+	Protocols      []string
+	ChatModel      string
+	AnthropicModel string
+	ResponsesModel string
+	MaxTokens      int
+	PerReqTimeout  time.Duration
+	Seed           int64
+	JSONOut        string
+	Chain          bool // if set, chat-nostream requests carry the growing per-worker conversation so session inference can find parents.
 }
 
 func main() {
@@ -275,10 +276,10 @@ func buildRequest(o *opts, proto string, convo []map[string]string, prompt strin
 		return "POST", "/v1/chat/completions", body, false
 	case "chat-stream":
 		body, _ := json.Marshal(map[string]any{
-			"model":    o.ChatModel,
-			"messages": []any{map[string]string{"role": "user", "content": prompt}},
+			"model":      o.ChatModel,
+			"messages":   []any{map[string]string{"role": "user", "content": prompt}},
 			"max_tokens": o.MaxTokens,
-			"stream":   true,
+			"stream":     true,
 		})
 		return "POST", "/v1/chat/completions", body, true
 	case "anthropic-stream":
@@ -324,20 +325,20 @@ type protoStat struct {
 }
 
 type summary struct {
-	Total            int          `json:"total"`
-	ElapsedSec       float64      `json:"elapsed_sec"`
-	Throughput       float64      `json:"req_per_sec"`
-	OverallP50Ms     float64      `json:"overall_p50_ms"`
-	OverallP95Ms     float64      `json:"overall_p95_ms"`
-	OverallP99Ms     float64      `json:"overall_p99_ms"`
-	OverallMeanMs    float64      `json:"overall_mean_ms"`
-	OkCount          int          `json:"ok_count"`
-	HTTP4xxCount     int          `json:"http_4xx_count"`
-	HTTP5xxCount     int          `json:"http_5xx_count"`
-	ErrorCount       int          `json:"error_count"`
-	BytesTotal       int64        `json:"bytes_total"`
-	PerProtocol      []protoStat  `json:"per_protocol"`
-	FirstFewErrors   []string     `json:"first_few_errors,omitempty"`
+	Total          int         `json:"total"`
+	ElapsedSec     float64     `json:"elapsed_sec"`
+	Throughput     float64     `json:"req_per_sec"`
+	OverallP50Ms   float64     `json:"overall_p50_ms"`
+	OverallP95Ms   float64     `json:"overall_p95_ms"`
+	OverallP99Ms   float64     `json:"overall_p99_ms"`
+	OverallMeanMs  float64     `json:"overall_mean_ms"`
+	OkCount        int         `json:"ok_count"`
+	HTTP4xxCount   int         `json:"http_4xx_count"`
+	HTTP5xxCount   int         `json:"http_5xx_count"`
+	ErrorCount     int         `json:"error_count"`
+	BytesTotal     int64       `json:"bytes_total"`
+	PerProtocol    []protoStat `json:"per_protocol"`
+	FirstFewErrors []string    `json:"first_few_errors,omitempty"`
 }
 
 func summarize(samples []sample, elapsed time.Duration, total int) summary {

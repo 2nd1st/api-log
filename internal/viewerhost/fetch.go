@@ -213,7 +213,7 @@ func extractZip(src, distRoot string) error {
 	if err != nil {
 		return fmt.Errorf("viewerhost: open zip: %w", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	if err := os.MkdirAll(distRoot, 0o755); err != nil {
 		return fmt.Errorf("viewerhost: mkdir dist root: %w", err)

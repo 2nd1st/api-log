@@ -29,4 +29,3 @@ func healthz(deps Deps) http.Handler {
 		writeJSON(w, http.StatusOK, body)
 	})
 }
-

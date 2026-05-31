@@ -18,9 +18,9 @@ type stubBefore struct {
 	order        *[]string
 }
 
-func (s *stubBefore) Name() string                  { return s.name }
-func (s *stubBefore) Init(_ map[string]any) error   { return nil }
-func (s *stubBefore) Close() error                  { return nil }
+func (s *stubBefore) Name() string                { return s.name }
+func (s *stubBefore) Init(_ map[string]any) error { return nil }
+func (s *stubBefore) Close() error                { return nil }
 func (s *stubBefore) OnFinalize(_ context.Context, _ trace.Trace) (bool, error) {
 	*s.order = append(*s.order, s.name)
 	return s.shouldRecord, s.err
@@ -34,10 +34,10 @@ type stubAfter struct {
 	order *[]string
 }
 
-func (s *stubAfter) Name() string                                  { return s.name }
-func (s *stubAfter) Init(_ map[string]any) error                   { return nil }
-func (s *stubAfter) Close() error                                  { return nil }
-func (s *stubAfter) AfterWrite(_ context.Context, _ trace.Trace)   { *s.order = append(*s.order, s.name) }
+func (s *stubAfter) Name() string                                { return s.name }
+func (s *stubAfter) Init(_ map[string]any) error                 { return nil }
+func (s *stubAfter) Close() error                                { return nil }
+func (s *stubAfter) AfterWrite(_ context.Context, _ trace.Trace) { *s.order = append(*s.order, s.name) }
 
 // stubInitErr fails Init, used to assert Registry.Init surfaces errors.
 type stubInitErr struct {
@@ -45,9 +45,9 @@ type stubInitErr struct {
 	initErr error
 }
 
-func (s *stubInitErr) Name() string                  { return s.name }
-func (s *stubInitErr) Init(_ map[string]any) error   { return s.initErr }
-func (s *stubInitErr) Close() error                  { return nil }
+func (s *stubInitErr) Name() string                { return s.name }
+func (s *stubInitErr) Init(_ map[string]any) error { return s.initErr }
+func (s *stubInitErr) Close() error                { return nil }
 
 func TestRegistry_Register_DuplicateName(t *testing.T) {
 	r := NewRegistry()
@@ -272,9 +272,9 @@ type closeErrPlugin struct {
 	err  error
 }
 
-func (c *closeErrPlugin) Name() string                  { return c.name }
-func (c *closeErrPlugin) Init(_ map[string]any) error   { return nil }
-func (c *closeErrPlugin) Close() error                  { return c.err }
+func (c *closeErrPlugin) Name() string                { return c.name }
+func (c *closeErrPlugin) Init(_ map[string]any) error { return nil }
+func (c *closeErrPlugin) Close() error                { return c.err }
 
 func TestRegistry_Plugins_ReturnsCopy(t *testing.T) {
 	r := NewRegistry()

@@ -30,8 +30,8 @@ type InstanceConfig struct {
 //   - nil OverrideList               → no override at all; YAML wins.
 //   - non-nil with Instances == nil  → same as nil (no override).
 //   - non-nil with Instances == []   → "operator turned all plugins
-//                                      off"; override wins, no plugins
-//                                      run.
+//     off"; override wins, no plugins
+//     run.
 //   - non-nil with Instances == [..] → full replace of the YAML list.
 //
 // The distinction between nil and "non-nil empty" is the bug-prone
@@ -325,10 +325,10 @@ type InterceptInfo struct {
 //   - Disabled instances are skipped.
 //   - ActionContinue: pass current request to next plugin.
 //   - ActionMutate:   replace current request with Mutated (when
-//                     non-nil); pass new request to next plugin.
+//     non-nil); pass new request to next plugin.
 //   - ActionIntercept: STOP iteration; return (current request,
-//                     intercept info). Caller serves the
-//                     intercept body and runs the AFTER chain on it.
+//     intercept info). Caller serves the
+//     intercept body and runs the AFTER chain on it.
 //
 // Panics are recovered by safeBefore (recover.go) with the request
 // flowing unchanged.
@@ -401,10 +401,10 @@ func (r *Registry) IterateAfter(ctx context.Context, req *ParsedRequest, ac *Aft
 // registered AFTER plugins' callbacks for the given request.
 //
 // Order of operations:
-//   1. Build a fresh AfterContext.
-//   2. Call IterateAfter(req, ac) so each AFTER plugin registers
-//      its callbacks (and the dispatcher records any panics).
-//   3. Return a StreamDispatcher referencing the populated context.
+//  1. Build a fresh AfterContext.
+//  2. Call IterateAfter(req, ac) so each AFTER plugin registers
+//     its callbacks (and the dispatcher records any panics).
+//  3. Return a StreamDispatcher referencing the populated context.
 //
 // The caller's stream loop then calls Dispatcher.Process(ev) per
 // upstream event.

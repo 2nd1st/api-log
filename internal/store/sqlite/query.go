@@ -82,7 +82,7 @@ func (s *Store) List(filters ListFilters) (ListPage, error) {
 	if err != nil {
 		return ListPage{}, fmt.Errorf("list query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]Row, 0, limit)
 	for rows.Next() {
@@ -164,7 +164,7 @@ func (s *Store) ListSessions(since time.Time, limit int) ([]SessionSummary, erro
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]SessionSummary, 0, limit)
 	for rows.Next() {

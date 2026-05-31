@@ -2,9 +2,10 @@
 // the api-log development stack and integration tests.
 //
 // It speaks three protocol shapes recognized by api-log:
-//   POST /v1/chat/completions   (OpenAI Chat Completions)
-//   POST /v1/responses          (OpenAI Responses)
-//   POST /v1/messages           (Anthropic Messages)
+//
+//	POST /v1/chat/completions   (OpenAI Chat Completions)
+//	POST /v1/responses          (OpenAI Responses)
+//	POST /v1/messages           (Anthropic Messages)
 //
 // For each, when the request body has "stream": true it emits an SSE
 // response shaped like the real provider's wire format; otherwise it
@@ -182,14 +183,14 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	emit("response.created", map[string]any{
-		"type":             "response.created",
-		"response":         map[string]any{"id": "resp_mock_1", "model": req.Model},
-		"sequence_number":  0,
+		"type":            "response.created",
+		"response":        map[string]any{"id": "resp_mock_1", "model": req.Model},
+		"sequence_number": 0,
 	})
 	time.Sleep(delay)
 	emit("response.output_text.delta", map[string]any{
-		"type":  "response.output_text.delta",
-		"delta": "ok",
+		"type":            "response.output_text.delta",
+		"delta":           "ok",
 		"sequence_number": 1,
 	})
 	time.Sleep(delay)

@@ -275,7 +275,7 @@ func (p *Plugin) ConfigSchema() Schema {
 				Description: "Text appended to the inbound request before forwarding.",
 			},
 			{
-				Name: "up.target",
+				Name:  "up.target",
 				Label: "Request target",
 				Type:  "enum",
 				Enum: []string{
@@ -292,7 +292,7 @@ func (p *Plugin) ConfigSchema() Schema {
 				Description: "Text appended to the outbound response before client send.",
 			},
 			{
-				Name: "down.target",
+				Name:  "down.target",
 				Label: "Response target",
 				Type:  "enum",
 				Enum: []string{
@@ -413,7 +413,7 @@ func appendLastUserText(msgs []v2.Message, suffix string) (out []v2.Message, ok 
 	copy(out, msgs)
 	parts := make([]v2.ContentPart, len(msgs[lastMsg].Content))
 	copy(parts, msgs[lastMsg].Content)
-	parts[lastPart].Text = parts[lastPart].Text + suffix
+	parts[lastPart].Text += suffix
 	out[lastMsg].Content = parts
 	return out, true
 }

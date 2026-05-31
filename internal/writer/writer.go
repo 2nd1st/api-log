@@ -51,7 +51,7 @@ type Writer struct {
 	dataDir  string
 	clock    func() time.Time
 	in       chan Record
-	store    *sqlite.Store     // optional; nil = JSONL-only mode (used in tests / M2 mode)
+	store    *sqlite.Store      // optional; nil = JSONL-only mode (used in tests / M2 mode)
 	counters *counters.Counters // optional; nil = no counter wiring (tests can omit)
 
 	// Phase K — media extraction. Both fields optional; either nil means
@@ -400,8 +400,6 @@ type openFile struct {
 	hash string // keyhash[:8]
 	f    *os.File
 }
-
-func (of *openFile) key() string { return of.date + "/" + of.hash }
 
 func keyFor(date, hashShort string) string { return date + "/" + hashShort }
 

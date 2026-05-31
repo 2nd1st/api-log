@@ -55,7 +55,7 @@ func (h *Histogram) Observe(v int64) {
 // HistogramSnapshot is the /healthz-friendly view. p50/p95/p99 are
 // upper-bucket-boundary approximations; mean is exact.
 type HistogramSnapshot struct {
-	Count int64   `json:"count"`
+	Count  int64   `json:"count"`
 	MeanMs float64 `json:"mean_ms"`
 	P50Ms  int64   `json:"p50_ms"`
 	P95Ms  int64   `json:"p95_ms"`

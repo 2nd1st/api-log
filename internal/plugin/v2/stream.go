@@ -153,9 +153,9 @@ func classifyChat(ev sse.Event) ClassifiedEvent {
 	var frame struct {
 		Choices []struct {
 			Delta *struct {
-				Content   string                       `json:"content"`
-				ToolCalls []json.RawMessage            `json:"tool_calls"`
-				Reasoning *struct{ Content string }   `json:"reasoning"`
+				Content   string                    `json:"content"`
+				ToolCalls []json.RawMessage         `json:"tool_calls"`
+				Reasoning *struct{ Content string } `json:"reasoning"`
 			} `json:"delta"`
 		} `json:"choices"`
 	}

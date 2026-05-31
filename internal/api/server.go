@@ -1,12 +1,13 @@
 // Package api implements the read API surface from ARCHITECTURE § 6.
 //
 // Core endpoints:
-//   GET /                       — JSON pointer to the viewer project
-//                                 (binary ships no embedded HTML)
-//   GET /healthz                — liveness + in-memory counter snapshot
-//   GET /api/traces             — list, SQLite-backed, paginated
-//   GET /api/traces/:id         — detail, SQLite + JSONL seek
-//   GET /api/traces/:id/replay  — M5 (placeholder for now)
+//
+//	GET /                       — JSON pointer to the viewer project
+//	                              (binary ships no embedded HTML)
+//	GET /healthz                — liveness + in-memory counter snapshot
+//	GET /api/traces             — list, SQLite-backed, paginated
+//	GET /api/traces/:id         — detail, SQLite + JSONL seek
+//	GET /api/traces/:id/replay  — M5 (placeholder for now)
 package api
 
 import (

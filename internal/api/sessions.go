@@ -12,8 +12,9 @@ import (
 // conversations rather than individual turns.
 //
 // Query params:
-//   limit (default 100, max 500)
-//   since (RFC3339; constraint on session's last activity timestamp)
+//
+//	limit (default 100, max 500)
+//	since (RFC3339; constraint on session's last activity timestamp)
 func listSessions(deps Deps) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

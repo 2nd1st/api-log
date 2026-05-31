@@ -69,7 +69,7 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 	}
 
 	zw := zip.NewWriter(w)
-	defer zw.Close()
+	defer func() { _ = zw.Close() }()
 
 	// Group rows by their JSONLPath. Each group will become one zip entry.
 	// Track match-set as a set of jsonl_offset values so the per-file pass
@@ -251,7 +251,7 @@ func writeGroupEntry(zw *zip.Writer, g *fileGroup) error {
 		if err != nil {
 			return fmt.Errorf("open gzip %s: %w", g.path, err)
 		}
-		defer gz.Close()
+		defer func() { _ = gz.Close() }()
 		r = gz
 	}
 	br := bufio.NewReaderSize(r, 64*1024)

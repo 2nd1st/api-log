@@ -148,4 +148,3 @@ func (l *lazyHeaderWriter) Write(p []byte) (int, error) {
 	}
 	return l.w.Write(p)
 }
-

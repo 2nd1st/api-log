@@ -99,14 +99,14 @@ type APIConfig struct {
 }
 
 type StorageConfig struct {
-	DataDir          string `yaml:"data_dir"`
-	MaxBodyBytes     int64  `yaml:"max_body_bytes"`
-	CaptureChanSize  int    `yaml:"capture_chan_size"`
-	WriterChanSize   int    `yaml:"writer_chan_size"`
+	DataDir         string `yaml:"data_dir"`
+	MaxBodyBytes    int64  `yaml:"max_body_bytes"`
+	CaptureChanSize int    `yaml:"capture_chan_size"`
+	WriterChanSize  int    `yaml:"writer_chan_size"`
 }
 
 type TimeoutsConfig struct {
-	ReadHeaderSeconds      int `yaml:"read_header_seconds"`
+	ReadHeaderSeconds     int `yaml:"read_header_seconds"`
 	IdleSeconds           int `yaml:"idle_seconds"`
 	StreamIdleSeconds     int `yaml:"stream_idle_seconds"`
 	ReqBodyCaptureSeconds int `yaml:"req_body_capture_seconds"`
@@ -384,9 +384,13 @@ func (c Config) Validate() error {
 
 // Duration helpers (config keeps seconds-as-int; callers want Duration).
 
-func (c TimeoutsConfig) ReadHeader() time.Duration { return time.Duration(c.ReadHeaderSeconds) * time.Second }
-func (c TimeoutsConfig) Idle() time.Duration        { return time.Duration(c.IdleSeconds) * time.Second }
-func (c TimeoutsConfig) StreamIdle() time.Duration  { return time.Duration(c.StreamIdleSeconds) * time.Second }
+func (c TimeoutsConfig) ReadHeader() time.Duration {
+	return time.Duration(c.ReadHeaderSeconds) * time.Second
+}
+func (c TimeoutsConfig) Idle() time.Duration { return time.Duration(c.IdleSeconds) * time.Second }
+func (c TimeoutsConfig) StreamIdle() time.Duration {
+	return time.Duration(c.StreamIdleSeconds) * time.Second
+}
 func (c TimeoutsConfig) ReqBodyCapture() time.Duration {
 	return time.Duration(c.ReqBodyCaptureSeconds) * time.Second
 }

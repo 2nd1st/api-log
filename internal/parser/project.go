@@ -146,8 +146,8 @@ func ExtractProjectContext(systemPrompt string) ProjectContext {
 // we realistically encounter, then trims whitespace.
 //
 // Codex / claude code occasionally inline the project name as
-// `# Project: \`my-project\`` or `# \`my-proj\``. We peel a wrapping
-// backtick pair AND strip backticks anywhere — names like `# \`my\``
+// `# Project: \`my-project\“ or `# \`my-proj\“. We peel a wrapping
+// backtick pair AND strip backticks anywhere — names like `# \`my\“
 // should display as `my`, not with the inline-code wrapper.
 //
 // HTML entity decode (amp last so pre-encoded "&amp;lt;" round-trips

@@ -215,7 +215,7 @@ func (r *Registry) Close() error {
 // The caller (writer dispatch in Phase A.1) uses shouldRecord to gate
 // the TrySend call and logs errs for telemetry.
 func (r *Registry) IterateOnFinalize(ctx context.Context, tr trace.Trace) (shouldRecord bool, errs []error) {
-	shouldRecord = true
+	shouldRecord = true //nolint:ineffassign // implicit return value when no plugin says drop
 	for _, p := range r.plugins {
 		hook, ok := p.(ObserveOnFinalize)
 		if !ok {
