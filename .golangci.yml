@@ -15,9 +15,9 @@ linters:
     - misspell
 
   settings:
-    govet:
-      # shadow disabled — re-declaring `err` in inner scopes is
-      # idiomatic Go and the warning is high-noise / low-signal.
+    # govet: shadow check intentionally NOT enabled — re-declaring `err`
+    # in inner scopes is idiomatic Go and the warning is high-noise /
+    # low-signal. govet runs with its default check set.
     gocritic:
       disabled-checks:
         - ifElseChain
