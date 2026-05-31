@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/counters"
+	"github.com/2nd1st/api-log/internal/counters"
 )
 
 // TestWriterChannelSaturationDoesNotBlockProducers verifies the

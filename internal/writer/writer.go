@@ -19,13 +19,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/counters"
-	"github.com/xiayangzhang/api-log/internal/ids"
-	"github.com/xiayangzhang/api-log/internal/media"
-	"github.com/xiayangzhang/api-log/internal/parser"
-	"github.com/xiayangzhang/api-log/internal/session"
-	"github.com/xiayangzhang/api-log/internal/store/sqlite"
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/counters"
+	"github.com/2nd1st/api-log/internal/ids"
+	"github.com/2nd1st/api-log/internal/media"
+	"github.com/2nd1st/api-log/internal/parser"
+	"github.com/2nd1st/api-log/internal/session"
+	"github.com/2nd1st/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // Record is one item on the writer channel. It carries the trace plus a

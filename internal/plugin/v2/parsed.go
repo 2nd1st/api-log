@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/xiayangzhang/api-log/internal/parser"
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/parser"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // DetectProtocol mirrors parser's internal detection. We duplicate the

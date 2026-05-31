@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/sse"
+	"github.com/2nd1st/api-log/internal/sse"
 )
 
 // Trace is one completed HTTP transaction. JSON tags here are the on-disk

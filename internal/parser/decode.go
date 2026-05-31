@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // decodeEncoding decompresses raw bytes according to Content-Encoding,

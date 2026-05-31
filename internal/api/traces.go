@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/store/sqlite"
 )
 
 // listTraces handles GET /api/traces. Response shape per ARCHITECTURE § 6.2.

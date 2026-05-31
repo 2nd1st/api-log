@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/session"
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/session"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // Row is the Go-side projection of one traces row. Session-inference

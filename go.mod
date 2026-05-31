@@ -1,4 +1,4 @@
-module github.com/xiayangzhang/api-log
+module github.com/2nd1st/api-log
 
 go 1.22
 

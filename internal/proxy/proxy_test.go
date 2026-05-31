@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/capture"
+	"github.com/2nd1st/api-log/internal/capture"
 )
 
 // staticSinks implements SinkLookup with a fixed pair.

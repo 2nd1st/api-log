@@ -10,7 +10,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // Plugin is the base contract every observe-class plugin satisfies.

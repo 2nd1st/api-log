@@ -34,7 +34,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // Name is the plugin identifier used in config and telemetry.

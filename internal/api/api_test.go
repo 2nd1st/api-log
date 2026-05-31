@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/counters"
-	"github.com/xiayangzhang/api-log/internal/store/sqlite"
-	"github.com/xiayangzhang/api-log/internal/trace"
-	"github.com/xiayangzhang/api-log/internal/writer"
+	"github.com/2nd1st/api-log/internal/counters"
+	"github.com/2nd1st/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/writer"
 )
 
 func newTestServer(t *testing.T, token string) (*httptest.Server, *sqlite.Store, *writer.Writer, string) {

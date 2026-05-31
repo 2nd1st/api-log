@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/capture"
-	"github.com/xiayangzhang/api-log/internal/sse"
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/capture"
+	"github.com/2nd1st/api-log/internal/sse"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // ParseOpts carries optional timing data so finalize can attach

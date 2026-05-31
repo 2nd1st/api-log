@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/xiayangzhang/api-log/internal/admin"
+	"github.com/2nd1st/api-log/internal/admin"
 )
 
 // authMW wraps handler in a bearer-token check.

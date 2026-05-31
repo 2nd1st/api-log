@@ -17,9 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/counters"
-	pluginv2 "github.com/xiayangzhang/api-log/internal/plugin/v2"
-	"github.com/xiayangzhang/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/counters"
+	pluginv2 "github.com/2nd1st/api-log/internal/plugin/v2"
+	"github.com/2nd1st/api-log/internal/store/sqlite"
 )
 
 // Deps is the bag of process-wide handles the API handlers need.
@@ -133,7 +133,7 @@ func recoverMW(next http.Handler) http.Handler {
 // repo without needing to read the README first.
 func rootPointer(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
-		"viewer":  "https://github.com/xiayangzhang/api-log-viewer",
+		"viewer":  "https://github.com/2nd1st/api-log-viewer",
 		"api":     "/api",
 		"healthz": "/healthz",
 		"docs":    "see ARCHITECTURE.md in this repo",

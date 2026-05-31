@@ -4,9 +4,9 @@ English | [中文](README.zh.md)
 
 ![api-log — tcpdump for LLM gateways](./docs/banner.png)
 
-[![CI](https://github.com/xiayangzhang/api-log/actions/workflows/ci.yml/badge.svg)](https://github.com/xiayangzhang/api-log/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/xiayangzhang/api-log?include_prereleases&sort=semver)](https://github.com/xiayangzhang/api-log/releases)
-[![Go version](https://img.shields.io/github/go-mod/go-version/xiayangzhang/api-log)](./go.mod)
+[![CI](https://github.com/2nd1st/api-log/actions/workflows/ci.yml/badge.svg)](https://github.com/2nd1st/api-log/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/2nd1st/api-log?include_prereleases&sort=semver)](https://github.com/2nd1st/api-log/releases)
+[![Go version](https://img.shields.io/github/go-mod/go-version/2nd1st/api-log)](./go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 api-log is a transparent HTTP recording proxy for LLM gateway observability. It sits between clients and OpenAI-compatible or Anthropic Messages gateways, forwards traffic unchanged, records each completed request/response trace as append-only JSONL, and builds a SQLite index for local search, replay, and analysis.
@@ -43,7 +43,7 @@ services:
     expose: ["7860"]                        # move 7860 from "ports" to "expose"
 
   api-log:
-    image: ghcr.io/xiayangzhang/api-log:latest
+    image: ghcr.io/2nd1st/api-log:latest
     ports:
       - "7861:7861"                         # proxy listener (clients connect here)
       - "7862:7862"                         # read API
@@ -222,7 +222,7 @@ The read API listens on a separate port (`:7862` by default) from the proxy. Thi
 
 All read endpoints except `/healthz` require `Authorization: Bearer <data/admin_token>` and respond with `Cache-Control: no-store`.
 
-api-log ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the separate [api-log-viewer](https://github.com/xiayangzhang/api-log-viewer) project; the binary contains zero HTML.
+api-log ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the separate [api-log-viewer](https://github.com/2nd1st/api-log-viewer) project; the binary contains zero HTML.
 
 ## Security
 
@@ -240,7 +240,7 @@ See [SECURITY.md](./SECURITY.md) for the threat model and disclosure process.
 ## Development
 
 ```bash
-git clone https://github.com/xiayangzhang/api-log.git
+git clone https://github.com/2nd1st/api-log.git
 cd api-log
 
 # unit + integration tests (race detector on)
@@ -261,7 +261,7 @@ The project ships 23 Go packages, race-clean tests, and CI lint via `golangci-li
 ## Roadmap
 
 - [x] **v0** — capture path (parse + JSONL write + SQLite mirror), session inference, minimal read API.
-- [x] **v0.1 viewer** — [api-log-viewer](https://github.com/xiayangzhang/api-log-viewer) — multi-instance aggregation, session-tree visualization, tool-call rendering, SSE replay.
+- [x] **v0.1 viewer** — [api-log-viewer](https://github.com/2nd1st/api-log-viewer) — multi-instance aggregation, session-tree visualization, tool-call rendering, SSE replay.
 - [x] **v0.1 plugins** — `text-replace` / `text-append` / `path-filter` with hot-reload via `PUT /api/config/plugins`. Off by default.
 - [ ] **v0.2** — optional per-gateway **bridge adapters** (separate projects) — join external data (CPA's Redis usage queue, new-api's MySQL log table) into api-log traces by `key_hash`. The core proxy stays gateway-agnostic.
 

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // b64 is the base64 of "hello-png-bytes". Decoded length: 15.

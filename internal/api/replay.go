@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/sse"
-	"github.com/xiayangzhang/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/sse"
+	"github.com/2nd1st/api-log/internal/store/sqlite"
 )
 
 // replayHandler implements GET /api/traces/{id}/replay per ARCHITECTURE § 6.4.

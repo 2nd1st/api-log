@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/xiayangzhang/api-log/internal/sse"
+	"github.com/2nd1st/api-log/internal/sse"
 )
 
 // EventClass is the semantic class of an SSE event, computed by the

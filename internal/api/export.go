@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/exporter"
-	"github.com/xiayangzhang/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/exporter"
+	"github.com/2nd1st/api-log/internal/store/sqlite"
 )
 
 // exportHandler implements GET /api/export per

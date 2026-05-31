@@ -23,7 +23,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/xiayangzhang/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/store/sqlite"
 )
 
 func mediaHandler(deps Deps) http.Handler {

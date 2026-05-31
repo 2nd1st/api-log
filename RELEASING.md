@@ -56,16 +56,16 @@ pnpm build                 # JS gz < 100 KB
 
 The Go module path is currently `github.com/leoyun/api-log` to match
 the operator's internal gitea. The public GitHub URL will be
-`github.com/xiayangzhang/api-log`. Migration is a single commit that
+`github.com/2nd1st/api-log`. Migration is a single commit that
 must land before the first GitHub push:
 
 ```bash
 # Rewrite the module path
-go mod edit -module github.com/xiayangzhang/api-log
+go mod edit -module github.com/2nd1st/api-log
 
 # Update every internal import path
 grep -rln '"github.com/leoyun/api-log/' --include='*.go' \
-  | xargs sed -i '' 's|"github.com/leoyun/api-log/|"github.com/xiayangzhang/api-log/|g'
+  | xargs sed -i '' 's|"github.com/leoyun/api-log/|"github.com/2nd1st/api-log/|g'
 
 # Verify
 docker run --rm -e CGO_ENABLED=1 -v "$PWD":/work -w /work \
@@ -73,7 +73,7 @@ docker run --rm -e CGO_ENABLED=1 -v "$PWD":/work -w /work \
 
 # Commit + push to gitea ONCE before flipping to GitHub
 git add go.mod *.go internal/ cmd/
-git commit -m "chore: rename module to github.com/xiayangzhang/api-log"
+git commit -m "chore: rename module to github.com/2nd1st/api-log"
 git push gitea main
 ```
 
@@ -140,23 +140,23 @@ sub2api admin UI after public push, regardless.
 ## GitHub repo creation
 
 ```bash
-# Authenticated as xiayangzhang
-gh repo create xiayangzhang/api-log \
+# Authenticated as 2nd1st
+gh repo create 2nd1st/api-log \
   --description "Transparent HTTP recording proxy for LLM gateway observability" \
   --public \
-  --homepage "https://github.com/xiayangzhang/api-log"
+  --homepage "https://github.com/2nd1st/api-log"
 
-gh repo create xiayangzhang/api-log-viewer \
+gh repo create 2nd1st/api-log-viewer \
   --description "Svelte 5 browser UI for api-log traces" \
   --public \
-  --homepage "https://github.com/xiayangzhang/api-log-viewer"
+  --homepage "https://github.com/2nd1st/api-log-viewer"
 
 # Topics aid SEO / GitHub search
-gh repo edit xiayangzhang/api-log --add-topic llm-observability \
+gh repo edit 2nd1st/api-log --add-topic llm-observability \
   --add-topic openai-proxy --add-topic anthropic --add-topic jsonl \
   --add-topic sqlite --add-topic golang --add-topic tcpdump
 
-gh repo edit xiayangzhang/api-log-viewer --add-topic svelte5 \
+gh repo edit 2nd1st/api-log-viewer --add-topic svelte5 \
   --add-topic typescript --add-topic llm-observability \
   --add-topic api-log
 ```
@@ -164,7 +164,7 @@ gh repo edit xiayangzhang/api-log-viewer --add-topic svelte5 \
 ## First push
 
 ```bash
-git remote add github git@github.com:xiayangzhang/api-log.git
+git remote add github git@github.com:2nd1st/api-log.git
 git push -u github main
 ```
 
@@ -185,7 +185,7 @@ git push github v0.1.0
 ```
 
 The backend CI release job watches `v*` tags and publishes
-`ghcr.io/xiayangzhang/api-log:0.1.0` + `:latest` via the workflow
+`ghcr.io/2nd1st/api-log:0.1.0` + `:latest` via the workflow
 in `.github/workflows/ci.yml`. Watch the Action run; the publish
 typically completes in 3-5 minutes.
 
@@ -193,17 +193,17 @@ typically completes in 3-5 minutes.
 
 ```bash
 # Pull the published image fresh
-docker pull ghcr.io/xiayangzhang/api-log:0.1.0
+docker pull ghcr.io/2nd1st/api-log:0.1.0
 
 # Run it and verify the version flag
-docker run --rm ghcr.io/xiayangzhang/api-log:0.1.0 -version
+docker run --rm ghcr.io/2nd1st/api-log:0.1.0 -version
 # expected: v0.1.0 (or similar — see cmd/api-log/main.go ldflag)
 
 # Smoke-test the image end-to-end
-docker run -d -p 7861:7861 -p 7862:7862 ghcr.io/xiayangzhang/api-log:0.1.0
+docker run -d -p 7861:7861 -p 7862:7862 ghcr.io/2nd1st/api-log:0.1.0
 sleep 2
 curl -s http://localhost:7862/ | jq '.viewer'
-# expected: "https://github.com/xiayangzhang/api-log-viewer"
+# expected: "https://github.com/2nd1st/api-log-viewer"
 ```
 
 ## Sub2gpt / sub2api migration to ghcr (optional, after tag)
@@ -222,7 +222,7 @@ api-log:
 
 # becomes
 api-log:
-  image: ghcr.io/xiayangzhang/api-log:0.1.0
+  image: ghcr.io/2nd1st/api-log:0.1.0
 ```
 
 Restart the api-log service on each LXC. Verify with `docker logs`
@@ -232,7 +232,7 @@ that the version line reads `v0.1.0`, not `dev`.
 
 - Watch GitHub Issues for the first 48 hours; respond to anything
   flagged as a regression or a build break.
-- Monitor `https://github.com/xiayangzhang/api-log/issues?q=is%3Aopen+label%3Abug`.
+- Monitor `https://github.com/2nd1st/api-log/issues?q=is%3Aopen+label%3Abug`.
 - The first PRs from outside contributors land here; expect to spend
   time on the CONTRIBUTING.md gap surfaced in the v0.1.0 deferred
   items list.

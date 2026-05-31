@@ -11,7 +11,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/xiayangzhang/api-log/internal/capture"
+	"github.com/2nd1st/api-log/internal/capture"
 )
 
 type traceIDKey struct{}

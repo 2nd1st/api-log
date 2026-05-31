@@ -586,7 +586,7 @@ The counter list above is **illustrative, not exhaustive**. Drop / overflow coun
 Returns a JSON pointer to the separate viewer project:
 
 ```json
-{"name":"api-log","viewer":"https://github.com/xiayangzhang/api-log-viewer","version":"0.x.y"}
+{"name":"api-log","viewer":"https://github.com/2nd1st/api-log-viewer","version":"0.x.y"}
 ```
 
 The binary contains zero HTML. Frontends are separate consumers of the read API.

@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/xiayangzhang/api-log/internal/runtime"
+	"github.com/2nd1st/api-log/internal/runtime"
 )
 
 type mediaConfigJSON struct {

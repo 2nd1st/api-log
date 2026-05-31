@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xiayangzhang/api-log/internal/capture"
-	pluginv2 "github.com/xiayangzhang/api-log/internal/plugin/v2"
-	"github.com/xiayangzhang/api-log/internal/proxy"
+	"github.com/2nd1st/api-log/internal/capture"
+	pluginv2 "github.com/2nd1st/api-log/internal/plugin/v2"
+	"github.com/2nd1st/api-log/internal/proxy"
 )
 
 // TestRunAfterChainOnIntercept_AfterPluginDecoratesBeforeIntercept is

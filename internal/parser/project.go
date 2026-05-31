@@ -28,7 +28,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // ProjectContext is the result of ExtractProjectContext. Name == ""

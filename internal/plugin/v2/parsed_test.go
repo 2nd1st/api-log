@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/xiayangzhang/api-log/internal/sse"
-	"github.com/xiayangzhang/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/sse"
+	"github.com/2nd1st/api-log/internal/trace"
 )
 
 // Fixtures here lean on the same shapes parser/usage_test.go uses, plus
