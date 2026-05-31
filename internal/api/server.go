@@ -20,6 +20,7 @@ import (
 	"github.com/2nd1st/api-log/internal/counters"
 	pluginv2 "github.com/2nd1st/api-log/internal/plugin/v2"
 	"github.com/2nd1st/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/viewerhost"
 )
 
 // Deps is the bag of process-wide handles the API handlers need.
@@ -66,6 +67,22 @@ type Deps struct {
 	// instances, so main.go passes nil; the merge semantics in
 	// pluginv2.Load treat that correctly.
 	YAMLPlugins []pluginv2.InstanceConfig
+
+	// ViewerHost is the optional hosted-viewer surface. When non-nil,
+	// NewMux registers `<ViewerPublicPath>/` to its handler OUTSIDE
+	// the auth middleware (the viewer is an unauthenticated browser
+	// load; the read API the viewer subsequently calls is still
+	// bearer-gated). Nil-safe: tests and integrations that don't need
+	// the viewer pass it as zero; the route stays unregistered and
+	// healthz omits the `viewer` field.
+	ViewerHost *viewerhost.Host
+
+	// ViewerPublicPath is the URL prefix the viewer is mounted under.
+	// Carried on Deps (instead of read off ViewerHost) so the route
+	// prefix tracks the operator's APILOG_VIEWER_PUBLIC_PATH override
+	// without coupling internal/api to viewerhost's accessor surface.
+	// Empty defaults to "/viewer" at registration time.
+	ViewerPublicPath string
 }
 
 // NewMux returns an http.Handler ready to mount on the API listener.
@@ -101,6 +118,21 @@ func NewMux(deps Deps) http.Handler {
 	// reverse proxy (caddy, nginx, etc.) at the api-log-viewer build
 	// output and mount api-log under /api on the same origin.
 	mux.HandleFunc("GET /{$}", rootPointer)
+
+	// Hosted viewer (optional). Registered OUTSIDE authMW: the viewer
+	// is a browser asset load, and the read API it later calls is
+	// still bearer-gated. The viewerhost.Host handler is responsible
+	// for stripping the prefix and serving the cached `dist/` tree
+	// (or returning 503 if fetch / verify failed). Default mount
+	// `/viewer/` matches ViewerConfig.PublicPath; an operator override
+	// flows through ViewerPublicPath on Deps so this stays in sync.
+	if deps.ViewerHost != nil {
+		prefix := deps.ViewerPublicPath
+		if prefix == "" {
+			prefix = "/viewer"
+		}
+		mux.Handle("GET "+prefix+"/", deps.ViewerHost.Handler())
+	}
 
 	return recoverMW(mux)
 }

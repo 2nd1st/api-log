@@ -28,6 +28,34 @@ type Config struct {
 	Diagnostics DiagnosticsConfig `yaml:"diagnostics"`
 	Plugins     PluginsConfig     `yaml:"plugins"`
 	Media       MediaConfig       `yaml:"media"`
+	Viewer      ViewerConfig      `yaml:"viewer"`
+}
+
+// ViewerConfig governs the optional hosted-viewer feature
+// (`/viewer/*`). The backend fetches the viewer's release `dist.zip`
+// once at startup, sha-verifies it against a backend-pinned constant
+// (cmd/api-log/viewer_pins.go), extracts to a local cache, and serves
+// it. Defaults are ON, pinned to the backend's source-baked version
+// + SHA.
+//
+// Empty Repo / Version / Sha256 fields are filled in from the
+// backend-pinned constants in main.go. An empty CacheDir is resolved
+// to `<DataDir>/viewer-cache`. An empty PublicPath defaults to
+// `/viewer`. LocalPath overrides the fetch entirely (offline mode).
+//
+// Operator-override safety: if the operator overrides Repo or Version
+// without supplying a matching Sha256 (and not using LocalPath), the
+// viewerhost rejects the override — the binary stays up, but
+// `/viewer/` returns 503 with a logged error. We never serve an
+// unverified asset.
+type ViewerConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	Repo       string `yaml:"repo"`
+	Version    string `yaml:"version"`
+	Sha256     string `yaml:"sha256"`
+	LocalPath  string `yaml:"local_path"`
+	CacheDir   string `yaml:"cache_dir"`
+	PublicPath string `yaml:"public_path"`
 }
 
 // MediaConfig governs per-trace media extraction (see phase-k-media-contract.md).
@@ -144,6 +172,21 @@ func Defaults() Config {
 			// yaml `media.save_attachments: false`, or runtime
 			// PUT /api/config/media.
 			SaveAttachments: true,
+		},
+		Viewer: ViewerConfig{
+			// On by default. Operator opts out via
+			// APILOG_VIEWER_ENABLED=false. Empty Repo / Version /
+			// Sha256 are filled from cmd/api-log/viewer_pins.go in
+			// main.go so the config-package layer stays free of the
+			// release-ceremony constants. Empty CacheDir is resolved
+			// to <DataDir>/viewer-cache at startup.
+			Enabled:    true,
+			Repo:       "",
+			Version:    "",
+			Sha256:     "",
+			LocalPath:  "",
+			CacheDir:   "",
+			PublicPath: "/viewer",
 		},
 	}
 }
@@ -281,6 +324,20 @@ func applyEnv(cfg *Config) error {
 			c.Media.SaveAttachments = b
 			return nil
 		}},
+		{"APILOG_VIEWER_ENABLED", func(c *Config, v string) error {
+			b, err := envBool(v)
+			if err != nil {
+				return err
+			}
+			c.Viewer.Enabled = b
+			return nil
+		}},
+		{"APILOG_VIEWER_REPO", func(c *Config, v string) error { c.Viewer.Repo = v; return nil }},
+		{"APILOG_VIEWER_VERSION", func(c *Config, v string) error { c.Viewer.Version = v; return nil }},
+		{"APILOG_VIEWER_SHA256", func(c *Config, v string) error { c.Viewer.Sha256 = v; return nil }},
+		{"APILOG_VIEWER_LOCAL_PATH", func(c *Config, v string) error { c.Viewer.LocalPath = v; return nil }},
+		{"APILOG_VIEWER_CACHE_DIR", func(c *Config, v string) error { c.Viewer.CacheDir = v; return nil }},
+		{"APILOG_VIEWER_PUBLIC_PATH", func(c *Config, v string) error { c.Viewer.PublicPath = v; return nil }},
 	}
 
 	for _, b := range bindings {

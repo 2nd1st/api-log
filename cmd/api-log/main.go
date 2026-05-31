@@ -43,6 +43,7 @@ import (
 	"github.com/2nd1st/api-log/internal/runtime"
 	"github.com/2nd1st/api-log/internal/store/sqlite"
 	"github.com/2nd1st/api-log/internal/trace"
+	"github.com/2nd1st/api-log/internal/viewerhost"
 	"github.com/2nd1st/api-log/internal/writer"
 )
 
@@ -427,6 +428,33 @@ func run() error {
 		// minutes. M6 adds stream-idle watchdog.
 	}
 
+	// rootCtx is created here (rather than after NewMux) so the
+	// hosted-viewer host below can take a ctx whose lifetime tracks
+	// the process. viewerhost.New uses ctx for its one-shot startup
+	// fetch + cache populate; cancelling it on shutdown stops any
+	// in-flight HTTP GET to GitHub.
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Hosted viewer (optional; default on, pinned to viewerVersion +
+	// viewerSha256 in cmd/api-log/viewer_pins.go). The viewerhost
+	// Host fetches `dist.zip` from the configured GitHub release at
+	// startup, sha-verifies against the pinned constant, extracts to
+	// the cache dir, and serves `/viewer/*`. Failures (sha mismatch,
+	// fetch error, operator-override without matching sha) leave the
+	// binary up; the route returns 503 and Info().Source="error" +
+	// Info().Error surface the failure on /healthz.
+	viewerCfg := viewerhost.Config{
+		Enabled:    cfg.Viewer.Enabled,
+		Repo:       coalesce(cfg.Viewer.Repo, viewerRepo),
+		Version:    coalesce(cfg.Viewer.Version, viewerVersion),
+		Sha256:     coalesce(cfg.Viewer.Sha256, viewerSha256),
+		LocalPath:  cfg.Viewer.LocalPath,
+		CacheDir:   coalesce(cfg.Viewer.CacheDir, filepath.Join(cfg.Storage.DataDir, "viewer-cache")),
+		PublicPath: coalesce(cfg.Viewer.PublicPath, "/viewer"),
+	}
+	viewerHost := viewerhost.New(rootCtx, viewerCfg)
+
 	// API server (port from cfg.API.Listen). Same process; separate
 	// listener so a slow read API can't impact proxy traffic.
 	apiHandler := api.NewMux(api.Deps{
@@ -442,8 +470,10 @@ func run() error {
 		// the proxy + makeModifyResponse closures. Reload mutates the
 		// snapshot pointer inside the struct, so all of those callers
 		// pick up the new instance list on their next call.
-		PluginV2Reg: pluginV2Reg,
-		YAMLPlugins: yamlV2Plugins,
+		PluginV2Reg:      pluginV2Reg,
+		YAMLPlugins:      yamlV2Plugins,
+		ViewerHost:       viewerHost,
+		ViewerPublicPath: viewerCfg.PublicPath,
 	})
 	apiSrv := &http.Server{
 		Addr:              cfg.API.Listen,
@@ -451,9 +481,6 @@ func run() error {
 		ReadHeaderTimeout: cfg.Timeouts.ReadHeader(),
 		IdleTimeout:       cfg.Timeouts.Idle(),
 	}
-
-	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	// Periodic counter snapshot — one INFO line per interval so prod
 	// incidents have a per-minute history of appended / drops / writer
@@ -895,4 +922,16 @@ func isCgNat(ip net.IP) bool {
 		return false
 	}
 	return ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127
+}
+
+// coalesce returns s if non-empty, else fallback. Used to layer the
+// backend-source-pinned viewer constants (viewerRepo / viewerVersion
+// / viewerSha256 in viewer_pins.go) underneath the operator's
+// config-file + env overrides: empty config field = use the pin,
+// non-empty = operator wins.
+func coalesce(s, fallback string) string {
+	if s != "" {
+		return s
+	}
+	return fallback
 }

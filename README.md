@@ -224,6 +224,26 @@ All read endpoints except `/healthz` require `Authorization: Bearer <data/admin_
 
 api-log ships **no embedded HTML viewer**. `GET /` returns a JSON pointer to the separate [api-log-viewer](https://github.com/2nd1st/api-log-viewer) project; the binary contains zero HTML.
 
+## Bundled viewer
+
+api-log ships hosted viewer at `/viewer/` by default. On first request, the backend fetches `dist.zip` from a pinned release of [`api-log-viewer`](https://github.com/2nd1st/api-log-viewer), verifies the asset's SHA-256 against a constant baked into the backend binary, and extracts the bundle to a cache under `data/viewer-cache/`. Subsequent requests serve from the cache.
+
+A SHA-256 mismatch is fatal to the route — `/viewer/` returns 503 and the binary logs the mismatch. The backend never serves an unverified asset.
+
+Override knobs (env or YAML):
+
+| Knob | Default | Effect |
+|---|---|---|
+| `APILOG_VIEWER_ENABLED` | true | Set false to skip hosting; `/viewer/` returns 503 `disabled`. |
+| `APILOG_VIEWER_REPO` | `2nd1st/api-log-viewer` | Point at any GitHub repo. |
+| `APILOG_VIEWER_VERSION` | pinned to the backend release | Tag to fetch. |
+| `APILOG_VIEWER_SHA256` | pinned to the backend release | Must be supplied when overriding REPO or VERSION; mismatch returns 503. |
+| `APILOG_VIEWER_LOCAL_PATH` | (unset) | Absolute path to a `dist/` directory. Skips fetch + verify entirely; useful for offline / air-gapped deployments and for local viewer development. |
+| `APILOG_VIEWER_CACHE_DIR` | `<data_dir>/viewer-cache` | Cache root. |
+| `APILOG_VIEWER_PUBLIC_PATH` | `/viewer` | URL prefix. |
+
+The backend never auto-updates the cached viewer — fetch happens once per (repo, version, sha) tuple. To roll forward, bump the backend release (which bumps the pinned constants) or override `APILOG_VIEWER_VERSION` + `APILOG_VIEWER_SHA256` explicitly.
+
 ## Security
 
 **Bearer tokens land on disk unredacted.** The JSONL files contain the raw `Authorization` / `x-api-key` headers exactly as the client sent them. api-log does not redact anything from the capture path. Treat the `data/` directory the way you would treat `~/.ssh/` or a file holding production API keys:

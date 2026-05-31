@@ -657,6 +657,44 @@ The viewer-side change (Landing aggregates from SQLite + healthz
 becomes diagnostic-only) is a viewer-repo change — tracked under T5,
 not landed here.
 
+### 6.10 Hosted viewer (`/viewer/*`)
+
+The backend optionally fetches and serves the viewer bundle at
+`/viewer/`. The route is unauthenticated (the viewer is a
+browser-load static SPA; the API it calls is still admin-bearer
+gated).
+
+**Source of truth**: two constants in
+`cmd/api-log/viewer_pins.go` — `viewerVersion` and
+`viewerSha256` — bind the backend to a specific
+`api-log-viewer` release. Bumping the viewer is a single commit
+per RELEASING.md § "Hosted viewer — version + SHA bump".
+
+**Fetch path**: on the first request to a `/viewer/` route OR at
+startup (whichever fires first):
+
+1. Hash key from `viewerSha256` → resolve cache dir
+   `<data_dir>/viewer-cache/<sha-prefix>/dist/`.
+2. If the cache dir contains `index.html`, serve from there.
+3. Else hit
+   `https://api.github.com/repos/<repo>/releases/tags/<version>`
+   to find the `dist.zip` asset.
+4. Stream the body; compute SHA-256 inline; compare to the
+   constant. Mismatch → reject, log, route returns 503; the binary
+   stays up.
+5. Match → extract `dist.zip` into the cache dir with
+   zip-slip-safe path normalization.
+
+**Failure surface**: zip-extract errors, partial download,
+github.com unreachable, rate-limit 403, SHA mismatch, cache dir
+permission denied. All log at WARN or ERROR; none crash the
+binary. `/viewer/` returns 503 with a JSON body in each failure
+mode.
+
+**Operator overrides**: see README `Bundled viewer` for the env
+knobs. Override of repo or version REQUIRES a matching SHA
+override OR `LOCAL_PATH`.
+
 ---
 
 ## 7. Write path

@@ -28,6 +28,18 @@ design — and the ones a security review should focus on — are:
 - **Read-API auth bypass.** The admin bearer token mediates the read
   API surface. Constant-time comparison is required; timing leaks are
   in scope.
+- **Hosted viewer compromise via release asset tampering.** The
+  backend fetches a third-party (or operator-controlled) release
+  asset and serves it as a browser-loaded UI. Mitigation: the
+  served SHA-256 is verified against a constant baked into the
+  backend binary at build time; mismatch is fatal to the route.
+  To compromise the served viewer, an attacker would need to
+  either compromise the backend source (caught at code review) or
+  defeat GitHub's release-asset hash (out of scope; same trust
+  GitHub itself). Operator overrides of repo or version REQUIRE a
+  matching SHA override; the backend never serves an unverified
+  asset. Auto-update is intentionally absent — bumping the served
+  viewer is a backend release.
 
 ## Not in scope — documented operator responsibilities
 

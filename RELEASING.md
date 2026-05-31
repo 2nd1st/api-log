@@ -80,6 +80,43 @@ git push gitea main
 Note: the operator's internal gitea remote stays at `leoyun/api-log`;
 only the canonical module + GitHub URL move.
 
+## Hosted viewer — version + SHA bump
+
+The backend pins both a viewer version and a SHA-256 of the viewer's
+`dist.zip` release asset in source. Releases are coupled: the viewer
+tag MUST land before the backend tag.
+
+1. In api-log-viewer: commit any last edits, push, then
+   `git tag -a vX.Y.Z -m "..."` and `git push github vX.Y.Z`.
+2. Watch the viewer's `release` job (added to
+   `.github/workflows/ci.yml` in the hosted-viewer feature). Wait
+   until `dist.zip` and `dist.zip.sha256` appear as release assets
+   on github.com/2nd1st/api-log-viewer/releases/tag/vX.Y.Z.
+3. Read `dist.zip.sha256` from that release. Copy the 64-char hex.
+4. In api-log: bump the two constants in
+   `cmd/api-log/viewer_pins.go`:
+
+   ```go
+   viewerVersion = "vX.Y.Z"
+   viewerSha256  = "<64-char hex>"
+   ```
+
+   Commit:
+
+   ```
+   chore: pin viewer vX.Y.Z (sha256 <first-8>)
+   ```
+
+5. Push to gitea. Smoke-test on sub2gpt that the new binary's
+   `GET /healthz` reports the new `viewer.version` and
+   `viewer.source=cache` after the first request to `/viewer/`.
+6. THEN proceed with the rest of the release-prep flow below
+   (filter-repo if needed, github push, tag).
+
+Skipping this dance — bumping the backend tag against a viewer tag
+whose `dist.zip` hasn't been published yet — leaves `/viewer/`
+serving 503 until the viewer release job finishes.
+
 ## Secret hygiene (filter-repo, one-time)
 
 Two scrub targets must clear history before any push to a public
