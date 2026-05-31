@@ -1,36 +1,9 @@
-// Package plugin defines the api-log plugin contract.
-//
-// PHASE A SCAFFOLD ONLY — this package declares the interfaces and registry
-// for an observe-class plugin pipeline. NOTHING in this package is wired into
-// the proxy or writer hot path yet; constructing a Registry and calling its
-// methods today is a no-op from the proxy's POV. The Phase A.1 commit adds
-// the wiring in cmd/api-log/main.go.
-//
-// Why ship the scaffold separately:
-//
-//   - Per PHILOSOPHY principle 2 ("capture, never interferes"), any code that
-//     can affect what flows through api-log is the surface the project most
-//     aggressively defends. Landing the interface + first plugin as a
-//     buildable artifact (with tests) — without yet allowing it to run on
-//     the trace path — gives reviewers a stable contract to evaluate
-//     before any behavior changes ship.
-//
-//   - Per PHILOSOPHY principle 6 ("filesystem is truth"), the only honest
-//     way for a plugin to skip a trace is to drop it before the writer ever
-//     sees it. That is what OnFinalize does. Observe-class is the strict
-//     subset that does not violate principles 1, 2, 3, or 6; it is the
-//     entire surface Phase A is permitted to expose.
-//
-//   - The interfere-class hooks (mutate_req, before_forward) sketched in
-//     uiux-research/plugin.md §§ 2.1, 2.2 are intentionally NOT present.
-//     They require explicit philosophy amendments that have not been
-//     ratified. See uiux-research/plugin.md § 8 for the deferred phase
-//     plan.
-//
-// Plugins are registered in-process at construction time; there is no
-// hot-load and no file uploads. The Registry is constructed in main(),
-// fed the operator's enabled list from config, and handed to the trace
-// finalize block as a read-only collaborator.
+// Package plugin defines the Phase A observe-class plugin surface
+// (ObserveOnFinalize / ObserveAfterWrite) used by the path-filter plugin
+// to drop traces before they reach the writer. Plugins are registered
+// in-process at startup from the operator's enabled list; there is no
+// hot-load. Hook-class plugins (request/response mutation) live under
+// internal/plugin/v2.
 package plugin
 
 import (

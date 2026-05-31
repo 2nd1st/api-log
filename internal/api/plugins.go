@@ -42,6 +42,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -277,6 +278,7 @@ func putConfigPlugins(deps Deps) http.Handler {
 		// failure roll back the file and surface the error; the old
 		// registry stays live so in-flight requests are unaffected.
 		if rerr := reloadPluginRegistry(deps, &runtime.PluginsOverride{Instances: persisted}); rerr != nil {
+			slog.Warn("plugin reload failed; rolling back", "err", rerr)
 			rollbackPluginsOverride(deps, prev.Plugins)
 			writeError(w, http.StatusInternalServerError, "reload_failed",
 				map[string]string{"detail": rerr.Error()})
@@ -319,6 +321,7 @@ func deleteConfigPlugins(deps Deps) http.Handler {
 		// defaults (deps.YAMLPlugins). Rollback restores prev on
 		// failure so the live registry and on-disk state agree.
 		if rerr := reloadPluginRegistry(deps, nil); rerr != nil {
+			slog.Warn("plugin reload failed; rolling back", "err", rerr)
 			rollbackPluginsOverride(deps, prev.Plugins)
 			writeError(w, http.StatusInternalServerError, "reload_failed",
 				map[string]string{"detail": rerr.Error()})
@@ -457,6 +460,7 @@ func putConfigPluginInstance(deps Deps) http.Handler {
 			return
 		}
 		if rerr := reloadPluginRegistry(deps, fresh.Plugins); rerr != nil {
+			slog.Warn("plugin reload failed; rolling back", "err", rerr)
 			rollbackPluginsOverride(deps, prev.Plugins)
 			writeError(w, http.StatusInternalServerError, "reload_failed",
 				map[string]string{"detail": rerr.Error()})
@@ -512,16 +516,19 @@ func reloadPluginRegistry(deps Deps, ov *runtime.PluginsOverride) error {
 }
 
 // rollbackPluginsOverride restores the persisted Plugins block to
-// `prev` after a failed Reload. Best-effort: a secondary write error
-// (disk full, permission flip mid-handler) is swallowed because the
-// primary error is already on its way back to the operator and a
-// rollback failure has nowhere useful to surface. The handler's job
-// here is to leave the on-disk state matching the live registry so a
-// subsequent GET reports the truth.
+// `prev` after a failed Reload. The handler's job here is to leave the
+// on-disk state matching the live registry so a subsequent GET reports
+// the truth. A secondary write error (disk full, permission flip mid-
+// handler) is rare but real: it leaves on-disk state and the live
+// registry diverged, so we log it at Error so operators can spot the
+// drift in their logs.
 func rollbackPluginsOverride(deps Deps, prev *runtime.PluginsOverride) {
-	_ = runtime.SaveOverride(deps.DataDir, func(o *runtime.Overrides) {
+	err := runtime.SaveOverride(deps.DataDir, func(o *runtime.Overrides) {
 		o.Plugins = prev
 	})
+	if err != nil {
+		slog.Error("plugin reload rollback also failed", "err", err)
+	}
 }
 
 // runtimeOverrideToV2 adapts the runtime persistence shape to the v2

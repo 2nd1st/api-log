@@ -781,14 +781,6 @@ func (c *capturingResponseWriter) Flush() {
 	}
 }
 
-// Hijack is needed for any future WebSocket / Connection-Upgrade work.
-// For v0 (no WebSocket support) we never expect this, but exposing it
-// keeps capturingResponseWriter from blocking such handlers if they ever
-// land on the proxy listener by mistake.
-//
-// Implementing it requires the underlying ResponseWriter to be a Hijacker.
-// If not, the cast fails and the caller gets a clear error.
-
 // clientAddrOf resolves the real-client IP from inbound HTTP, walking
 // common reverse-proxy header chains and skipping private / loopback
 // hops so that a Caddy / nginx / docker-proxy-on-loopback topology

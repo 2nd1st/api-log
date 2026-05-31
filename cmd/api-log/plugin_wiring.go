@@ -148,7 +148,7 @@ func hasAnyV2Plugins(reg *pluginv2.Registry) bool {
 		if !inst.Enabled {
 			continue
 		}
-		if pluginv2.InstanceHasBefore(inst) || pluginv2.InstanceHasAfter(inst) {
+		if inst.HasBefore() || inst.HasAfter() {
 			return true
 		}
 	}

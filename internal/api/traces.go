@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -79,7 +80,7 @@ func getTrace(deps Deps) http.Handler {
 		// SQLite columns and the original JSONL payload in one shot.
 		body := map[string]any{
 			"row":   rowToJSON(row),
-			"trace": json_decode(line), // pre-parsed for the consumer
+			"trace": json.RawMessage(line), // pre-parsed for the consumer
 		}
 		writeJSON(w, http.StatusOK, body)
 	})

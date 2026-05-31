@@ -88,11 +88,3 @@ func readOneLine(r io.Reader) (json.RawMessage, error) {
 	}
 	return json.RawMessage(line), nil
 }
-
-// json_decode lets us embed an already-validated JSON byte string
-// directly in our response. It's a thin wrapper around json.RawMessage
-// — using it in our response struct keeps go vet happy and makes the
-// caller-side intent ("this is a JSON value, not a string") obvious.
-//
-//nolint:revive // underscore name is intentional to match Go template style
-func json_decode(b []byte) json.RawMessage { return json.RawMessage(b) }

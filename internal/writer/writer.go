@@ -10,9 +10,9 @@ package writer
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -430,7 +430,9 @@ func (w *Writer) fileFor(date, hashShort string) (*openFile, error) {
 			w.gzWG.Add(1)
 			go func() {
 				defer w.gzWG.Done()
-				_ = compressInPlace(oldPath)
+				if err := compressInPlace(oldPath); err != nil {
+					slog.Warn("gzip rotation failed", "path", oldPath, "err", err)
+				}
 			}()
 		}
 	}
@@ -489,8 +491,3 @@ func compressInPlace(path string) error {
 	}
 	return nil
 }
-
-// sentinel for the test helper to mock failure
-var errInjected = errors.New("injected")
-
-var _ = errInjected // M2 has no injection points yet; placeholder for M6 chaos tests.

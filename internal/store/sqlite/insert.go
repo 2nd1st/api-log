@@ -276,6 +276,3 @@ func nullInt64(p *int64) any {
 	}
 	return *p
 }
-
-// keep the database/sql import live (helper inline used elsewhere).
-var _ = sql.ErrNoRows

@@ -159,14 +159,6 @@ func (i *Instance) HasBefore() bool { return i != nil && i.before != nil }
 // avoid wrapping the response body when no plugin would observe it.
 func (i *Instance) HasAfter() bool { return i != nil && i.after != nil }
 
-// InstanceHasBefore is a free-function alias for the Instance accessor,
-// exported so external packages (cmd/api-log) can ask the question
-// without importing the Instance type directly.
-func InstanceHasBefore(i *Instance) bool { return i.HasBefore() }
-
-// InstanceHasAfter mirrors InstanceHasBefore.
-func InstanceHasAfter(i *Instance) bool { return i.HasAfter() }
-
 // Registry holds the ordered list of plugin instances and exposes the
 // iteration entry points used by the proxy hot path.
 //
@@ -458,15 +450,4 @@ func (r *Registry) Close() error {
 		}
 	}
 	return firstErr
-}
-
-// InterceptedBy is a convenience helper that returns the first non-nil
-// InterceptInfo from a slice. Used by tests that drive both hooks.
-func InterceptedBy(infos ...*InterceptInfo) *InterceptInfo {
-	for _, i := range infos {
-		if i != nil {
-			return i
-		}
-	}
-	return nil
 }
