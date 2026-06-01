@@ -65,10 +65,20 @@ docker compose up -d
 
 ### 原生安装
 
-跑 sub2api / CLIProxyAPI / new-api 的运维在 homelab 机器或小 VPS 上，可以直接装 binary：
+跑 sub2api / CLIProxyAPI / new-api 的运维在 homelab 机器或小 VPS 上，可以直接装 binary。
+
+**下载 release binary**（不需要 Go 工具链）—— 从 [最新 release](https://github.com/2nd1st/api-log/releases/latest) 挑对应 OS + arch 的 archive。Linux / darwin / windows × amd64 / arm64 都已预编译（windows/arm64 后续补）。Linux/amd64 示例：
 
 ```bash
-go install github.com/2nd1st/api-log/cmd/api-log@v0.1.0
+VERSION=v0.1.1
+curl -L https://github.com/2nd1st/api-log/releases/download/${VERSION}/api-log_${VERSION}_linux_amd64.tar.gz | tar xz
+./api-log -version
+```
+
+**或者从源码 build**（需要 Go 1.22+）：
+
+```bash
+go install github.com/2nd1st/api-log/cmd/api-log@latest
 api-log -version
 ```
 

@@ -65,10 +65,20 @@ Three reference stacks live under [`deploy/`](./deploy/README.md) — `dev-stack
 
 ### Native install
 
-For sub2api / CLIProxyAPI / new-api operators running on a homelab box or a small VPS, install the binary directly:
+For sub2api / CLIProxyAPI / new-api operators running on a homelab box or a small VPS, install the binary directly.
+
+**Download a release binary** (no Go toolchain required) — pick the archive for your OS + arch from the [latest release](https://github.com/2nd1st/api-log/releases/latest). Linux / darwin / windows × amd64 / arm64 are pre-built (windows/arm64 deferred). Example for linux/amd64:
 
 ```bash
-go install github.com/2nd1st/api-log/cmd/api-log@v0.1.0
+VERSION=v0.1.1
+curl -L https://github.com/2nd1st/api-log/releases/download/${VERSION}/api-log_${VERSION}_linux_amd64.tar.gz | tar xz
+./api-log -version
+```
+
+**Or build from source** (requires Go 1.22+):
+
+```bash
+go install github.com/2nd1st/api-log/cmd/api-log@latest
 api-log -version
 ```
 

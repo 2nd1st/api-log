@@ -1,0 +1,79 @@
+# GoReleaser config — cross-compile + attach archives to GitHub
+# releases on every `v*` tag push. Pure-Go build: api-log uses
+# modernc.org/sqlite (a pure-Go SQLite port), so CGO_ENABLED=0
+# works across every target without a C cross-toolchain.
+#
+# Docker / GHCR publishing stays in the existing release job in
+# .github/workflows/ci.yml; that path is still the recommended
+# install for adopters who already run containers. These archives
+# are for the native-install path (see deploy/systemd/).
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: api-log
+    main: ./cmd/api-log
+    binary: api-log
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # windows/arm64 is fringe; skip until adopter demand appears.
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+
+archives:
+  - id: api-log-archive
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - README.zh.md
+      - SECURITY.md
+      - CHANGELOG.md
+      - deploy/systemd/api-log.service
+      - deploy/systemd/README.md
+      - deploy/reverse-proxy/Caddyfile
+      - deploy/reverse-proxy/nginx.conf
+      - deploy/reverse-proxy/README.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Tag }}-dev"
+
+changelog:
+  # Release notes already authored manually + maintained in
+  # CHANGELOG.md. Disable GoReleaser's auto-generated changelog so
+  # it doesn't override the curated release body the operator
+  # wrote with `gh release create`.
+  disable: true
+
+release:
+  github:
+    owner: 2nd1st
+    name: api-log
+  # Don't overwrite a release body the operator already wrote.
+  mode: keep-existing
+  draft: false
+  prerelease: auto

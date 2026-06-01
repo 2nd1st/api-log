@@ -59,8 +59,15 @@ func main() {
 
 func run() error {
 	var configPath string
+	var showVersion bool
 	flag.StringVar(&configPath, "config", "", "path to api-log.yaml (empty = defaults + env only)")
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Fprintf(os.Stdout, "api-log %s\n", version)
+		return nil
+	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
