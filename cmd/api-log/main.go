@@ -531,13 +531,15 @@ func run() error {
 	// binary up; the route returns 503 and Info().Source="error" +
 	// Info().Error surface the failure on /healthz.
 	viewerCfg := viewerhost.Config{
-		Enabled:    cfg.Viewer.Enabled,
-		Repo:       coalesce(cfg.Viewer.Repo, viewerRepo),
-		Version:    coalesce(cfg.Viewer.Version, viewerVersion),
-		Sha256:     coalesce(cfg.Viewer.Sha256, viewerSha256),
-		LocalPath:  cfg.Viewer.LocalPath,
-		CacheDir:   coalesce(cfg.Viewer.CacheDir, filepath.Join(cfg.Storage.DataDir, "viewer-cache")),
-		PublicPath: coalesce(cfg.Viewer.PublicPath, "/viewer"),
+		Enabled:           cfg.Viewer.Enabled,
+		Repo:              coalesce(cfg.Viewer.Repo, viewerRepo),
+		Version:           coalesce(cfg.Viewer.Version, viewerVersion),
+		Sha256:            coalesce(cfg.Viewer.Sha256, viewerSha256),
+		LocalPath:         cfg.Viewer.LocalPath,
+		CacheDir:          coalesce(cfg.Viewer.CacheDir, filepath.Join(cfg.Storage.DataDir, "viewer-cache")),
+		PublicPath:        coalesce(cfg.Viewer.PublicPath, "/viewer"),
+		ReleasesAPIBase:   cfg.Viewer.ReleasesAPIBase,
+		ReleasesAuthToken: cfg.Viewer.ReleasesAuthToken,
 	}
 	viewerHost := viewerhost.New(rootCtx, viewerCfg)
 

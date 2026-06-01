@@ -16,10 +16,22 @@ import (
 	"time"
 )
 
-// githubAPIBase is the GitHub REST v3 base URL. Tests reassign this to
-// point at a local httptest.Server. Keep it unexported so external
-// consumers cannot rebind it.
+// githubAPIBase is the DEFAULT releases-API base URL. Used when
+// cfg.ReleasesAPIBase is empty. Tests reassign this to point at a
+// local httptest.Server. Operators that want to mirror viewer dists
+// on a non-GitHub endpoint (e.g. internal Gitea) set
+// cfg.ReleasesAPIBase via YAML / env; that wins over this default.
 var githubAPIBase = "https://api.github.com"
+
+// releasesAPIBase returns the effective base URL for the releases-by-
+// tag fetch. Centralized so tests and the runtime path share one
+// resolution rule.
+func releasesAPIBase(cfg Config) string {
+	if cfg.ReleasesAPIBase != "" {
+		return strings.TrimRight(cfg.ReleasesAPIBase, "/")
+	}
+	return strings.TrimRight(githubAPIBase, "/")
+}
 
 // httpClient is the fetch client. Tests may swap timeouts via the
 // fetcher if needed; for normal operation 30s covers a slow GitHub
@@ -74,14 +86,14 @@ func ensureCache(ctx context.Context, cfg Config) (distRoot string, outcome fetc
 	}
 
 	// (3) resolve release.
-	assetURL, err := resolveAssetURL(ctx, cfg.Repo, cfg.Version)
+	assetURL, err := resolveAssetURL(ctx, cfg)
 	if err != nil {
 		return "", 0, err
 	}
 
 	// (4-5) download + hash into a temp file.
 	tmpFile := filepath.Join(cfg.CacheDir, ".tmp-"+key+".zip")
-	gotSum, err := downloadAndHash(ctx, assetURL, tmpFile)
+	gotSum, err := downloadAndHash(ctx, assetURL, tmpFile, cfg.ReleasesAuthToken)
 	if err != nil {
 		_ = os.Remove(tmpFile)
 		return "", 0, err
@@ -118,17 +130,23 @@ func cacheKey(sha string) string {
 	return s
 }
 
-// resolveAssetURL hits the GitHub releases-by-tag API and returns the
-// browser_download_url of the "dist.zip" asset.
-func resolveAssetURL(ctx context.Context, repo, version string) (string, error) {
+// resolveAssetURL hits the releases-by-tag API (GitHub-shape JSON;
+// Gitea + Forgejo both speak the same wire) and returns the
+// browser_download_url of the "dist.zip" asset. The API base + auth
+// token come from cfg so operators can mirror dists on internal
+// artifact stores.
+func resolveAssetURL(ctx context.Context, cfg Config) (string, error) {
 	url := fmt.Sprintf("%s/repos/%s/releases/tags/%s",
-		strings.TrimRight(githubAPIBase, "/"), repo, version)
+		releasesAPIBase(cfg), cfg.Repo, cfg.Version)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("viewerhost: build release request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "api-log/viewerhost")
+	if cfg.ReleasesAuthToken != "" {
+		req.Header.Set("Authorization", "token "+cfg.ReleasesAuthToken)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -160,19 +178,25 @@ func resolveAssetURL(ctx context.Context, repo, version string) (string, error) 
 			return a.URL, nil
 		}
 	}
-	return "", fmt.Errorf("viewerhost: release %s has no dist.zip asset", version)
+	return "", fmt.Errorf("viewerhost: release %s has no dist.zip asset", cfg.Version)
 }
 
 // downloadAndHash streams url into dst and returns the lowercase hex
 // sha256. The body is hashed in lockstep with the disk write so we
 // never have to re-read the file. Caller is responsible for deleting
 // dst on error.
-func downloadAndHash(ctx context.Context, url, dst string) (string, error) {
+//
+// authToken (when non-empty) is sent as `Authorization: token <value>`
+// — required for Gitea private-repo asset downloads.
+func downloadAndHash(ctx context.Context, url, dst, authToken string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("viewerhost: build asset request: %w", err)
 	}
 	req.Header.Set("User-Agent", "api-log/viewerhost")
+	if authToken != "" {
+		req.Header.Set("Authorization", "token "+authToken)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

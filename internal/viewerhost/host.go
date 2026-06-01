@@ -37,6 +37,23 @@ type Config struct {
 	CacheDir   string // e.g. "<data_dir>/viewer-cache"
 	LocalPath  string // if non-empty, skip fetch and serve from this dir
 	PublicPath string // URL prefix, e.g. "/viewer"
+
+	// ReleasesAPIBase points the dist.zip fetch at a non-GitHub
+	// releases endpoint. Default empty → https://api.github.com. Set
+	// to e.g. "http://gitea.homelab.lan/api/v1" to mirror viewer
+	// releases on an internal Gitea (the JSON shape Gitea returns is
+	// GitHub-compatible — `assets[].browser_download_url`).
+	//
+	// Operators who run their own artifact store can serve viewer
+	// dists from there without forking the binary.
+	ReleasesAPIBase string
+
+	// ReleasesAuthToken is sent as `Authorization: token <value>` on
+	// the release-metadata GET and the asset download. Empty means
+	// "no auth" (public GitHub releases). Internal Gitea repos need
+	// a token; the value is sensitive and should be sourced from env
+	// or a secrets file (NOT committed to the YAML config).
+	ReleasesAuthToken string
 }
 
 // Info is the snapshot reported via Host.Info() and embedded into

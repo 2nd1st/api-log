@@ -272,6 +272,105 @@ func TestEnsureCache_NoDistZipAsset(t *testing.T) {
 	}
 }
 
+func TestEnsureCache_ReleasesAPIBase_OverridesGithub(t *testing.T) {
+	// Run a fake server that DOESN'T register on githubAPIBase — the
+	// only way to reach it is via cfg.ReleasesAPIBase. If the fetcher
+	// still calls real github.com (or the unset default), the request
+	// 404s and we'd see a clear error instead of the green path here.
+	zipBytes := buildZip(t, map[string]string{"index.html": "<html>gitea</html>"})
+	sum := hexSha256(zipBytes)
+	fg := newFakeGitHub(t, "leoyun/api-log-viewer", "v0.1.1", zipBytes)
+	// Deliberately leave githubAPIBase pointing at its default; the
+	// override is the only working route.
+
+	cfg := Config{
+		Enabled:         true,
+		Repo:            "leoyun/api-log-viewer",
+		Version:         "v0.1.1",
+		Sha256:          sum,
+		CacheDir:        t.TempDir(),
+		ReleasesAPIBase: fg.srv.URL,
+	}
+	root, _, err := ensureCache(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("ensureCache via ReleasesAPIBase: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "index.html")); err != nil {
+		t.Fatalf("expected index.html at root: %v", err)
+	}
+}
+
+func TestEnsureCache_ReleasesAuthToken_SentOnRequests(t *testing.T) {
+	zipBytes := buildZip(t, map[string]string{"index.html": "<html>auth</html>"})
+	sum := hexSha256(zipBytes)
+
+	const want = "my-gitea-token"
+	var seenMeta, seenAsset string
+
+	mux := http.NewServeMux()
+	apiPath := "/repos/leoyun/api-log-viewer/releases/tags/v0.1.1"
+	mux.HandleFunc(apiPath, func(w http.ResponseWriter, r *http.Request) {
+		seenMeta = r.Header.Get("Authorization")
+		body := map[string]any{
+			"assets": []map[string]string{
+				{"name": "dist.zip", "browser_download_url": "" /* set below */},
+			},
+		}
+		// Mutate downloadURL after we have srv.URL.
+		json.NewEncoder(w).Encode(body)
+	})
+	mux.HandleFunc("/download/v0.1.1/dist.zip", func(w http.ResponseWriter, r *http.Request) {
+		seenAsset = r.Header.Get("Authorization")
+		w.Write(zipBytes)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	// Rewire the api response to include the asset URL — easiest via
+	// rewriting the handler with the now-known srv.URL.
+	mux.HandleFunc("/repos/leoyun/api-log-viewer/releases/tags/v0.1.1-auth", func(w http.ResponseWriter, r *http.Request) {
+		// placeholder; not used
+	})
+	// Re-register with the real download URL since the first closure
+	// captured an empty placeholder.
+	mux2 := http.NewServeMux()
+	mux2.HandleFunc(apiPath, func(w http.ResponseWriter, r *http.Request) {
+		seenMeta = r.Header.Get("Authorization")
+		body := map[string]any{
+			"assets": []map[string]string{
+				{"name": "dist.zip", "browser_download_url": srv.URL + "/download/v0.1.1/dist.zip"},
+			},
+		}
+		json.NewEncoder(w).Encode(body)
+	})
+	mux2.HandleFunc("/download/v0.1.1/dist.zip", func(w http.ResponseWriter, r *http.Request) {
+		seenAsset = r.Header.Get("Authorization")
+		w.Write(zipBytes)
+	})
+	srv.Close()
+	srv = httptest.NewServer(mux2)
+	defer srv.Close()
+
+	cfg := Config{
+		Enabled:           true,
+		Repo:              "leoyun/api-log-viewer",
+		Version:           "v0.1.1",
+		Sha256:            sum,
+		CacheDir:          t.TempDir(),
+		ReleasesAPIBase:   srv.URL,
+		ReleasesAuthToken: want,
+	}
+	if _, _, err := ensureCache(context.Background(), cfg); err != nil {
+		t.Fatalf("ensureCache with auth token: %v", err)
+	}
+	if seenMeta != "token "+want {
+		t.Errorf("metadata Authorization = %q, want %q", seenMeta, "token "+want)
+	}
+	if seenAsset != "token "+want {
+		t.Errorf("asset Authorization = %q, want %q", seenAsset, "token "+want)
+	}
+}
+
 func TestExtractZip_FlattensDistPrefix(t *testing.T) {
 	zipBytes := buildZip(t, map[string]string{
 		"dist/index.html":    "<html>hi</html>",

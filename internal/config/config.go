@@ -56,6 +56,20 @@ type ViewerConfig struct {
 	LocalPath  string `yaml:"local_path"`
 	CacheDir   string `yaml:"cache_dir"`
 	PublicPath string `yaml:"public_path"`
+
+	// ReleasesAPIBase overrides the dist.zip fetch endpoint. Empty
+	// means "use https://api.github.com" (the default). Internal
+	// artifact stores (Gitea, Forgejo) speak the same release-API
+	// shape and slot in via this field — e.g. setting it to
+	// "http://gitea.homelab.lan/api/v1" with a matching `Repo` =
+	// "<gitea-owner>/<repo>" reroutes the fetch.
+	ReleasesAPIBase string `yaml:"releases_api_base"`
+
+	// ReleasesAuthToken is sent on the metadata + asset requests as
+	// `Authorization: token <value>`. Required for private Gitea
+	// repos. Sensitive — source from env (APILOG_VIEWER_RELEASES_AUTH_TOKEN)
+	// or a secrets file rather than committing to repo-tracked YAML.
+	ReleasesAuthToken string `yaml:"releases_auth_token"`
 }
 
 // MediaConfig governs per-trace media extraction (see phase-k-media-contract.md).
@@ -330,6 +344,8 @@ func applyEnv(cfg *Config) error {
 		{"APILOG_VIEWER_LOCAL_PATH", func(c *Config, v string) error { c.Viewer.LocalPath = v; return nil }},
 		{"APILOG_VIEWER_CACHE_DIR", func(c *Config, v string) error { c.Viewer.CacheDir = v; return nil }},
 		{"APILOG_VIEWER_PUBLIC_PATH", func(c *Config, v string) error { c.Viewer.PublicPath = v; return nil }},
+		{"APILOG_VIEWER_RELEASES_API_BASE", func(c *Config, v string) error { c.Viewer.ReleasesAPIBase = v; return nil }},
+		{"APILOG_VIEWER_RELEASES_AUTH_TOKEN", func(c *Config, v string) error { c.Viewer.ReleasesAuthToken = v; return nil }},
 	}
 
 	for _, b := range bindings {
