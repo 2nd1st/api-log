@@ -29,24 +29,30 @@ type Store struct {
 // applies the pragmas from ARCHITECTURE § 4.
 func Open(path string) (*Store, error) {
 	// modernc.org/sqlite DSN: see https://gitlab.com/cznic/sqlite — uses
-	// the file path with optional query params after a `?`. We set the
-	// pragmas via Exec after open so they apply uniformly.
-	db, err := sql.Open("sqlite", path)
+	// the file path with optional query params after `?`. We embed the
+	// per-connection pragmas in the DSN so EVERY connection the pool
+	// hands out (read API, writer, storage monitor) gets the same WAL
+	// mode + busy_timeout. Setting them via db.Exec after Open only
+	// applies to whichever conn happens to serve the first Exec — under
+	// parallel load the next-opened conns would miss busy_timeout and
+	// SQLITE_BUSY would surface to callers.
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite at %s: %w", path, err)
 	}
-	// WAL mode is enabled below at Open(); 8 conns lets the read API and
-	// writer proceed in parallel. SQLite WAL serializes writes internally,
-	// so we don't need a single-conn writer lock at the database/sql layer
-	// — and capping at 1 forced every /api/traces read to queue behind the
-	// writer's finalize transaction. Idle cap stays modest.
-	db.SetMaxOpenConns(8)
+	// WAL mode lets readers + writer proceed in parallel. SQLite WAL
+	// serializes writes internally, so we don't need a single-conn
+	// writer lock at the database/sql layer. Bumped 8 → 10 in v0.1.1
+	// to absorb the storage monitor's reconcile sweep (ListDistinct +
+	// per-row Stat in a tight loop) on top of writer + reader traffic.
+	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(4)
 
+	// Pragmas that are NOT per-connection (or that we apply globally
+	// for side effects beyond the calling conn) still go through Exec.
 	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL",
-		"PRAGMA busy_timeout=5000",
 		"PRAGMA temp_store=MEMORY",
 	}
 	for _, p := range pragmas {
@@ -118,6 +124,10 @@ CREATE INDEX IF NOT EXISTS idx_ts             ON traces(ts_start DESC);
 CREATE INDEX IF NOT EXISTS idx_key_ts         ON traces(key_hash, ts_start DESC);
 CREATE INDEX IF NOT EXISTS idx_session_root   ON traces(session_root_id);
 CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonical_hash);
+-- idx_jsonl_path supports the storage coordinator's reconcileOrphans
+-- ListDistinct sweep + retention's per-path DeleteByJSONLPath (v0.1.1).
+-- CREATE INDEX IF NOT EXISTS is idempotent — no separate migration block.
+CREATE INDEX IF NOT EXISTS idx_jsonl_path     ON traces(jsonl_path);
 `
 	for _, stmt := range strings.Split(schema, ";") {
 		stmt = strings.TrimSpace(stmt)

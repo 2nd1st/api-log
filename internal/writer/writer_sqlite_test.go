@@ -46,7 +46,7 @@ func TestWriterAppendsToJSONLAndSQLite(t *testing.T) {
 	}
 	defer store.Close()
 
-	w := New(dir, 16, store, nil, nil, nil, func() time.Time {
+	w := New(dir, 16, store, nil, nil, nil, nil, func() time.Time {
 		return time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	})
 	stop := w.Start()
@@ -89,7 +89,7 @@ func TestWriterSessionInferenceAcrossTraces(t *testing.T) {
 	store, _ := sqlite.Open(filepath.Join(dir, "index.sqlite"))
 	defer store.Close()
 
-	w := New(dir, 16, store, nil, nil, nil, func() time.Time {
+	w := New(dir, 16, store, nil, nil, nil, nil, func() time.Time {
 		return time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	})
 	stop := w.Start()
@@ -189,7 +189,7 @@ func TestWriterPersistsExtractedUsage(t *testing.T) {
 	}
 	defer store.Close()
 
-	w := New(dir, 16, store, nil, nil, nil, func() time.Time {
+	w := New(dir, 16, store, nil, nil, nil, nil, func() time.Time {
 		return time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	})
 	stop := w.Start()
@@ -234,7 +234,7 @@ func TestWriterPersistsExtractedUsage(t *testing.T) {
 func TestWriterAcceptsNilStore(t *testing.T) {
 	// Writer must work without a store (pure-JSONL mode used by tests).
 	dir := t.TempDir()
-	w := New(dir, 4, nil, nil, nil, nil, nil)
+	w := New(dir, 4, nil, nil, nil, nil, nil, nil)
 	stop := w.Start()
 	w.TrySend(Record{Trace: chatTrace("t1", []map[string]any{{"role": "user", "content": "hi"}}), KeyHash: "xxxxxxxx11111111"})
 	stop()

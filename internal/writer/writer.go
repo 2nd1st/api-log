@@ -24,6 +24,7 @@ import (
 	"github.com/2nd1st/api-log/internal/media"
 	"github.com/2nd1st/api-log/internal/parser"
 	"github.com/2nd1st/api-log/internal/session"
+	"github.com/2nd1st/api-log/internal/storage"
 	"github.com/2nd1st/api-log/internal/store/sqlite"
 	"github.com/2nd1st/api-log/internal/trace"
 )
@@ -61,6 +62,15 @@ type Writer struct {
 	// reads it on every trace finalize.
 	mediaExtractor *media.Extractor
 	mediaEnabled   *atomic.Bool
+
+	// v0.1.1 — storage coordinator. Optional; nil disables lease
+	// arbitration (tests + JSONL-only setups). When non-nil, fileFor()
+	// acquires a lease BEFORE opening the OS file, and the lease is
+	// held for the lifetime of the open handle. Eviction is then safe
+	// to interleave with writes: deleteIfIdle skips any path with
+	// active leases, and the writer skips traces whose bucket is being
+	// deleted by returning ErrFileBeingDeleted upward.
+	coord *storage.Coordinator
 
 	// gzip workers run in the background when files rotate. We wait for
 	// them on Close so a shutdown doesn't leave a half-gzipped file behind.
@@ -100,7 +110,13 @@ type Stats struct {
 // after the JSONL line is on disk. Extraction failures log WARN inside
 // the extractor and never block the writer or affect MediaCount past the
 // returned slice length (capture should never interfere).
-func New(dataDir string, chanCap int, store *sqlite.Store, ctrs *counters.Counters, mediaExt *media.Extractor, mediaEnabled *atomic.Bool, clock func() time.Time) *Writer {
+//
+// coord (v0.1.1) is the storage coordinator. nil disables lease
+// arbitration entirely — the writer opens/closes files without
+// notifying retention. Production main wires a non-nil coord whose
+// DataDir matches the writer's dataDir; the coord-side eviction loop
+// can then safely interleave with appends.
+func New(dataDir string, chanCap int, store *sqlite.Store, ctrs *counters.Counters, mediaExt *media.Extractor, mediaEnabled *atomic.Bool, coord *storage.Coordinator, clock func() time.Time) *Writer {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -112,6 +128,7 @@ func New(dataDir string, chanCap int, store *sqlite.Store, ctrs *counters.Counte
 		counters:       ctrs,
 		mediaExtractor: mediaExt,
 		mediaEnabled:   mediaEnabled,
+		coord:          coord,
 		files:          make(map[string]*openFile),
 	}
 }
@@ -135,8 +152,12 @@ func (w *Writer) Start() func() {
 			w.gzWG.Wait()
 			// Close any still-open file handles. Files closed cleanly
 			// in runLoop on rotation; only the current-day handles
-			// remain here.
+			// remain here. Release lease BEFORE / alongside Close —
+			// order doesn't matter (refcount, not file lock).
 			for _, of := range w.files {
+				if of.lease != nil {
+					of.lease.Release()
+				}
 				_ = of.f.Close()
 			}
 		})
@@ -275,7 +296,10 @@ func (w *Writer) appendOne(rec Record) {
 	// extraction.
 	var mediaCount int
 	if w.mediaExtractor != nil && w.mediaEnabled != nil && w.mediaEnabled.Load() {
-		files := w.mediaExtractor.Extract(rec.Trace)
+		// Pass the writer's chosen bucket so media lands beside its JSONL
+		// even when trace.TsStart and the writer's date differ across a
+		// UTC midnight rotation. of.bucket is set by fileFor.
+		files := w.mediaExtractor.Extract(rec.Trace, of.bucket)
 		mediaCount = len(files)
 		if w.counters != nil && mediaCount > 0 {
 			w.counters.AddMediaFiles(int64(mediaCount))
@@ -381,10 +405,12 @@ func (w *Writer) bumpSQLiteFail() {
 // ---- per-file handles + rotation ----
 
 type openFile struct {
-	path string
-	date string
-	hash string // keyhash[:8]
-	f    *os.File
+	path   string
+	date   string
+	hash   string // keyhash[:8]
+	f      *os.File
+	bucket storage.FileID // canonical identity; passed to media.Extract
+	lease  *storage.Lease // held for the lifetime of f; nil when coord disabled
 }
 
 func keyFor(date, hashShort string) string { return date + "/" + hashShort }
@@ -397,6 +423,17 @@ func keyFor(date, hashShort string) string { return date + "/" + hashShort }
 // gzip on the closed file's path. We do NOT close handles on every
 // append — only when their date is no longer current for any key_hash
 // observed since.
+//
+// v0.1.1 — lease arbitration with the storage coordinator:
+//
+//   - Lease MUST be acquired BEFORE os.OpenFile. Acquiring after creates
+//     a TOCTOU window where eviction could observe refcount=0 and start
+//     deleting the file while we hold the freshly-opened *os.File.
+//   - If AcquireLease returns ErrFileBeingDeleted (eviction is mid-delete
+//     on this bucket), fileFor surfaces the error so appendOne bumps
+//     DropJSONLFail and routes to a new bucket on the next finalize.
+//   - On rotation / shutdown, lease.Release() runs alongside f.Close().
+//     Order doesn't matter — lease is a refcount, not a file lock.
 func (w *Writer) fileFor(date, hashShort string) (*openFile, error) {
 	k := keyFor(date, hashShort)
 	if of, ok := w.files[k]; ok {
@@ -408,16 +445,46 @@ func (w *Writer) fileFor(date, hashShort string) (*openFile, error) {
 		if oldOf.date < date {
 			delete(w.files, oldKey)
 			oldPath := oldOf.path
+			oldBucket := oldOf.bucket
+			if oldOf.lease != nil {
+				oldOf.lease.Release()
+			}
 			if err := oldOf.f.Close(); err != nil {
 				_ = err // best-effort; the gzip below will still try.
 			}
 			w.gzWG.Add(1)
+			coord := w.coord
 			go func() {
 				defer w.gzWG.Done()
-				if err := compressInPlace(oldPath); err != nil {
+				if err := compressInPlace(coord, oldBucket, oldPath); err != nil {
 					slog.Warn("gzip rotation failed", "path", oldPath, "err", err)
 				}
 			}()
+		}
+	}
+
+	// Bucket identity — load-bearing for media co-location AND for
+	// lease arbitration. The DataDir on the FileID must match what
+	// w.dataDir/<date>/<hashShort>.jsonl resolves to; we construct
+	// FileID with the same dataDir the writer was given at New.
+	bucket := storage.FileID{
+		DataDir:  w.dataDir,
+		Date:     date,
+		KeyHash8: hashShort,
+	}
+
+	// Acquire lease BEFORE OpenFile — see the comment block on this
+	// method. With nil coord the writer behaves identically to v0.1.0:
+	// no lease tracked, the file just opens.
+	var lease *storage.Lease
+	if w.coord != nil {
+		var err error
+		lease, err = w.coord.AcquireLease(bucket)
+		if err != nil {
+			// ErrFileBeingDeleted is the expected race outcome —
+			// surfaced upward without modification so callers can log
+			// at a quieter level if they wish.
+			return nil, fmt.Errorf("acquire lease for %s: %w", bucket.CanonicalPath(), err)
 		}
 	}
 
@@ -428,14 +495,27 @@ func (w *Writer) fileFor(date, hashShort string) (*openFile, error) {
 	// owning process is the only legitimate reader. Adopters who need
 	// broader read access (backup systems, ops tools) chmod themselves.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		if lease != nil {
+			lease.Release()
+		}
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	path := filepath.Join(dir, hashShort+".jsonl")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
+		if lease != nil {
+			lease.Release()
+		}
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	of := &openFile{path: path, date: date, hash: hashShort, f: f}
+	of := &openFile{
+		path:   path,
+		date:   date,
+		hash:   hashShort,
+		f:      f,
+		bucket: bucket,
+		lease:  lease,
+	}
 	w.files[k] = of
 	return of, nil
 }
@@ -443,7 +523,24 @@ func (w *Writer) fileFor(date, hashShort string) (*openFile, error) {
 // compressInPlace writes <path>.gz from <path>, then removes <path>.
 // If anything goes wrong the original .jsonl stays on disk so the next
 // startup can recover.
-func compressInPlace(path string) error {
+//
+// The bucket lease is reacquired around the gzip work so retention
+// doesn't race with us: we just released the rotation-time lease in
+// fileFor before launching this goroutine; without re-acquiring, an
+// in-between eviction tick could see refcount=0 and start deleting the
+// file mid-Open. With coord=nil (no retention), the lease block is a
+// no-op and behavior matches v0.1.0.
+func compressInPlace(coord *storage.Coordinator, bucket storage.FileID, path string) error {
+	if coord != nil {
+		lease, err := coord.AcquireLease(bucket)
+		if err != nil {
+			// ErrFileBeingDeleted — retention already removed this
+			// bucket; nothing to gzip.
+			return fmt.Errorf("acquire lease for gzip %s: %w", path, err)
+		}
+		defer lease.Release()
+	}
+
 	// Defer import of gzip; compress/gzip is stdlib so cheap.
 	src, err := os.Open(path)
 	if err != nil {

@@ -19,14 +19,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"embed"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/2nd1st/api-log/internal/storage"
 	"github.com/2nd1st/api-log/internal/store/sqlite"
 )
 
@@ -56,11 +59,20 @@ type fileGroup struct {
 // fixed upper bound; the export streams so memory is not the bottleneck
 // and SQLite handles 100k+ rows comfortably.
 //
+// coord (v0.1.1) is the storage coordinator. nil disables lease
+// arbitration: the exporter reads JSONL files without notifying
+// retention — fine for tests / no-retention deployments. Non-nil:
+// each per-(date, keyhash) group acquires a lease BEFORE opening its
+// JSONL and releases it AFTER writing the zip entry, in an inner-func
+// scope so leases don't pile up across all groups. Groups whose bucket
+// is mid-eviction (ErrFileBeingDeleted) are skipped with a WARN log;
+// the rest of the zip still streams cleanly.
+//
 // The returned error means either the SQLite read failed (zip not yet
 // started) or a disk read failed mid-stream (zip may be partial). The
 // caller is responsible for setting HTTP headers BEFORE calling — once
 // bytes start flowing to w we can no longer set a status code.
-func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.ListFilters, limit int) error {
+func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.ListFilters, limit int, coord *storage.Coordinator) error {
 	rows, err := store.AllMatching(filters, limit)
 	if err != nil {
 		return fmt.Errorf("query matching rows: %w", err)
@@ -125,7 +137,35 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 
 	for _, k := range keys {
 		g := groups[k]
-		if err := writeGroupEntry(zw, g); err != nil {
+		// Inner-func + scoped defer: lease releases at the end of THIS
+		// iteration, not at WriteZip's return. A naive
+		//   defer lease.Release()
+		// at the top of this loop would pin every group's bucket for
+		// the entire export — exactly the regression the inner-func
+		// pattern prevents.
+		err := func() error {
+			if coord != nil {
+				fid, ferr := storage.FileIDFromPath(dataDir, g.path)
+				if ferr != nil {
+					// Path doesn't match the canonical writer shape —
+					// rare, but if it happens just read without a lease;
+					// retention won't touch it either.
+					return writeGroupEntry(zw, g)
+				}
+				lease, lerr := coord.AcquireLease(fid)
+				if lerr != nil {
+					if errors.Is(lerr, storage.ErrFileBeingDeleted) {
+						slog.Warn("export: group skipped, bucket being deleted",
+							"date", fid.Date, "key_hash8", fid.KeyHash8)
+						return nil
+					}
+					return fmt.Errorf("acquire lease for %s: %w", g.path, lerr)
+				}
+				defer lease.Release()
+			}
+			return writeGroupEntry(zw, g)
+		}()
+		if err != nil {
 			return fmt.Errorf("write entry for %s: %w", g.path, err)
 		}
 	}

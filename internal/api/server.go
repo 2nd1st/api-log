@@ -20,6 +20,7 @@ import (
 
 	"github.com/2nd1st/api-log/internal/counters"
 	pluginv2 "github.com/2nd1st/api-log/internal/plugin/v2"
+	"github.com/2nd1st/api-log/internal/storage"
 	"github.com/2nd1st/api-log/internal/store/sqlite"
 	"github.com/2nd1st/api-log/internal/viewerhost"
 )
@@ -36,6 +37,13 @@ type Deps struct {
 	// relative to. /api/export reads files from here to stream into the
 	// zip; other handlers seek by absolute JSONLPath and don't need it.
 	DataDir string
+
+	// StorageCoord (v0.1.1) is the storage coordinator. Nil-safe: the
+	// export handler skips lease arbitration when coord is nil — fine
+	// for tests / no-retention deployments. When non-nil, exporter
+	// acquires a lease per (date, keyhash) bucket before reading the
+	// JSONL so retention can't delete the file mid-stream.
+	StorageCoord *storage.Coordinator
 
 	// Phase K — media extraction toggle. Atomic so PUT /api/config/media
 	// can flip it from a different goroutine while the writer reads it

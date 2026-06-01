@@ -317,23 +317,39 @@ ALTER TABLE traces ADD COLUMN client_version  TEXT;
 ALTER TABLE traces ADD COLUMN client_project  TEXT;
 ```
 
+```sql
+-- v0.1.1 (B2.1): storage-coordinator index. Backs the retention loop's
+-- reconcileOrphans path (SELECT DISTINCT jsonl_path FROM traces) and
+-- per-file eviction (DELETE FROM traces WHERE jsonl_path = ?). Without
+-- this index a million-row store would have to table-scan on every
+-- monitor tick. CREATE INDEX IF NOT EXISTS is idempotent — same shape
+-- as the original schema indexes; no separate swallow block needed.
+CREATE INDEX IF NOT EXISTS idx_jsonl_path ON traces(jsonl_path);
+```
+
 The migration runner runs each `ALTER` unconditionally and swallows the
 specific `duplicate column` / `already exists` error so re-startup
-against an existing database is idempotent. Any other error propagates.
+against an existing database is idempotent. `CREATE INDEX IF NOT EXISTS`
+is intrinsically idempotent and lives in the original schema block.
+Any other error propagates.
 
 Indexes deferred to a future when a query justifies them:
 - `idx_status_ts`, `idx_model_ts`, `idx_parent` — currently no read-API path requires them.
 
 SQLite operates in WAL mode for concurrent read access while the writer goroutine appends:
 
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;     -- index is rebuildable, so NORMAL is fine
-PRAGMA busy_timeout = 5000;
-PRAGMA temp_store = MEMORY;
+```text
+DSN (per-connection, every conn the pool hands out):
+  ?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)
+
+Process-global (Exec at Open):
+  PRAGMA synchronous = NORMAL;     -- index is rebuildable, so NORMAL is fine
+  PRAGMA temp_store  = MEMORY;
 ```
 
-The writer goroutine holds the sole write connection (`db.SetMaxOpenConns(1)` for the write handle). Read handlers use a separate pool.
+Per-connection pragmas live in the DSN as of v0.1.1 (B2.2) so EVERY connection the pool hands out gets WAL mode + busy_timeout — not just whichever conn happens to serve the first `db.Exec("PRAGMA …")` at startup. Without DSN-embedded pragmas, parallel read traffic that opened a fresh conn could see SQLITE_BUSY.
+
+`db.SetMaxOpenConns(10)` (bumped from 8 in v0.1.1) absorbs the storage monitor's reconcile sweep alongside writer + reader pressure.
 
 ---
 

@@ -9,8 +9,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/2nd1st/api-log/internal/storage"
 	"github.com/2nd1st/api-log/internal/trace"
 )
+
+// extractTest wraps Extract with a synthetic bucket derived from the
+// Extractor's DataDir + the trace's TsStart date + a placeholder
+// KeyHash8. Tests glob with `*` for the keyhash component so any
+// 8-hex value works.
+func extractTest(e *Extractor, tr trace.Trace) []MediaFile {
+	bucket := storage.FileID{
+		DataDir:  e.cfg.DataDir,
+		Date:     tr.TsStart.UTC().Format("2006-01-02"),
+		KeyHash8: "00000000",
+	}
+	return e.Extract(tr, bucket)
+}
 
 // b64 is the base64 of "hello-png-bytes". Decoded length: 15.
 const helloB64 = "aGVsbG8tcG5nLWJ5dGVz"
@@ -42,7 +56,7 @@ func mkTrace(reqBody, respBody string) trace.Trace {
 func TestExtract_EmptyBodies(t *testing.T) {
 	dir := t.TempDir()
 	e := New(Config{DataDir: dir})
-	got := e.Extract(mkTrace("", ""))
+	got := extractTest(e, mkTrace("", ""))
 	if len(got) != 0 {
 		t.Fatalf("expected 0 media, got %d: %+v", len(got), got)
 	}
@@ -56,7 +70,7 @@ func TestExtract_BodyB64IsIgnored(t *testing.T) {
 	tr.Req.BodyB64 = helloB64
 	tr.Resp.BodyB64 = helloB64
 	e := New(Config{DataDir: t.TempDir()})
-	got := e.Extract(tr)
+	got := extractTest(e, tr)
 	if len(got) != 0 {
 		t.Fatalf("body_b64 should be skipped entirely, got %d files: %+v", len(got), got)
 	}
@@ -67,7 +81,7 @@ func TestExtract_NonJSONBodyIsSilentlySkipped(t *testing.T) {
 	// would have put it in body_b64, but be defensive).
 	tr := mkTrace(`not json at all`, "")
 	e := New(Config{DataDir: t.TempDir()})
-	got := e.Extract(tr)
+	got := extractTest(e, tr)
 	if len(got) != 0 {
 		t.Fatalf("non-JSON should produce no candidates, got %+v", got)
 	}
@@ -84,7 +98,7 @@ func TestExtract_OpenAIChat_DataURLImage(t *testing.T) {
 	  ]
 	}`
 	dir := t.TempDir()
-	got := New(Config{DataDir: dir}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: dir}), mkTrace(req, ""))
 	if len(got) != 1 {
 		t.Fatalf("want 1 media, got %d: %+v", len(got), got)
 	}
@@ -123,7 +137,7 @@ func TestExtract_OpenAIChat_HTTPSImageURLSkipped(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":[
 	  {"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}
 	]}]}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 0 {
 		t.Fatalf("https URL must be skipped, got %d: %+v", len(got), got)
 	}
@@ -133,7 +147,7 @@ func TestExtract_OpenAIChat_InputAudio(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":[
 	  {"type":"input_audio","input_audio":{"data":"` + helloB64 + `","format":"wav"}}
 	]}]}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 1 {
 		t.Fatalf("want 1, got %d", len(got))
 	}
@@ -159,7 +173,7 @@ func TestExtract_Anthropic_ImageAndDocument(t *testing.T) {
 	    ]}
 	  ]
 	}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 2 {
 		t.Fatalf("want 2, got %d: %+v", len(got), got)
 	}
@@ -182,7 +196,7 @@ func TestExtract_Anthropic_URLSourceSkipped(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":[
 	  {"type":"image","source":{"type":"url","url":"https://example.com/x.png"}}
 	]}]}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 0 {
 		t.Fatalf("URL source must be skipped, got %d: %+v", len(got), got)
 	}
@@ -193,7 +207,7 @@ func TestExtract_Anthropic_TextSourceSkipped(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":[
 	  {"type":"document","source":{"type":"text","data":"plain text content here"}}
 	]}]}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 0 {
 		t.Fatalf("text source must be skipped, got %d: %+v", len(got), got)
 	}
@@ -208,7 +222,7 @@ func TestExtract_Gemini_InlineData_CamelCase(t *testing.T) {
 	    ]}
 	  ]
 	}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 1 {
 		t.Fatalf("want 1, got %d", len(got))
 	}
@@ -227,7 +241,7 @@ func TestExtract_Gemini_InlineData_SnakeCase(t *testing.T) {
 	    {"parts":[{"inline_data":{"mime_type":"image/png","data":"` + helloB64 + `"}}]}
 	  ]
 	}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 1 {
 		t.Fatalf("snake_case alias should still extract; got %d", len(got))
 	}
@@ -243,7 +257,7 @@ func TestExtract_Gemini_SystemInstruction(t *testing.T) {
 	  ]},
 	  "contents":[{"parts":[{"text":"go"}]}]
 	}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 1 {
 		t.Fatalf("want 1, got %d", len(got))
 	}
@@ -259,7 +273,7 @@ func TestExtract_Gemini_FileDataSkipped(t *testing.T) {
 	req := `{"contents":[{"parts":[
 	  {"fileData":{"mimeType":"image/png","fileUri":"gs://bucket/x.png"}}
 	]}]}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 0 {
 		t.Fatalf("fileData (URL-only) must be skipped, got %d", len(got))
 	}
@@ -273,7 +287,7 @@ func TestExtract_Responses_InputImageURLSkipped(t *testing.T) {
 	    ]}
 	  ]
 	}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 0 {
 		t.Fatalf("input_image URL must be skipped, got %d: %+v", len(got), got)
 	}
@@ -286,7 +300,7 @@ func TestExtract_OrderingReqBeforeResp(t *testing.T) {
 	resp := `{"content":[
 	  {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"` + helloB64 + `"}}
 	]}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, resp))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, resp))
 	if len(got) != 2 {
 		t.Fatalf("want 2, got %d", len(got))
 	}
@@ -303,7 +317,7 @@ func TestExtract_NoDataDir_StillReturnsMetadata(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":[
 	  {"type":"image_url","image_url":{"url":"` + tinyPNGDataURL + `"}}
 	]}]}`
-	got := New(Config{DataDir: ""}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: ""}), mkTrace(req, ""))
 	if len(got) != 1 {
 		t.Fatalf("want 1 metadata even with no DataDir, got %d", len(got))
 	}
@@ -316,7 +330,7 @@ func TestExtract_FilePathFormat(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":[
 	  {"type":"image_url","image_url":{"url":"` + tinyPNGDataURL + `"}}
 	]}]}`
-	got := New(Config{DataDir: t.TempDir()}).Extract(mkTrace(req, ""))
+	got := extractTest(New(Config{DataDir: t.TempDir()}), mkTrace(req, ""))
 	if len(got) != 1 {
 		t.Fatalf("want 1, got %d", len(got))
 	}
@@ -336,8 +350,8 @@ func TestExtract_IdempotentReextract(t *testing.T) {
 	dir := t.TempDir()
 	e := New(Config{DataDir: dir})
 	tr := mkTrace(req, "")
-	first := e.Extract(tr)
-	second := e.Extract(tr)
+	first := extractTest(e, tr)
+	second := extractTest(e, tr)
 	if len(first) != 1 || len(second) != 1 {
 		t.Fatalf("expected 1+1, got %d+%d", len(first), len(second))
 	}

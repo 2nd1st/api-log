@@ -30,12 +30,11 @@ package media
 
 import (
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 
-	"github.com/2nd1st/api-log/internal/ids"
+	"github.com/2nd1st/api-log/internal/storage"
 	"github.com/2nd1st/api-log/internal/trace"
 )
 
@@ -96,8 +95,13 @@ func New(cfg Config) *Extractor {
 
 // Extract walks t.Req.Body and t.Resp.Body, identifies media-bearing fields
 // per the documented protocols, decodes their base64 payloads, writes the
-// files under ${DataDir}/${date}/${keyhash[:8]}/media/${trace_id}/, and
-// returns the list of MediaFile records.
+// files under the bucket's media subtree (<DataDir>/<Date>/<KeyHash8>/media/
+// <trace_id>/), and returns the list of MediaFile records.
+//
+// `bucket` is the JSONL bucket FileID the writer just decided for this
+// trace — passing it (rather than re-deriving from t.TsStart) keeps media
+// files co-located with their owning JSONL even when the trace's request
+// time and the writer's chosen bucket differ across a UTC midnight rotation.
 //
 // Extract never returns an error. Per-file failures are logged at WARN and the
 // corresponding MediaFile is omitted from the returned slice. The writer
@@ -105,7 +109,7 @@ func New(cfg Config) *Extractor {
 //
 // body_b64 is skipped unconditionally; URL-only image references are
 // skipped (no remote fetch). See package doc for the full skip-list.
-func (e *Extractor) Extract(t trace.Trace) []MediaFile {
+func (e *Extractor) Extract(t trace.Trace, bucket storage.FileID) []MediaFile {
 	out := make([]MediaFile, 0, 4)
 
 	// Request side first, then response — matches the idx ordering in
@@ -121,17 +125,13 @@ func (e *Extractor) Extract(t trace.Trace) []MediaFile {
 		return out
 	}
 
-	// Derive the on-disk parent directory the same way writer.go does, but
-	// using TsStart (the trace's request time) rather than wall-clock. This
-	// matches the worked example in Phase K § 4 where the date is the
-	// recording date of the trace itself.
-	date := t.TsStart.UTC().Format("2006-01-02")
-	keyHash := ids.KeyHashFromHeaders(http.Header(t.Req.Headers))
-	hashShort := ids.KeyHashShort(keyHash)
-
+	// Co-locate media with its bucket — writer hands us the FileID it just
+	// decided, so DataDir / Date / KeyHash8 stay in lockstep with the
+	// JSONL row. The Extractor's Config.DataDir is no longer consulted
+	// here; callers wire the FileID's DataDir to match.
 	var parentDir string
 	if e.cfg.DataDir != "" {
-		parentDir = filepath.Join(e.cfg.DataDir, date, hashShort, "media", t.ID)
+		parentDir = filepath.Join(bucket.MediaSubtree(), t.ID)
 		if err := os.MkdirAll(parentDir, 0o700); err != nil {
 			slog.Warn("media extractor: mkdir failed",
 				"trace_id", t.ID, "dir", parentDir, "err", err)

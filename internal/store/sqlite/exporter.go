@@ -1,9 +1,54 @@
 package sqlite
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
+
+// CountMatching returns the number of rows that match filters, capped
+// at hardCap+1. The subquery pattern (`SELECT COUNT(*) FROM (SELECT 1
+// ... LIMIT ?)`) lets SQLite stop counting once the cap is reached
+// rather than scanning every matching row — important for the export
+// pre-flight check on multi-million-row stores.
+//
+// Pass hardCap = 0 (or any non-positive value) to count without a cap.
+// Callers (api/export.go) use the result to short-circuit oversized
+// exports with a 413 BEFORE any zip bytes hit the wire. Returns the
+// raw count; callers compare against their own cap.
+//
+// Reuses buildListConds so the predicate stays in lockstep with List
+// and StreamMatching — adding a new ListFilters field only requires
+// editing buildListConds.
+func (s *Store) CountMatching(ctx context.Context, filters ListFilters, hardCap int) (int, error) {
+	conds, args := buildListConds(filters)
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	limitClause := ""
+	if hardCap > 0 {
+		// hardCap+1 so callers can detect "more than hardCap" without
+		// false equality at the boundary. Caller compares: cnt > hardCap.
+		limitClause = "LIMIT ?"
+		args = append(args, hardCap+1)
+	}
+
+	q := fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM traces
+			%s
+			%s
+		)
+	`, where, limitClause)
+
+	var n int
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count-matching query: %w", err)
+	}
+	return n, nil
+}
 
 // AllMatching returns every row matching filters, ordered chronologically
 // (ts_start ASC, id ASC for a deterministic tiebreak).

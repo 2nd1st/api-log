@@ -57,6 +57,14 @@ type Counters struct {
 	totalCacheCreationTokens atomic.Int64
 	totalReasoningTokens     atomic.Int64
 
+	// Retention / storage-coordinator counters (v0.1.1). Cumulative
+	// since process start; bumped by the storage monitor goroutine as
+	// it deletes JSONL files (and their SQLite rows + media subtrees).
+	// Surface live in /healthz.storage so operators can see retention
+	// activity without scraping log lines.
+	evictedTraces atomic.Int64
+	evictedBytes  atomic.Int64
+
 	// Per-stage timing histograms. Drain = sink-close → drainer-join.
 	// Parse = JSON unmarshal + SSE event walk + decompression. SQLite =
 	// AppendTrace (one tx covering JSONL append + UPSERT + session-
@@ -149,6 +157,16 @@ func (c *Counters) AddCacheCreationTokens(n int64) { c.totalCacheCreationTokens.
 // trace (T3). n may be 0, which is a no-op.
 func (c *Counters) AddReasoningTokens(n int64) { c.totalReasoningTokens.Add(n) }
 
+// AddEvictedTraces bumps the cumulative count of trace rows removed
+// by the storage coordinator's eviction loop (v0.1.1). One eviction
+// pass typically deletes N traces and N media subtrees in one call.
+func (c *Counters) AddEvictedTraces(n int64) { c.evictedTraces.Add(n) }
+
+// AddEvictedBytes bumps the cumulative on-disk bytes reclaimed by the
+// storage coordinator's eviction loop (JSONL + media). Matches what
+// /healthz.storage reports.
+func (c *Counters) AddEvictedBytes(n int64) { c.evictedBytes.Add(n) }
+
 // ObserveWriterChanLen records the current writer channel length;
 // keeps the running max in writerChanHighWater.
 func (c *Counters) ObserveWriterChanLen(n int) {
@@ -197,6 +215,11 @@ type Snapshot struct {
 	TotalCacheCreationTokens int64 `json:"total_cache_creation_tokens"`
 	TotalReasoningTokens     int64 `json:"total_reasoning_tokens"`
 
+	// Storage retention counters (v0.1.1). Cumulative since process
+	// start; zero when retention is disabled or has never fired.
+	EvictedTraces int64 `json:"evicted_traces"`
+	EvictedBytes  int64 `json:"evicted_bytes"`
+
 	Timings struct {
 		DrainMs  HistogramSnapshot `json:"drain_ms"`
 		ParseMs  HistogramSnapshot `json:"parse_ms"`
@@ -228,6 +251,9 @@ func (c *Counters) Snapshot() Snapshot {
 		TotalCachedTokens:        c.totalCachedTokens.Load(),
 		TotalCacheCreationTokens: c.totalCacheCreationTokens.Load(),
 		TotalReasoningTokens:     c.totalReasoningTokens.Load(),
+
+		EvictedTraces: c.evictedTraces.Load(),
+		EvictedBytes:  c.evictedBytes.Load(),
 	}
 	s.Timings.DrainMs = c.DrainHist.Snapshot()
 	s.Timings.ParseMs = c.ParseHist.Snapshot()

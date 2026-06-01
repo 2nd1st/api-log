@@ -39,6 +39,7 @@ import (
 	pluginv2 "github.com/2nd1st/api-log/internal/plugin/v2"
 	"github.com/2nd1st/api-log/internal/proxy"
 	"github.com/2nd1st/api-log/internal/runtime"
+	"github.com/2nd1st/api-log/internal/storage"
 	"github.com/2nd1st/api-log/internal/store/sqlite"
 	"github.com/2nd1st/api-log/internal/trace"
 	"github.com/2nd1st/api-log/internal/viewerhost"
@@ -154,6 +155,23 @@ func run() error {
 	}
 	mediaExt := media.New(media.Config{DataDir: cfg.Storage.DataDir})
 
+	// Storage coordinator (v0.1.1). Owns file-identity, lease arbitration,
+	// inventory, status, and retention. Constructed AFTER store + counters
+	// (which it consumes) but BEFORE writer + exporter + API (which all
+	// take it as a dependency).
+	//
+	// Retention thresholds default to disabled (max_bytes=0 + max_age_days=0
+	// → retention.Load() returns nil → no eviction). The monitor still runs
+	// to maintain inventory + status; B4 wires PUT /api/config/retention so
+	// operators can flip retention on at runtime without a restart.
+	storageCoord, err := storage.New(storage.Config{
+		DataDir:       cfg.Storage.DataDir,
+		WarnAtPercent: 80,
+	}, store, ctrs)
+	if err != nil {
+		return fmt.Errorf("storage coordinator: %w", err)
+	}
+
 	// Phase A observer-class registry. Constructed BEFORE the writer
 	// goroutine starts so it is visible to the proxyHandler closure.
 	// Operators control the enabled set via cfg.Plugins; an empty block
@@ -230,7 +248,10 @@ func run() error {
 
 	// Single-writer goroutine for JSONL append + SQLite upsert. Both
 	// run in the same goroutine in one transaction per trace.
-	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, ctrs, mediaExt, mediaEnabled, nil)
+	// storageCoord provides lease arbitration: writer acquires a lease
+	// per (date, keyhash) bucket BEFORE opening the JSONL file so the
+	// retention loop can safely interleave deletes with appends.
+	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, ctrs, mediaExt, mediaEnabled, storageCoord, nil)
 	stopWriter := wrtr.Start()
 	// NOTE: stopWriter is NOT deferred here — graceful shutdown calls it
 	// in the right order (after proxy + API listeners are drained).
@@ -459,6 +480,17 @@ func run() error {
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Storage monitor goroutine. Tick cadence + retention thresholds
+	// live on the Coordinator's Config (set above in storage.New).
+	// Start returns when rootCtx cancels; the storageCoord goroutine
+	// has no per-tick I/O on the critical path so an extra tick after
+	// shutdown is harmless and won't block graceful exit.
+	go func() {
+		if err := storageCoord.Start(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("storage monitor returned error", "err", err)
+		}
+	}()
+
 	// Hosted viewer (optional; default on, pinned to viewerVersion +
 	// viewerSha256 in cmd/api-log/viewer_pins.go). The viewerhost
 	// Host fetches `dist.zip` from the configured GitHub release at
@@ -487,6 +519,7 @@ func run() error {
 		Version:      version,
 		StartedAt:    time.Now().UTC(),
 		DataDir:      cfg.Storage.DataDir,
+		StorageCoord: storageCoord,
 		MediaEnabled: mediaEnabled,
 		PluginTypes:  pluginTypeCatalogue,
 		// Hot-reload uses the same *Registry captured by the proxy and API

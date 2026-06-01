@@ -39,7 +39,7 @@ func TestWriteZipNoFilters(t *testing.T) {
 
 	ctrs := counters.New()
 	fixedNow := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
-	w := writer.New(dir, 16, store, ctrs, nil, nil, func() time.Time { return fixedNow })
+	w := writer.New(dir, 16, store, ctrs, nil, nil, nil, func() time.Time { return fixedNow })
 	stop := w.Start()
 	defer stop()
 
@@ -101,7 +101,7 @@ func TestWriteZipNoFilters(t *testing.T) {
 	stop()
 
 	var buf bytes.Buffer
-	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0); err != nil {
+	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
 		t.Fatalf("WriteZip: %v", err)
 	}
 
@@ -203,7 +203,7 @@ func TestWriteZipBundlesMedia(t *testing.T) {
 
 	ctrs := counters.New()
 	fixedNow := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
-	w := writer.New(dir, 16, store, ctrs, nil, nil, func() time.Time { return fixedNow })
+	w := writer.New(dir, 16, store, ctrs, nil, nil, nil, func() time.Time { return fixedNow })
 	stop := w.Start()
 	defer stop()
 
@@ -268,7 +268,7 @@ func TestWriteZipBundlesMedia(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0); err != nil {
+	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
 		t.Fatalf("WriteZip: %v", err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
@@ -350,7 +350,7 @@ func TestWriteZipEmpty(t *testing.T) {
 	defer store.Close()
 
 	var buf bytes.Buffer
-	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0); err != nil {
+	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
 		t.Fatalf("WriteZip empty: %v", err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))

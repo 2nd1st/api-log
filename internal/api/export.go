@@ -43,7 +43,7 @@ func exportHandler(deps Deps) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 
 		lw := &lazyHeaderWriter{w: w}
-		if err := exporter.WriteZip(lw, deps.Store, deps.DataDir, filters, limit); err != nil {
+		if err := exporter.WriteZip(lw, deps.Store, deps.DataDir, filters, limit, deps.StorageCoord); err != nil {
 			if !lw.wrote {
 				// Nothing on the wire yet — clean 500.
 				writeError(w, http.StatusInternalServerError, "export_failed",

@@ -27,7 +27,7 @@ func newTestServer(t *testing.T, token string) (*httptest.Server, *sqlite.Store,
 	t.Cleanup(func() { _ = store.Close() })
 
 	ctrs := counters.New()
-	wrtr := writer.New(dir, 16, store, ctrs, nil, nil, func() time.Time {
+	wrtr := writer.New(dir, 16, store, ctrs, nil, nil, nil, func() time.Time {
 		return time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	})
 	stop := wrtr.Start()
