@@ -11,6 +11,8 @@ English | [中文](README.zh.md)
 
 api-log is a transparent HTTP recording proxy for LLM gateway observability. It sits in front of sub2api, CLIProxyAPI (CPA), new-api, or any OpenAI-compatible gateway and captures OpenAI Chat, Anthropic Messages, Responses, and Gemini traffic. Each completed request/response is written as append-only JSONL with a SQLite index for local search, replay, and per-key analysis.
 
+> api-log 是一个面向 LLM 网关可观测性的透明 HTTP 录制 proxy。它部署在 sub2api、CLIProxyAPI（CPA）、new-api 等 OpenAI 兼容网关前面，原样转发流量，捕获 OpenAI Chat、Anthropic Messages、Responses、Gemini 等协议。每条完成的请求/响应 trace 以 append-only JSONL 落盘，并构建 SQLite 索引，用于本地检索、重放和按 key 排查问题。
+
 The forwarding goroutine never inspects bodies. JSON unmarshalling, SSE event splitting, and session inference happen in a finalize step after the response has been delivered to the client. Token accounting, evaluation pipelines, and any semantic interpretation are downstream of this project's scope.
 
 **Companion UI:** [api-log-viewer](https://github.com/2nd1st/api-log-viewer) — Svelte 5 SPA frontend for api-log traces; serve it from the built-in `/viewer/` route or behind Caddy/nginx next to the read API.
