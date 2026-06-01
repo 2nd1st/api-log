@@ -128,9 +128,22 @@ The proxy listener accepts plain HTTP. Forwarding uses `httputil.ReverseProxy` w
 Two layers, in strict order of authority:
 
 1. **`data/<date>/<key_hash>.jsonl`** — one line per completed trace. Append-only daily file per client key. Each line carries the full HTTP transaction (request headers + body, response headers + body or `events[]` for streams, timestamps, sizes, truncation flags).
-2. **`data/index.sqlite`** — derived columns the read API needs (status, model, token counts, session linkage, `jsonl_path` + `jsonl_offset`). Deletable; rebuilt from layer 1 in seconds. WAL-mode, conn pool of 8.
+2. **`data/index.sqlite`** — derived columns the read API needs (status, model, token counts, session linkage, `jsonl_path` + `jsonl_offset`). Deletable; rebuilt from layer 1 in seconds. WAL-mode, conn pool of 10 (v0.1.1).
 
 When the JSONL file and SQLite disagree, JSONL wins.
+
+#### Retention (v0.1.1)
+
+Off by default. Toggle via `PUT /api/config/retention` (persisted to `runtime_overrides.json`, survives restart):
+
+```bash
+curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"max_bytes":10000000000,"max_age_days":30}' \
+  http://localhost:7862/api/config/retention
+```
+
+Both knobs `0` keeps the engine running (inventory + `/healthz.storage` reporting) but never deletes. See [docs/retention.md](./docs/retention.md) for thresholds, eviction order, and the lease semantics that keep retention from racing with the writer.
 
 ### JSONL trace shape
 

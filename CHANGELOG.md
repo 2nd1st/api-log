@@ -10,12 +10,70 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+- **B1 / B2 — storage coordinator + lease arbitration** (commit
+  `ce31ac2`): new `internal/storage/` package owns file identity
+  (`FileID`), refcount leases, on-disk inventory, status, and
+  eviction. Writer acquires a per-`(date, keyhash)` bucket lease
+  BEFORE opening the JSONL — eviction's `deleteIfIdle` refuses while
+  any lease is held. Foundation for runtime-toggleable retention
+  without TOCTOU. Adds idempotent `idx_jsonl_path` index; switches
+  SQLite DSN to embed `journal_mode=WAL` + `busy_timeout(5000)` +
+  `foreign_keys(on)` so every conn the pool hands out has the right
+  pragmas (was only the first); bumps `MaxOpenConns` 8 → 10 to
+  absorb the storage monitor's reconcile sweep. `media.Extract(t,
+  bucket)` now takes the writer-chosen bucket FileID so media
+  co-locates with its JSONL across UTC midnight rotation.
+- **B3 — streaming `/api/export` with 413 pre-flight** (commit
+  `e73f5c2`): two-phase pipeline — Phase 1 borrows a single SQLite
+  conn via the new `StreamMatching` cursor and walks rows building
+  per-file groups + slim media refs; Phase 2 builds the zip after
+  the cursor + conn release, with `RegisterCompressor` swapping
+  Deflate level 6 → level 1 (~3× wall-clock for ~5% size on 100k+
+  row exports). Pre-flight `CountMatching` gates oversized exports
+  at a 50000-row default cap and returns 413 with a JSON pointer to
+  the bypass flag BEFORE any zip bytes hit the wire; `?all=1`
+  disables. New `project=` filter wired through; `r.Context()`
+  threads through the cursor + zip loop for clean mid-export cancel.
+- **B4 — `/healthz.storage` + `/api/config/retention` GET+PUT**
+  (commit `8b1287c`): operator-facing surface for the storage
+  coordinator. PUT validates against the same rules `storage.New`
+  enforces, applies in-memory FIRST via `coord.UpdateConfig`, then
+  persists to `runtime_overrides.json` so the next process start
+  picks it up without env / yaml plumbing. Both knobs zero ==
+  disable retention without restart. `/healthz` gains a top-level
+  `storage` key carrying `DataDirBytes / MaxBytes / MaxAgeDays /
+  UsagePct / State / EngineRunning / EvictionCapHit` plus
+  conditional `LastEvictionTs` / `LastEvictedBytes`.
+- **B5 — writer idle-close** (commit `8a95408`): after N min
+  (default 10m) without an append, the writer releases the bucket
+  lease and closes the OS handle so retention's byte-cap can touch
+  today's quiet buckets and long-tail keys don't pin a process-
+  lifetime fd each. Idle-close does NOT gzip — that's strictly a
+  date-cross event. `SetIdleTimeout` is the public knob; tests
+  pass tiny values without exposing a constructor param.
 
 ### Changed
-
-### Fixed
-
-### Removed
+- `exporter.WriteZip` signature: `(ctx, w, store, dataDir, filters,
+  coord)`. Removed `limit int` — pre-flight `CountMatching` is the
+  gate now; the cursor walks unbounded. Existing test callsites
+  pass `context.Background()`.
+- `writer.New` signature gains `coord *storage.Coordinator` as the
+  8th argument before `clock`. `nil` keeps the v0.1.0 behavior
+  (no lease arbitration); production callers wire a non-nil coord.
+- `media.Extract(t)` → `media.Extract(t, bucket storage.FileID)`.
+  Caller passes the writer-chosen bucket; fixes a UTC-midnight
+  co-location bug where a trace's TsStart could resolve a different
+  bucket than the writer just wrote the JSONL to.
+- `internal/api.Deps` gains `StorageCoord *storage.Coordinator`.
+  Nil-safe — `/healthz` omits the storage block, `/api/config/
+  retention` returns 503, and `exporter.WriteZip` falls back to
+  lease-less reads.
+- `counters.Counters` gains `AddEvictedTraces` / `AddEvictedBytes`
+  + matching `Snapshot.EvictedTraces` / `EvictedBytes`.
+- `UpdateConfig` synthesizes a baseline `Status` when called before
+  the first monitor tick so PUT-then-GET sees the new thresholds
+  instead of `pending`. `EngineRunning` stays false until the
+  monitor goroutine actually starts.
 
 ## [0.1.0] - 2026-05-31
 
