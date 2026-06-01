@@ -117,7 +117,10 @@ func TestPutRetentionPersistsAndApplies(t *testing.T) {
 	// Source flips to "override" on the next GET.
 	req2, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/config/retention", nil)
 	req2.Header.Set("Authorization", "Bearer tok-test")
-	resp2, _ := http.DefaultClient.Do(req2)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp2.Body.Close()
 	var got retentionConfigJSON
 	_ = json.NewDecoder(resp2.Body).Decode(&got)
@@ -201,7 +204,10 @@ func TestRetentionEndpoint503WhenCoordMissing(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/config/retention", nil)
 	req.Header.Set("Authorization", "Bearer tok-test")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		raw, _ := io.ReadAll(resp.Body)

@@ -72,6 +72,23 @@ type Writer struct {
 	// deleted by returning ErrFileBeingDeleted upward.
 	coord *storage.Coordinator
 
+	// idleTimeout is the duration after which an open (date, keyhash)
+	// bucket with no recent appends gets its handle closed + lease
+	// released. 0 (the default) disables idle-close entirely — files
+	// stay open until date-cross rotation or process shutdown.
+	//
+	// Why not zero by default in prod: long-tail keys keep their fds
+	// open forever otherwise, and the retention loop can't touch
+	// today's quiet buckets until idle-close drops their lease.
+	// Configure via SetIdleTimeout BEFORE calling Start.
+	//
+	// idleSweep does NOT gzip — the bucket may legitimately re-open
+	// later in the day for more appends, and date-cross is still the
+	// only event that triggers gzip rotation. Idle-close just frees
+	// fds + leases; the JSONL stays in plain (uncompressed) form on
+	// disk until the day flips.
+	idleTimeout time.Duration
+
 	// gzip workers run in the background when files rotate. We wait for
 	// them on Close so a shutdown doesn't leave a half-gzipped file behind.
 	gzWG sync.WaitGroup
@@ -164,6 +181,13 @@ func (w *Writer) Start() func() {
 	}
 }
 
+// SetIdleTimeout configures the idle-close threshold. Must be called
+// BEFORE Start. Zero (the default) disables idle-close entirely.
+// Non-zero values are clamped at the sweep level: the writer ticks at
+// idleTimeout / 2 (or once a minute, whichever is shorter) and closes
+// any handle whose last append is at least idleTimeout ago.
+func (w *Writer) SetIdleTimeout(d time.Duration) { w.idleTimeout = d }
+
 // TrySend non-blockingly enqueues a record. Returns false (and bumps
 // DropWriterFull) if the channel is full. Producers MUST NOT block on
 // the writer per ARCHITECTURE § 7.5 step 3.
@@ -197,8 +221,73 @@ func (w *Writer) SnapshotStats() Stats {
 // ---- internal goroutine ----
 
 func (w *Writer) runLoop() {
-	for rec := range w.in {
-		w.appendOne(rec)
+	// Idle-close disabled — keep the cheap drain loop.
+	if w.idleTimeout <= 0 {
+		for rec := range w.in {
+			w.appendOne(rec)
+		}
+		return
+	}
+
+	// Idle-close enabled — multiplex appendOne with periodic sweeps.
+	// Sweep cadence = min(idleTimeout/2, 1 minute). 1m floor caps the
+	// goroutine wakeup rate in prod where idleTimeout might be hours;
+	// idleTimeout/2 keeps tests responsive when idleTimeout is small.
+	sweepEvery := w.idleTimeout / 2
+	if sweepEvery > time.Minute {
+		sweepEvery = time.Minute
+	}
+	if sweepEvery <= 0 {
+		// Defensive — idleTimeout > 0 implies /2 > 0 except for
+		// nanosecond values; fall back to 1ms to keep the ticker alive.
+		sweepEvery = time.Millisecond
+	}
+	ticker := time.NewTicker(sweepEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case rec, ok := <-w.in:
+			if !ok {
+				return // channel closed → graceful shutdown
+			}
+			w.appendOne(rec)
+		case <-ticker.C:
+			w.idleSweep()
+		}
+	}
+}
+
+// idleSweep closes any open bucket whose last append is older than
+// w.idleTimeout. Releases the storage lease BEFORE closing the OS
+// handle — order doesn't matter (refcount, not file lock), but doing
+// it first means a fast eviction loop catches the release sooner.
+//
+// Does NOT gzip the closed bucket. The next append for the same
+// (date, keyhash) goes through fileFor → fresh open + lease, and
+// gzip still fires at date-cross rotation in fileFor's existing
+// branch. Idle-close just trims live fds + lease holds; the on-disk
+// .jsonl stays put.
+//
+// Runs in the writer goroutine (serialized with appendOne) so we
+// don't need extra locking around w.files.
+func (w *Writer) idleSweep() {
+	if w.idleTimeout <= 0 {
+		return
+	}
+	now := w.clock()
+	for k, of := range w.files {
+		if now.Sub(of.lastWrite) < w.idleTimeout {
+			continue
+		}
+		// Eligible — close + release.
+		if of.lease != nil {
+			of.lease.Release()
+		}
+		if err := of.f.Close(); err != nil {
+			slog.Warn("idle-close: file close failed", "path", of.path, "err", err)
+		}
+		delete(w.files, k)
 	}
 }
 
@@ -234,6 +323,11 @@ func (w *Writer) appendOne(rec Record) {
 		w.bumpJSONLFail()
 		return
 	}
+	// Stamp lastWrite AFTER the successful Write — failed writes don't
+	// keep the bucket alive in idleSweep's eyes. The clock is the
+	// injectable one (so test fixtures can advance time deterministically
+	// for idle-close coverage); same value already used for `date` above.
+	of.lastWrite = now
 	w.mu.Lock()
 	w.stats.Appended++
 	w.mu.Unlock()
@@ -411,6 +505,15 @@ type openFile struct {
 	f      *os.File
 	bucket storage.FileID // canonical identity; passed to media.Extract
 	lease  *storage.Lease // held for the lifetime of f; nil when coord disabled
+
+	// lastWrite is stamped on every successful append (and on initial
+	// fileFor open). idleSweep uses it to decide whether the handle
+	// has been quiet long enough to close + release the lease.
+	// Zero-valued handles are treated as "just opened" by fileFor's
+	// initialization below; idleSweep computes `now - lastWrite`
+	// which on a fresh handle is small, so nothing gets swept on the
+	// first tick.
+	lastWrite time.Time
 }
 
 func keyFor(date, hashShort string) string { return date + "/" + hashShort }
@@ -509,12 +612,13 @@ func (w *Writer) fileFor(date, hashShort string) (*openFile, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	of := &openFile{
-		path:   path,
-		date:   date,
-		hash:   hashShort,
-		f:      f,
-		bucket: bucket,
-		lease:  lease,
+		path:      path,
+		date:      date,
+		hash:      hashShort,
+		f:         f,
+		bucket:    bucket,
+		lease:     lease,
+		lastWrite: w.clock(),
 	}
 	w.files[k] = of
 	return of, nil

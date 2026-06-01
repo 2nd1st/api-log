@@ -277,6 +277,12 @@ func run() error {
 	// per (date, keyhash) bucket BEFORE opening the JSONL file so the
 	// retention loop can safely interleave deletes with appends.
 	wrtr := writer.New(cfg.Storage.DataDir, cfg.Storage.WriterChanSize, store, ctrs, mediaExt, mediaEnabled, storageCoord, nil)
+	// Idle-close at 10 minutes: closes file handles + releases leases
+	// for quiet (date, keyhash) buckets so retention can evict them
+	// via byte-cap before date-cross rotation, and so a long-tail
+	// fleet doesn't keep N file handles open per process. Tests
+	// override via SetIdleTimeout before Start.
+	wrtr.SetIdleTimeout(10 * time.Minute)
 	stopWriter := wrtr.Start()
 	// NOTE: stopWriter is NOT deferred here — graceful shutdown calls it
 	// in the right order (after proxy + API listeners are drained).
