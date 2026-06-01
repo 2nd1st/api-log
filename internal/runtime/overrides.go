@@ -34,8 +34,27 @@ const overridesFilename = "runtime_overrides.json"
 // through to the layer below"); a present false value is meaningful and
 // MUST not collapse into "unset".
 type Overrides struct {
-	Media   MediaOverrides   `json:"media"`
-	Plugins *PluginsOverride `json:"plugins,omitempty"`
+	Media     MediaOverrides       `json:"media"`
+	Plugins   *PluginsOverride     `json:"plugins,omitempty"`
+	Retention *RetentionOverrides  `json:"retention,omitempty"`
+}
+
+// RetentionOverrides toggles the storage-coordinator retention loop at
+// runtime. Mirrors storage.RetentionConfig but with pointer fields so
+// "operator set max_bytes to 0" (i.e. disable the byte cap) is
+// distinguishable from "operator hasn't touched this knob" (fall
+// through to default).
+//
+//   - nil pointer (Overrides.Retention == nil): no override at all;
+//     the coord starts with retention disabled per startup default.
+//   - non-nil pointer, all sub-pointers nil: deliberately-empty override
+//     written by an earlier PUT; equivalent to retention disabled.
+//   - any sub-pointer set: apply that value to coord.UpdateConfig at
+//     startup, then leave the rest at storage.RetentionConfig defaults.
+type RetentionOverrides struct {
+	MaxBytes      *int64 `json:"max_bytes,omitempty"`
+	MaxAgeDays    *int   `json:"max_age_days,omitempty"`
+	WarnAtPercent *int   `json:"warn_at_percent,omitempty"`
 }
 
 // MediaOverrides toggles the media extraction subsystem at runtime.

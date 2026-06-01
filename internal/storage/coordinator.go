@@ -164,21 +164,35 @@ func (c *Coordinator) UpdateConfig(retention RetentionConfig) error {
 		c.retention.Store(&retention)
 	}
 
-	// Recompute Status synchronously against the cached inventory
-	// + counters (which the monitor refreshes at each tick). If the
-	// monitor hasn't ticked yet, Status() returns "pending" — fine,
-	// the next tick will produce a real Status.
+	// Recompute Status synchronously so PUT-then-GET callers see the
+	// new thresholds without waiting for the next monitor tick.
+	//
+	// Two paths:
+	//   - Prior status published (normal case): carry forward
+	//     inventory + eviction fields, replace the retention-driven
+	//     fields via computeStatus.
+	//   - No prior status (UpdateConfig fired before the first tick,
+	//     typical for fresh deployments where an operator sets
+	//     retention immediately): synthesize a baseline status with
+	//     DataDirBytes=0. The next tick will replace it with real
+	//     inventory; in the meantime callers see their just-set
+	//     MaxBytes / MaxAgeDays instead of an opaque "pending".
+	cfg := c.retention.Load()
 	if prev := c.status.Load(); prev != nil {
 		fresh := *prev
-		// Recompute fields driven by retention thresholds; preserve
-		// the inventory-driven and eviction-driven fields.
-		newStatus := computeStatus(Inventory{TotalBytes: fresh.DataDirBytes}, c.retention.Load())
+		newStatus := computeStatus(Inventory{TotalBytes: fresh.DataDirBytes}, cfg)
 		// Carry forward fields computeStatus doesn't touch
 		newStatus.LastEvictionTs = fresh.LastEvictionTs
 		newStatus.LastEvictedBytes = fresh.LastEvictedBytes
 		newStatus.EvictionCapHit = fresh.EvictionCapHit
 		newStatus.EngineRunning = fresh.EngineRunning
 		newStatus.NextEvictionEst = fresh.NextEvictionEst
+		c.status.Store(&newStatus)
+	} else {
+		// Synthesize a baseline. EngineRunning stays false — the
+		// monitor goroutine hasn't started yet; flipping it to true
+		// here would lie about the state.
+		newStatus := computeStatus(Inventory{}, cfg)
 		c.status.Store(&newStatus)
 	}
 	return nil

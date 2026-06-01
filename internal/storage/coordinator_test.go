@@ -238,7 +238,7 @@ func TestUpdateConfig_RecomputesStatusSynchronously(t *testing.T) {
 	}
 }
 
-func TestUpdateConfig_NoRecomputeWhenStatusUnpublished(t *testing.T) {
+func TestUpdateConfig_SynthesizesBaselineStatusPreTick(t *testing.T) {
 	c, _ := New(minimalCfg(), nil, nil)
 	// No prior tick — Status() returns "pending".
 	if s := c.Status(); s.State != "pending" {
@@ -247,12 +247,22 @@ func TestUpdateConfig_NoRecomputeWhenStatusUnpublished(t *testing.T) {
 	if err := c.UpdateConfig(RetentionConfig{MaxBytes: 1_000_000}); err != nil {
 		t.Fatalf("UpdateConfig error: %v", err)
 	}
-	// Still pending — UpdateConfig does NOT fabricate a status; it
-	// just swaps the retention pointer and waits for next tick.
-	if s := c.Status(); s.State != "pending" {
-		t.Errorf("State = %q, want pending (no prior tick to recompute)", s.State)
+	// Synthesized baseline so PUT-then-GET callers see the new
+	// thresholds without waiting for the first monitor tick.
+	s := c.Status()
+	if s.State == "pending" {
+		t.Error("UpdateConfig pre-tick: State stayed pending; should synthesize")
 	}
-	// But retention was updated.
+	if s.MaxBytes != 1_000_000 {
+		t.Errorf("MaxBytes = %d, want 1_000_000", s.MaxBytes)
+	}
+	if s.DataDirBytes != 0 {
+		t.Errorf("DataDirBytes = %d, want 0 (no inventory yet)", s.DataDirBytes)
+	}
+	if s.EngineRunning {
+		t.Error("EngineRunning should stay false until monitor starts")
+	}
+	// And retention was updated.
 	if r := c.retention.Load(); r == nil || r.MaxBytes != 1_000_000 {
 		t.Errorf("retention not swapped: %+v", r)
 	}

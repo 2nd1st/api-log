@@ -172,6 +172,31 @@ func run() error {
 		return fmt.Errorf("storage coordinator: %w", err)
 	}
 
+	// Apply persisted retention overrides (B4.3). PUT /api/config/retention
+	// writes the same struct via SaveOverride, so the binary picks up
+	// operator-toggled retention on the next process start without needing
+	// any extra env / yaml plumbing.
+	if rov := runtimeOverrides.Retention; rov != nil {
+		retention := storage.RetentionConfig{}
+		if rov.MaxBytes != nil {
+			retention.MaxBytes = *rov.MaxBytes
+		}
+		if rov.MaxAgeDays != nil {
+			retention.MaxAgeDays = *rov.MaxAgeDays
+		}
+		if rov.WarnAtPercent != nil {
+			retention.WarnAtPercent = *rov.WarnAtPercent
+		}
+		if err := storageCoord.UpdateConfig(retention); err != nil {
+			slog.Warn("runtime retention override invalid, ignoring", "err", err)
+		} else {
+			slog.Info("retention loaded from overrides",
+				"max_bytes", retention.MaxBytes,
+				"max_age_days", retention.MaxAgeDays,
+				"warn_at_percent", retention.WarnAtPercent)
+		}
+	}
+
 	// Phase A observer-class registry. Constructed BEFORE the writer
 	// goroutine starts so it is visible to the proxyHandler closure.
 	// Operators control the enabled set via cfg.Plugins; an empty block

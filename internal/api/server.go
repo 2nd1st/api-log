@@ -114,6 +114,8 @@ func NewMux(deps Deps) http.Handler {
 	mux.Handle("GET /api/media/{trace_id}/{idx}", authMW(deps.AdminToken, mediaHandler(deps)))
 	mux.Handle("GET /api/config/media", authMW(deps.AdminToken, getConfigMedia(deps)))
 	mux.Handle("PUT /api/config/media", authMW(deps.AdminToken, putConfigMedia(deps)))
+	mux.Handle("GET /api/config/retention", authMW(deps.AdminToken, getConfigRetention(deps)))
+	mux.Handle("PUT /api/config/retention", authMW(deps.AdminToken, putConfigRetention(deps)))
 
 	// Plugin runtime-config endpoints (plugin-b-c-spec §8.5).
 	mux.Handle("GET /api/plugins/types", authMW(deps.AdminToken, listPluginTypes(deps)))
