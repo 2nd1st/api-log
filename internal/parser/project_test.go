@@ -22,9 +22,9 @@ func TestExtractProjectContext(t *testing.T) {
 			// injection format the harness uses to drop CLAUDE.md
 			// content into the prompt).
 			name: "CLAUDE.md path-prefixed ref + heading on next line",
-			input: "Contents of /Volumes/leoyun/.claude/CLAUDE.md (project instructions, checked into the codebase):\n\n" +
-				"# Leo's External Drive — /Volumes/leoyun/\n\n## 语言",
-			want: ProjectContext{Name: "Leo's External Drive — /Volumes/leoyun/", Source: "claude-md"},
+			input: "Contents of /Users/example/.claude/CLAUDE.md (project instructions, checked into the codebase):\n\n" +
+				"# example-project\n\n## Section",
+			want: ProjectContext{Name: "example-project", Source: "claude-md"},
 		},
 		{
 			// Shape: codex variant with AGENTS.md absolute-path mention.
@@ -164,7 +164,7 @@ func TestExtractSystemPrompt(t *testing.T) {
 			"system": []map[string]any{
 				{"type": "text", "text": "You are Claude Code...",
 					"cache_control": map[string]any{"type": "ephemeral"}},
-				{"type": "text", "text": "Contents of /Users/leo/.claude/CLAUDE.md (project instructions):\n\n# my-repo\n"},
+				{"type": "text", "text": "Contents of /Users/example/.claude/CLAUDE.md (project instructions):\n\n# my-repo\n"},
 			},
 		})
 		got := ExtractSystemPrompt(tr)

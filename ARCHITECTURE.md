@@ -633,8 +633,7 @@ if added later).
 
 Two consumer classes exist:
 
-- **Third-party adopters** (the open-source target per
-  `user_open_source_first` memory): k8s liveness probes, reverse-proxy
+- **Third-party adopters**: k8s liveness probes, reverse-proxy
   health checks, observability sinks, alertmanager rules. These all
   expect a `/healthz` to exist. Removing it would break adopter
   workflows the project explicitly targets.

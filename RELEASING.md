@@ -52,34 +52,6 @@ pnpm test                  # 18/18 pass (or current)
 pnpm build                 # JS gz < 100 KB
 ```
 
-## Identity migration (one-time, before the first public push)
-
-The Go module path is currently `github.com/leoyun/api-log` to match
-the operator's internal gitea. The public GitHub URL will be
-`github.com/2nd1st/api-log`. Migration is a single commit that
-must land before the first GitHub push:
-
-```bash
-# Rewrite the module path
-go mod edit -module github.com/2nd1st/api-log
-
-# Update every internal import path
-grep -rln '"github.com/leoyun/api-log/' --include='*.go' \
-  | xargs sed -i '' 's|"github.com/leoyun/api-log/|"github.com/2nd1st/api-log/|g'
-
-# Verify
-docker run --rm -e CGO_ENABLED=1 -v "$PWD":/work -w /work \
-  golang:1.22 sh -c 'go build ./cmd/api-log && go test -race -count=1 -short ./...'
-
-# Commit + push to gitea ONCE before flipping to GitHub
-git add go.mod *.go internal/ cmd/
-git commit -m "chore: rename module to github.com/2nd1st/api-log"
-git push gitea main
-```
-
-Note: the operator's internal gitea remote stays at `leoyun/api-log`;
-only the canonical module + GitHub URL move.
-
 ## Hosted viewer — version + SHA bump
 
 The backend pins both a viewer version and a SHA-256 of the viewer's
@@ -107,72 +79,15 @@ tag MUST land before the backend tag.
    chore: pin viewer vX.Y.Z (sha256 <first-8>)
    ```
 
-5. Push to gitea. Smoke-test on sub2gpt that the new binary's
-   `GET /healthz` reports the new `viewer.version` and
-   `viewer.source=cache` after the first request to `/viewer/`.
+5. Push to the release remote. Smoke-test an installed deployment
+   and verify that `GET /healthz` reports the new `viewer.version`
+   and `viewer.source=cache` after the first request to `/viewer/`.
 6. THEN proceed with the rest of the release-prep flow below
-   (filter-repo if needed, github push, tag).
+   (GitHub push, tag).
 
 Skipping this dance — bumping the backend tag against a viewer tag
 whose `dist.zip` hasn't been published yet — leaves `/viewer/`
 serving 503 until the viewer release job finishes.
-
-## Secret hygiene (filter-repo, one-time)
-
-Two scrub targets must clear history before any push to a public
-remote:
-
-1. **Leaked sub2api user keys** removed from HEAD in commit
-   `3f22001` but still in earlier objects.
-2. **Internal-only docs** that were tracked at one point and then
-   moved to the gitignored `docs/internal/` tree (pre-release review
-   punch list, the Phase L UI revamp internal spec, and the
-   superseded plugin design sketch).
-
-```bash
-# Prereq: install git-filter-repo (https://github.com/newren/git-filter-repo)
-brew install git-filter-repo
-
-# Create a replacements file matching the two leaked keys
-cat > /tmp/key-scrub.txt <<EOF
-literal:sk-REDACTED==>sk-REDACTED
-literal:sk-REDACTED==>sk-REDACTED
-EOF
-
-# List of internal-only paths to drop from history
-cat > /tmp/internal-paths.txt <<EOF
-docs/reviews/v0.1.0-pre-release.md
-docs/specs/phase-l-spec.md
-docs/specs/plugin.md
-EOF
-
-# Take a backup before rewriting
-git clone --mirror . /tmp/api-log-backup-$(date +%s).git
-
-# Rewrite all history — both key scrub and internal-path drop in
-# one filter-repo invocation
-git filter-repo \
-  --replace-text /tmp/key-scrub.txt \
-  --invert-paths --paths-from-file /tmp/internal-paths.txt \
-  --force
-
-# Force-push to gitea (destroys history!) — this is a deliberate
-# one-time event during the pre-public-push window
-git push --force gitea main
-
-# Verify the keys are gone
-git log -p --all -S 'sk-14ab1372' | head    # expected: no output
-git log -p --all -S 'sk-77c95b97' | head    # expected: no output
-
-# DELETE the backup once you're satisfied the public push is clean
-# (otherwise the leaked keys live on at /tmp/api-log-backup-*.git)
-rm -rf /tmp/api-log-backup-*.git
-rm /tmp/key-scrub.txt
-```
-
-The sub2api gateway whose keys these are is the operator's own; the
-keys are not vendor credentials. Operator note: rotate via the
-sub2api admin UI after public push, regardless.
 
 ## GitHub repo creation
 
@@ -243,12 +158,12 @@ curl -s http://localhost:7862/ | jq '.viewer'
 # expected: "https://github.com/2nd1st/api-log-viewer"
 ```
 
-## Sub2gpt / sub2api migration to ghcr (optional, after tag)
+## Deployment migration to GHCR (optional, after tag)
 
-Currently sub2gpt and sub2api build api-log from the local clone of
-the operator's gitea. Once `:0.1.0` is on GHCR, switch the
-`docker-compose.yml` `build:` clause to `image:` so subsequent rebuilds
-pull the public image instead of building from source.
+If an existing deployment builds api-log from a local source
+checkout, switch the `docker-compose.yml` `build:` clause to
+`image:` so subsequent rebuilds pull the public image instead of
+building from source.
 
 ```yaml
 # was
@@ -262,8 +177,8 @@ api-log:
   image: ghcr.io/2nd1st/api-log:0.1.0
 ```
 
-Restart the api-log service on each LXC. Verify with `docker logs`
-that the version line reads `v0.1.0`, not `dev`.
+Restart the api-log service. Verify with `docker logs` that the
+version line reads `v0.1.0`, not `dev`.
 
 ## After the announcement
 
