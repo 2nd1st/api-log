@@ -9,9 +9,11 @@ English | [中文](README.zh.md)
 [![Go version](https://img.shields.io/github/go-mod/go-version/2nd1st/api-log)](./go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-api-log is a transparent HTTP recording proxy for LLM gateway observability. It sits between clients and OpenAI-compatible or Anthropic Messages gateways, forwards traffic unchanged, records each completed request/response trace as append-only JSONL, and builds a SQLite index for local search, replay, and analysis.
+api-log is a transparent HTTP recording proxy for LLM gateway observability. It sits in front of sub2api, CLIProxyAPI (CPA), new-api, or any OpenAI-compatible gateway and captures OpenAI Chat, Anthropic Messages, Responses, and Gemini traffic. Each completed request/response is written as append-only JSONL with a SQLite index for local search, replay, and per-key analysis.
 
 The forwarding goroutine never inspects bodies. JSON unmarshalling, SSE event splitting, and session inference happen in a finalize step after the response has been delivered to the client. Token accounting, evaluation pipelines, and any semantic interpretation are downstream of this project's scope.
+
+**Companion UI:** [api-log-viewer](https://github.com/2nd1st/api-log-viewer) — Svelte 5 SPA frontend for api-log traces; serve it from the built-in `/viewer/` route or behind Caddy/nginx next to the read API.
 
 ## Status
 

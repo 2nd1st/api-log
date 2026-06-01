@@ -9,9 +9,11 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/2nd1st/api-log)](./go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-api-log 是一个面向 LLM 网关可观测性的透明 HTTP 录制 proxy。它位于客户端与 OpenAI-compatible 或 Anthropic Messages 网关之间，原样转发流量，将每条完成的请求/响应 trace 以 append-only JSONL 落盘，并构建一份 SQLite 索引供本地检索、重放与分析。
+api-log 是一个面向 LLM 网关可观测性的透明 HTTP 录制 proxy。它部署在 sub2api、CLIProxyAPI（CPA）、new-api 等 OpenAI 兼容网关前面，原样转发流量，捕获 OpenAI Chat、Anthropic Messages、Responses、Gemini 等协议。每条完成的请求/响应 trace 以 append-only JSONL 落盘，并构建 SQLite 索引，用于本地检索、重放和按 key 排查问题。
 
 转发 goroutine 不解析任何 body。JSON 反序列化、SSE 事件切分、session 推断都在响应回写给客户端之后的 finalize 阶段进行。Token 计费、评测流水线、以及任何语义层面的解释都在本项目范围之外。
+
+**配套前端：** [api-log-viewer](https://github.com/2nd1st/api-log-viewer) —— api-log trace 的 Svelte 5 SPA 前端；可由后端 `/viewer/` 托管，也可放在 Caddy/nginx 后与 read API 同源部署。
 
 ## Status
 
