@@ -39,6 +39,7 @@ func newTestServer(t *testing.T, token string) (*httptest.Server, *sqlite.Store,
 		AdminToken: token,
 		Version:    "test",
 		StartedAt:  time.Date(2026, 5, 27, 11, 0, 0, 0, time.UTC),
+		DataDir:    dir,
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

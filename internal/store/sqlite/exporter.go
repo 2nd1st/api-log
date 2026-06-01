@@ -50,6 +50,65 @@ func (s *Store) CountMatching(ctx context.Context, filters ListFilters, hardCap 
 	return n, nil
 }
 
+// StreamMatching iterates every row matching filters in the same order
+// AllMatching returns them (ts_start ASC, id ASC), invoking visit on
+// each row. If visit returns an error, iteration stops and that error
+// is returned to the caller. Used by the streaming export path so the
+// exporter never has to hold the full result set in memory.
+//
+// One database connection is borrowed via db.Conn(ctx) for the entire
+// cursor lifetime — the WAL snapshot stays consistent across all
+// visit calls without blocking the writer. The conn is released on
+// return so the standard pool can serve subsequent queries.
+//
+// No internal LIMIT: callers gate oversize exports via CountMatching
+// BEFORE calling StreamMatching. The cursor itself is unbounded so
+// adopters opting into `?all=1` see every row.
+//
+// Context propagation: a canceled ctx surfaces as the visit boundary
+// (next QueryContext call returns ctx.Err()) — partial-write callers
+// (the zip exporter) recover from that mid-stream.
+func (s *Store) StreamMatching(ctx context.Context, filters ListFilters, visit func(Row) error) error {
+	conds, args := buildListConds(filters)
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	q := fmt.Sprintf(`
+		SELECT %s
+		FROM traces
+		%s
+		ORDER BY ts_start ASC, id ASC
+	`, selectColumns, where)
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("borrow stream conn: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	rows, err := conn.QueryContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("stream query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r, err := scanRow(rows)
+		if err != nil {
+			return err
+		}
+		if err := visit(r); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // AllMatching returns every row matching filters, ordered chronologically
 // (ts_start ASC, id ASC for a deterministic tiebreak).
 //

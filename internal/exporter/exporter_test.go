@@ -3,6 +3,7 @@ package exporter
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -101,7 +102,7 @@ func TestWriteZipNoFilters(t *testing.T) {
 	stop()
 
 	var buf bytes.Buffer
-	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
+	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, nil); err != nil {
 		t.Fatalf("WriteZip: %v", err)
 	}
 
@@ -268,7 +269,7 @@ func TestWriteZipBundlesMedia(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
+	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, nil); err != nil {
 		t.Fatalf("WriteZip: %v", err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
@@ -350,7 +351,7 @@ func TestWriteZipEmpty(t *testing.T) {
 	defer store.Close()
 
 	var buf bytes.Buffer
-	if err := WriteZip(&buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
+	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, nil); err != nil {
 		t.Fatalf("WriteZip empty: %v", err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))

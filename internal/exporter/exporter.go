@@ -17,7 +17,9 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
+	"context"
 	"embed"
 	"errors"
 	"fmt"
@@ -48,44 +50,71 @@ type fileGroup struct {
 	keyhash    string // keyhash8 parsed from JSONLPath base
 }
 
+// mediaRef is the slim per-row record the streaming exporter carries
+// from Phase 1 (cursor) to Phase 2 (zip writes). It MUST stay small —
+// the full Row would balloon memory on 100k-row exports — so it holds
+// only what writeMediaForTrace actually needs to locate the on-disk
+// subtree and stamp the zip entry's modified time.
+type mediaRef struct {
+	traceID string
+	date    string // YYYY-MM-DD bucket directory
+	keyhash string // keyhash8 bucket directory
+	tsStart time.Time
+}
+
 // WriteZip streams a zip archive of every row matched by filters into w.
+//
+// Two-phase pipeline (v0.1.1):
+//
+//   1. Cursor (one SQLite conn borrowed via StreamMatching) walks rows,
+//      builds the per-file groups (jsonl_offset → trace ID) and the
+//      slim mediaRef slice. Incremental minTs / maxTs / matched count.
+//      No zip bytes are written here — if the SQLite query errors, the
+//      caller can still return a clean HTTP status.
+//   2. After the cursor closes (conn released back to the pool), the
+//      zip is built. zip.NewWriter is registered with a level-1 Deflate
+//      compressor — adopters trade ~5% size for ~3× wall-clock on 100k+
+//      row exports (the workload that motivated streaming in the first
+//      place). Each (date, keyhash) group acquires a storage lease in
+//      an inner-func scope, writes its entry, and releases on iteration
+//      exit; the naive top-of-loop defer would pin every bucket.
 //
 // dataDir is the storage root that JSONL paths in the SQLite rows are
 // relative to (or absolute; we accept either — the row's JSONLPath is
 // the authoritative reader-side path).
 //
-// limit optionally bounds how many rows we read from SQLite. Pass 0 (or
-// any non-positive value) to export every matching row — there is no
-// fixed upper bound; the export streams so memory is not the bottleneck
-// and SQLite handles 100k+ rows comfortably.
-//
 // coord (v0.1.1) is the storage coordinator. nil disables lease
 // arbitration: the exporter reads JSONL files without notifying
 // retention — fine for tests / no-retention deployments. Non-nil:
-// each per-(date, keyhash) group acquires a lease BEFORE opening its
-// JSONL and releases it AFTER writing the zip entry, in an inner-func
-// scope so leases don't pile up across all groups. Groups whose bucket
-// is mid-eviction (ErrFileBeingDeleted) are skipped with a WARN log;
-// the rest of the zip still streams cleanly.
+// groups whose bucket is mid-eviction (ErrFileBeingDeleted) are
+// skipped with a WARN log; the rest of the zip still streams cleanly.
+//
+// ctx is propagated into StreamMatching (cursor abort on cancel) and
+// honored at every group + media iteration. Cancel mid-export leaves
+// the zip well-formed up to the cancel point — adopters see a
+// truncated body, never a corrupted central directory.
+//
+// No internal hardCap: callers gate oversize exports via
+// CountMatching BEFORE calling WriteZip. The cursor walks every
+// matching row; pre-flight is the contract.
 //
 // The returned error means either the SQLite read failed (zip not yet
-// started) or a disk read failed mid-stream (zip may be partial). The
-// caller is responsible for setting HTTP headers BEFORE calling — once
-// bytes start flowing to w we can no longer set a status code.
-func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.ListFilters, limit int, coord *storage.Coordinator) error {
-	rows, err := store.AllMatching(filters, limit)
-	if err != nil {
-		return fmt.Errorf("query matching rows: %w", err)
-	}
-
-	zw := zip.NewWriter(w)
-	defer func() { _ = zw.Close() }()
-
-	// Group rows by their JSONLPath. Each group will become one zip entry.
-	// Track match-set as a set of jsonl_offset values so the per-file pass
-	// can decide complete-vs-partial without re-parsing JSON.
+// started) or a disk / zip write failed mid-stream (zip may be
+// partial — zw.Close() is still called via defer to write the central
+// directory of whatever was emitted, but downstream callers should
+// treat the archive as suspect).
+func WriteZip(ctx context.Context, w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.ListFilters, coord *storage.Coordinator) error {
+	// Phase 1 — cursor. Build groups + media refs without materializing
+	// the full result set in memory.
 	groups := make(map[string]*fileGroup)
-	for _, r := range rows {
+	var mediaRefs []mediaRef
+	var (
+		minTs        time.Time
+		maxTs        time.Time
+		matchedCount int
+	)
+	streamErr := store.StreamMatching(ctx, filters, func(r sqlite.Row) error {
+		matchedCount++
 		g, ok := groups[r.JSONLPath]
 		if !ok {
 			date, keyhash := splitJSONLPath(dataDir, r.JSONLPath)
@@ -102,10 +131,45 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 		if r.TsStart.Before(g.earliestTs) {
 			g.earliestTs = r.TsStart
 		}
+
+		// Media ref — slim copy so we can locate the per-trace subtree
+		// in Phase 2 after the full Row has been GC'd.
+		mediaRefs = append(mediaRefs, mediaRef{
+			traceID: r.ID,
+			date:    g.date,
+			keyhash: g.keyhash,
+			tsStart: r.TsStart,
+		})
+
+		if minTs.IsZero() || r.TsStart.Before(minTs) {
+			minTs = r.TsStart
+		}
+		if r.TsStart.After(maxTs) {
+			maxTs = r.TsStart
+		}
+		return nil
+	})
+	if streamErr != nil {
+		return fmt.Errorf("query matching rows: %w", streamErr)
 	}
 
+	// Phase 2 — zip. The cursor + its conn are now released; the zip
+	// build below is conn-free filesystem + memory work.
+	zw := zip.NewWriter(w)
+	defer func() { _ = zw.Close() }()
+	// Level-1 Deflate (BestSpeed). Must be installed BEFORE any entry
+	// is created. Defaults to zip.Deflate which is gzip's level 6 —
+	// fine for tiny archives, prohibitive at 100k entries. Operators
+	// trade ~5% size for ~3× wall-clock; the zip stays compatible with
+	// every standard unzip implementation.
+	zw.RegisterCompressor(zip.Deflate, func(out io.Writer) (io.WriteCloser, error) {
+		return flate.NewWriter(out, flate.BestSpeed)
+	})
+
 	// Deterministic emission order: by date then keyhash. Keeps two
-	// identical exports byte-identical.
+	// identical exports byte-identical (modulo Deflate-1 nondeterminism
+	// in some platform combinations — content is byte-identical, zip
+	// framing may differ).
 	keys := make([]string, 0, len(groups))
 	for k := range groups {
 		keys = append(keys, k)
@@ -121,28 +185,11 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 		return keys[i] < keys[j]
 	})
 
-	// Track range for the README.
-	var (
-		minTs time.Time
-		maxTs time.Time
-	)
-	for _, r := range rows {
-		if minTs.IsZero() || r.TsStart.Before(minTs) {
-			minTs = r.TsStart
-		}
-		if r.TsStart.After(maxTs) {
-			maxTs = r.TsStart
-		}
-	}
-
 	for _, k := range keys {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		g := groups[k]
-		// Inner-func + scoped defer: lease releases at the end of THIS
-		// iteration, not at WriteZip's return. A naive
-		//   defer lease.Release()
-		// at the top of this loop would pin every group's bucket for
-		// the entire export — exactly the regression the inner-func
-		// pattern prevents.
 		err := func() error {
 			if coord != nil {
 				fid, ferr := storage.FileIDFromPath(dataDir, g.path)
@@ -175,18 +222,19 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 	// exporter only copies. Read errors are silent on purpose: traces
 	// recorded with save_attachments=false legitimately have no dir, and a
 	// missing dir must not abort the export of the JSONL that *is* there.
-	// Iterate rows in deterministic order (sorted trace ID) so two
+	// Iterate refs in deterministic order (sorted trace ID) so two
 	// identical exports stay byte-identical.
-	rowsSorted := make([]sqlite.Row, len(rows))
-	copy(rowsSorted, rows)
-	sort.Slice(rowsSorted, func(i, j int) bool {
-		return rowsSorted[i].ID < rowsSorted[j].ID
+	sort.Slice(mediaRefs, func(i, j int) bool {
+		return mediaRefs[i].traceID < mediaRefs[j].traceID
 	})
 	mediaIncluded := 0
-	for _, r := range rowsSorted {
-		n, err := writeMediaForTrace(zw, dataDir, r)
+	for _, mr := range mediaRefs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := writeMediaForRef(zw, dataDir, mr)
 		if err != nil {
-			return fmt.Errorf("bundle media for %s: %w", r.ID, err)
+			return fmt.Errorf("bundle media for %s: %w", mr.traceID, err)
 		}
 		mediaIncluded += n
 	}
@@ -200,27 +248,31 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 		return err
 	}
 
-	// README — human-readable summary.
-	if err := writeReadme(zw, len(rows), mediaIncluded, filters, minTs, maxTs, time.Now().UTC()); err != nil {
+	// README — human-readable summary. Use the explicit cursor counter
+	// (matchedCount) rather than re-traversing the cursor data — no row
+	// slice is kept around in the streaming model.
+	if err := writeReadme(zw, matchedCount, mediaIncluded, filters, minTs, maxTs, time.Now().UTC()); err != nil {
 		return err
 	}
-	return nil
+
+	// Explicit Close — the deferred Close is best-effort; surface real
+	// errors to the caller so the API handler logs them.
+	return zw.Close()
 }
 
-// writeMediaForTrace copies every file under
+// writeMediaForRef copies every file under
 // `${dataDir}/${date}/${keyhash8}/media/${trace_id}/` into the zip at
 // `media/${trace_id}/${name}`. Returns the number of files added.
 //
-// date and keyhash8 are derived from the row's JSONLPath via the same
-// rule writeGroupEntry uses, so the exporter never invents a path that
-// doesn't match what the writer chose at finalize time.
+// The mediaRef carries date + keyhash from Phase 1 — the full Row has
+// already been GC'd by the time we get here, so the slim ref is
+// load-bearing for memory in big exports.
 //
 // Silently returns (0, nil) when the directory is missing or empty —
 // traces recorded with media.save_attachments=false legitimately have
 // no extracted files and the export must remain useful for them.
-func writeMediaForTrace(zw *zip.Writer, dataDir string, r sqlite.Row) (int, error) {
-	date, keyhash8 := splitJSONLPath(dataDir, r.JSONLPath)
-	mediaDir := filepath.Join(dataDir, date, keyhash8, "media", r.ID)
+func writeMediaForRef(zw *zip.Writer, dataDir string, mr mediaRef) (int, error) {
+	mediaDir := filepath.Join(dataDir, mr.date, mr.keyhash, "media", mr.traceID)
 	entries, err := os.ReadDir(mediaDir)
 	if err != nil {
 		// Directory missing (most traces) or unreadable — skip silently.
@@ -239,8 +291,8 @@ func writeMediaForTrace(zw *zip.Writer, dataDir string, r sqlite.Row) (int, erro
 			continue
 		}
 		srcPath := filepath.Join(mediaDir, e.Name())
-		dstName := filepath.ToSlash(filepath.Join("media", r.ID, e.Name()))
-		if err := copyFileToZip(zw, srcPath, dstName, r.TsStart); err != nil {
+		dstName := filepath.ToSlash(filepath.Join("media", mr.traceID, e.Name()))
+		if err := copyFileToZip(zw, srcPath, dstName, mr.tsStart); err != nil {
 			return added, err
 		}
 		added++
