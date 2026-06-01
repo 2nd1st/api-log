@@ -2,12 +2,6 @@
 // an ObserveOnFinalize plugin that drops traces whose Path matches
 // any operator-configured pattern.
 //
-// PHASE A SCAFFOLD — this plugin builds, has tests, and is configurable,
-// but is NOT wired into the writer pipeline yet (no Registry is
-// constructed in cmd/api-log/main.go). Phase A.1 lands the wiring as
-// its own commit; behavior shipped today is identical to behavior
-// shipped before this commit.
-//
 // Pattern semantics match the display-side filter the viewer already
 // uses (see ROADMAP § 4 "path noise filter" + commit 5cbdda1):
 //
@@ -25,8 +19,6 @@
 // the operator copies the same string into both places. Glob libraries
 // (path.Match, doublestar) would be over-engineered for the v0 surface
 // — two cases is enough.
-//
-// See uiux-research/plugin.md § 7.1 for the design rationale.
 package pathfilter
 
 import (
@@ -88,9 +80,8 @@ func (p *Plugin) Name() string { return Name }
 //
 //	{"patterns": ["/api/v1/*", "/api/v1/auth/me"]}
 //
-// nil cfg = no patterns = the plugin is a no-op (records everything).
-// This matches PHILOSOPHY principle 5 ("one process, one config"): an
-// absent block is the same as an explicit empty block.
+// nil cfg = no patterns = the plugin is a no-op; an absent block is the same
+// as an explicit empty block.
 //
 // Returns an error on:
 //   - Wrong type for "patterns" (not a list or list elements not strings).

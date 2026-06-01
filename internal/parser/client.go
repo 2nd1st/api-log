@@ -1,6 +1,5 @@
-// Client classification per PHILOSOPHY § 1 (named header fields only,
-// no body sniff) and § 7 (small protocol surface, new kinds add a row
-// to the taxonomy table — no general-purpose UA parser).
+// Client classification uses named header fields only, no body sniffing, and
+// a small taxonomy table instead of a general-purpose UA parser.
 //
 // First match wins. ClientInfo zero value means "no rule matched".
 

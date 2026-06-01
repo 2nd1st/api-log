@@ -248,7 +248,7 @@ Content-Type: application/json
 
 **Response fields:**
 - `save_attachments` (bool): whether media extraction is enabled.
-- `source` (string): one of `"default"` (hardcoded true), `"yaml"` (from config.yaml), `"override"` (from runtime_overrides.json), or `"env"` (from MEDIA_SAVE_ATTACHMENTS env var). Tells operator which layer is active.
+- `source` (string): one of `"default"` (hardcoded true), `"yaml"` (from config.yaml), `"override"` (from runtime_overrides.json), or `"env"` (from APILOG_MEDIA_SAVE_ATTACHMENTS env var). Tells operator which layer is active.
 
 ---
 
@@ -309,7 +309,7 @@ ${data_dir}/runtime_overrides.json
 **Load order (lowest to highest precedence):**
 1. Hardcoded default: `save_attachments: true`
 2. `config.yaml` (if present)
-3. Environment variable `MEDIA_SAVE_ATTACHMENTS` (if set)
+3. Environment variable `APILOG_MEDIA_SAVE_ATTACHMENTS` (if set)
 4. `runtime_overrides.json` (if present) — loads at startup AFTER YAML/env so it overrides them
 5. PUT /api/config/media (updates the file and in-memory config)
 
@@ -336,11 +336,11 @@ ALTER TABLE traces ADD COLUMN media_count INTEGER DEFAULT 0;
 
 ## 8. Default Config
 
-**Backend decision (2026-05-30):** `media.save_attachments: true`
+Default: `media.save_attachments: true`
 
 - Media extraction is ON by default.
 - Operators can disable it per trace via PUT /api/config/media.
-- For high-volume deployments, operators may set MEDIA_SAVE_ATTACHMENTS=false in the environment.
+- For high-volume deployments, operators may set APILOG_MEDIA_SAVE_ATTACHMENTS=false in the environment.
 
 ---
 
@@ -431,6 +431,5 @@ export.zip
 ## 12. References
 
 - Backend invariants: extraction is deterministic, non-blocking, filesystem-based (named protocol fields only; never block forwarding; JSONL row is the canonical record, media files are a derived cache).
-- Operator decision 2026-05-30: `body_b64` is not an attachment; `save_attachments: true` by default
+- `body_b64` is not an attachment; `save_attachments` defaults to true.
 - Viewer design language: single-accent restrained palette; no changes to media display UX beyond loading files from `/api/media`.
-

@@ -1,8 +1,7 @@
-// Package media implements the deterministic media-file extractor described
-// in Phase K (uiux-research/phase-k-media-contract.md) and PHILOSOPHY § 1's
-// carve-out 1.
+// Package media implements deterministic media-file extraction for named
+// protocol fields; see docs/specs/phase-k-media-contract.md.
 //
-// Scope (PHILOSOPHY § 1 + § 6):
+// Scope:
 //
 //   - Per-trace, per-NAMED-FIELD transform of base64 / data-URL payloads
 //     into derived files on disk. No synthesis, no inference of media that
@@ -11,13 +10,13 @@
 //     are a redundant cache that exists for fast viewer reads and zip-export
 //     bundling.
 //
-// Non-interference (PHILOSOPHY § 2):
+// Non-interference:
 //
 //   - Extract() runs after writer.appendOne has flushed the JSONL line.
 //     Any failure logs a WARN and returns the partial slice so the writer
 //     pipeline keeps moving. We never return a non-nil error from Extract.
 //
-// Skip rules per Phase K § 2 (and operator clarification 2026-05-30):
+// Skip rules:
 //
 //   - body_b64 is the unparseable-fallback container, NOT an attachment.
 //     Extractor skips it entirely.
@@ -100,8 +99,7 @@ func New(cfg Config) *Extractor {
 // files under ${DataDir}/${date}/${keyhash[:8]}/media/${trace_id}/, and
 // returns the list of MediaFile records.
 //
-// Per PHILOSOPHY § 2 the function never returns an error. Per-file failures
-// (mkdir denied, ENOSPC, malformed base64, …) are logged at WARN and the
+// Extract never returns an error. Per-file failures are logged at WARN and the
 // corresponding MediaFile is omitted from the returned slice. The writer
 // pipeline must keep moving regardless.
 //

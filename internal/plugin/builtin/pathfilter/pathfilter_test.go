@@ -117,9 +117,8 @@ func TestOnFinalize_Matching(t *testing.T) {
 			path:             "/v1/messages",
 			wantShouldRecord: true,
 		},
-		// Real-world patterns from ROADMAP § 4
 		{
-			name:             "sub2api_admin_polling_dropped",
+			name:             "admin_polling_dropped",
 			patterns:         []any{"/api/v1/*"},
 			path:             "/api/v1/auth/me?timezone=America/Los_Angeles",
 			wantShouldRecord: false,

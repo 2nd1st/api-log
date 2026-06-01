@@ -425,14 +425,12 @@ Daily JSONL rotation does **not** break long-running sessions.
 
 A consumer rendering "the full conversation" for a long-running session loads `n` JSONL lines from `n` different files — still a one-SQLite-query + `n` seeks operation, no joins, no scans.
 
-**Status (2026-05-30, post-deployment confirmation):** Operator OK'd
-the day-split scheme described above. Cross-day session continuity is
-reconstructed at read-time via parent_id traversal across `jsonl_path`
-values — ``SELECT ... WHERE session_root_id = ?`` returns rows
-spanning multiple JSONL files and the consumer opens each + seeks to
-`jsonl_offset`. No JSONL-boundary special-casing in the writer; no
-"long-session compaction" pass scheduled. The single SQLite `index.sqlite`
-is the join table.
+Cross-day session continuity is reconstructed at read time via
+`parent_id` traversal across `jsonl_path` values. ``SELECT ... WHERE
+session_root_id = ?`` returns rows spanning multiple JSONL files and the
+consumer opens each + seeks to `jsonl_offset`. No JSONL-boundary
+special-casing in the writer; no "long-session compaction" pass
+scheduled. The single SQLite `index.sqlite` is the join table.
 
 ### 5.6 Query patterns
 
@@ -986,7 +984,7 @@ Lexically time-sortable. Directory listings are naturally chronological. UUIDv7 
 
 ### 10.6 SSE event parsing
 
-The parser handles three SSE shapes — verified against real traffic from sub2api (see `experiments/session-inference/real_api_test.py`):
+The parser handles three SSE shapes verified against recorded reference traffic (see `experiments/session-inference/real_api_test.py`):
 
 **A. Data-only (OpenAI Chat Completions):**
 
@@ -1125,7 +1123,8 @@ and the reason for accepting it as-is.
 Some recorded /v1/responses traces contain reasoning blocks where the
 upstream returns `encrypted_content` instead of plaintext reasoning.
 There is no decryption key; the project cannot recover the underlying
-text. Operator approved shipping as-is 2026-05-30 ("如果没办法简单解决我觉得没问题的").
+text. This is accepted as a protocol limitation: api-log records the
+opaque field but cannot recover plaintext reasoning.
 The viewer's reasoning tombstone shows the summary/id without a
 "plaintext not available" placeholder — the absence of a body
 communicates the redacted state.
@@ -1190,4 +1189,3 @@ buffer-then-expose machinery only when at least one registered plugin
 opts in via the new interface. Re-open Phase D when a real adopter
 files an issue with a concrete use case that BEFORE-tools-array,
 `ActionIntercept`, or Observer-scrub genuinely cannot serve.
-

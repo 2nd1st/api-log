@@ -1,5 +1,5 @@
-// Package textreplace implements the BUILD-phase "text-replace" plugin
-// described in uiux-research/plugin-b-c-spec.md §7.1.
+// Package textreplace implements the text-replace plugin described in
+// docs/specs/plugin-b-c-spec.md.
 //
 // One plugin instance can serve BOTH directions: rules under "up" rewrite
 // inbound request content before forwarding, rules under "down" rewrite
@@ -153,10 +153,8 @@ func (p *Plugin) OnAfter(_ context.Context, req *v2.ParsedRequest, ac *v2.AfterC
 	return v2.AfterResult{Action: v2.ActionMutate, Mutated: &resp}
 }
 
-// ConfigSchema returns the form descriptor consumed by the viewer
-// Settings UI (W4). The shape mirrors spec §8.6; W3 may canonicalize
-// field-naming conventions across all plugins when the API surface
-// lands, but the field set here is plugin-specific and stable.
+// ConfigSchema returns the form descriptor consumed by the viewer Settings UI.
+// The field set here is plugin-specific and stable.
 func (p *Plugin) ConfigSchema() Schema {
 	return Schema{
 		Fields: []SchemaField{

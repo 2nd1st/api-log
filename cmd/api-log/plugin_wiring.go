@@ -454,11 +454,9 @@ func modifyBufferedResponse(
 // returned resp.Body is an io.PipeReader that feeds the
 // reverseproxy → client copy.
 //
-// The R1 amendment removed the "hold-the-terminal-event" choreography
-// the R0 design used to land a synthesized footer before message_stop.
-// With OnLastTextDelta the mutation happens on the buffered last
-// content delta BEFORE the protocol's terminator flows through the
-// dispatcher, so the terminator can pass through Process unmolested.
+// OnLastTextDelta lets the mutation happen on the buffered last content
+// delta before the protocol terminator flows through. The terminator can
+// pass through Process unmolested.
 // The final EOF flush is still required to cover Chat (no terminator
 // at all) and Gemini.
 func modifyStreamingResponse(

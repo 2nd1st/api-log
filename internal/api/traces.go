@@ -147,9 +147,9 @@ func parseListFilters(r *http.Request) (sqlite.ListFilters, string, string) {
 		f.SessionRootID = v
 	}
 	if v := q.Get("project"); v != "" {
-		// Exact match on client_project. W4.1 Phase 2: lets the viewer
-		// scope a list to one project (e.g. ?project=api-log) once the
-		// finalize-time extractor has populated the column.
+		// Exact match on client_project so callers can scope a list to
+		// one project once the finalize-time extractor has populated the
+		// column.
 		f.Project = v
 	}
 	if v := q.Get("limit"); v != "" {

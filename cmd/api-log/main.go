@@ -1,11 +1,8 @@
 // Command api-log is the transparent recording proxy described in
 // ../../README.md and ../../ARCHITECTURE.md.
 //
-// v0 milestone scope:
-//
-//	M1 (done): forwarding + body capture to tmp files.
-//	M2 (this commit): finalize parse + JSONL writer → traces land on disk.
-//	M3+:           SQLite mirror + session inference; read API; replay.
+// The command wires the proxy, capture pipeline, writer, SQLite index,
+// read API, and optional hosted viewer.
 package main
 
 import (
@@ -136,9 +133,8 @@ func run() error {
 	// (zero value) registers nothing and the proxy behaves exactly as
 	// before this commit.
 	//
-	// PHILOSOPHY §2 — capture never interferes: OnFinalize runs AFTER
-	// the response has fully reached the client. It can drop a trace
-	// from recording but cannot affect forwarding.
+	// OnFinalize runs after the response has fully reached the client. It
+	// can drop a trace from recording but cannot affect forwarding.
 	pluginReg := plugin.NewRegistry()
 	if patterns := cfg.Plugins.PathFilter.Patterns; len(patterns) > 0 {
 		pf := pathfilter.New()
@@ -158,8 +154,8 @@ func run() error {
 		}); err != nil {
 			return fmt.Errorf("plugin init: %w", err)
 		}
-		// Operators MUST be able to see what's NOT being recorded at
-		// startup — silently dropping traces would violate PHILOSOPHY §2.
+		// Log enabled filters at startup so skipped traces are visible to
+		// operators.
 		slog.Info("plugin enabled", "name", pf.Name(), "patterns", patterns)
 	}
 
@@ -172,9 +168,9 @@ func run() error {
 	// override block with non-nil but empty Instances = "all plugins
 	// off"; a nil block = "no v2 plugins configured."
 	//
-	// PHILOSOPHY §2 (amended): explicit operator-configured plugins MAY
-	// interfere through BEFORE/AFTER hooks; the capture path itself
-	// still never independently rewrites or routes.
+	// Explicit operator-configured plugins may interfere through
+	// BEFORE/AFTER hooks; the capture path itself never independently
+	// rewrites or routes.
 	//
 	// yamlV2Plugins is the pre-override YAML default list. Today the v0
 	// config carries no v2 entries, so it stays nil; the API layer's
@@ -383,12 +379,11 @@ func run() error {
 		// fully reached the client (rp.ServeHTTP returned) but BEFORE
 		// the writer goroutine sees the trace. A plugin returning
 		// shouldRecord=false drops the trace from JSONL + SQLite; the
-		// upstream forward is untouched. Per PHILOSOPHY §3 ("fail open
-		// on capture"), plugin errors are logged but do not by
-		// themselves drop the trace — the plugin must explicitly say
-		// "drop." We use context.Background() rather than the inbound
-		// ctx: that ctx may have already been cancelled by the
-		// stream-idle watchdog, and the recording decision is
+		// upstream forward is untouched. Plugin errors are logged but do
+		// not by themselves drop the trace; the plugin must explicitly
+		// return shouldRecord=false. We use context.Background() rather
+		// than the inbound ctx: that ctx may have already been cancelled
+		// by the stream-idle watchdog, and the recording decision is
 		// decoupled from the forward lifecycle.
 		shouldRecord, errs := pluginReg.IterateOnFinalize(context.Background(), tr)
 		for _, e := range errs {
@@ -467,10 +462,10 @@ func run() error {
 		DataDir:      cfg.Storage.DataDir,
 		MediaEnabled: mediaEnabled,
 		PluginTypes:  pluginTypeCatalogue,
-		// W4.2 hot-reload: pass the SAME *Registry main captured for
-		// the proxy + makeModifyResponse closures. Reload mutates the
-		// snapshot pointer inside the struct, so all of those callers
-		// pick up the new instance list on their next call.
+		// Hot-reload uses the same *Registry captured by the proxy and API
+		// closures. Reload mutates the snapshot pointer inside the struct,
+		// so all of those callers pick up the new instance list on their
+		// next call.
 		PluginV2Reg:      pluginV2Reg,
 		YAMLPlugins:      yamlV2Plugins,
 		ViewerHost:       viewerHost,
@@ -826,10 +821,10 @@ func (c *capturingResponseWriter) Flush() {
 // when X is loopback.
 //
 // Zero-config bar (open-source-first): this must produce a useful
-// client IP under direct / Caddy / nginx / Cloudflare / docker /
-// incus-loopback topologies WITHOUT operator-specific config knobs.
-// The header is still a named field on the wire — we read it as-is,
-// no synthesis (PHILOSOPHY §1).
+// client IP under direct / Caddy / nginx / Cloudflare / container-loopback
+// topologies without deployment-specific config knobs. The header is
+// still a named field on the wire — we read it as-is, with no inferred
+// client identity.
 func clientAddrOf(r *http.Request) string {
 	// 1. XFF chain: leftmost first; skip private/loopback hops.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
@@ -848,9 +843,8 @@ func clientAddrOf(r *http.Request) string {
 	//    priority than X-Real-IP because middle proxies behind the CDN
 	//    (Caddy / nginx) overwrite X-Real-IP with their own source view,
 	//    which is the CDN POP edge IP — public but NOT the real client.
-	//    Empirically observed 2026-05-30: external probe through Caddy
-	//    surfaced X-Real-IP=172.70.47.73 (Cloudflare AMS edge) while
-	//    Cf-Connecting-Ip carried the real user IPv6.
+	//    In Cloudflare-fronted deployments, X-Real-IP can contain the CDN
+	//    edge address while Cf-Connecting-Ip carries the original client.
 	if cf := strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip")); cf != "" {
 		return cf
 	}

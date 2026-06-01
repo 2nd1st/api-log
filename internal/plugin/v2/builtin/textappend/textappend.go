@@ -1,6 +1,6 @@
-// Package textappend implements the BUILD-phase "text-append" plugin
-// described in uiux-research/plugin-b-c-spec.md §7.2, with the R1
-// streaming redesign (append-to-last-delta, not new-block-synthesis).
+// Package textappend implements the text-append plugin described in
+// docs/specs/plugin-b-c-spec.md, using append-to-last-delta for streaming
+// responses.
 //
 // One plugin instance can serve BOTH directions: Up.Suffix is appended
 // to the last user message (or merged into the system prompt) before
@@ -199,8 +199,8 @@ func (p *Plugin) OnBefore(_ context.Context, req *v2.ParsedRequest, _ map[string
 //     default). The wire sequence ends with the mutated delta, then
 //     the protocol's per-block terminator, then any tool_use blocks,
 //     then the protocol's overall terminal — no synthesized event
-//     follows the protocol's terminator (this is the R1 fix vs.
-//     EmitBeforeFinish, which appended a new block after the
+//     follows the protocol's terminator (unlike the deprecated
+//     EmitBeforeFinish behavior, which appended a new block after the
 //     terminator).
 //
 //   - Streaming with Down.Target == "reasoning": no-op (dispatcher
@@ -257,8 +257,7 @@ func (p *Plugin) OnAfter(_ context.Context, req *v2.ParsedRequest, ac *v2.AfterC
 	return v2.AfterResult{Action: v2.ActionMutate, Mutated: &resp}
 }
 
-// ConfigSchema describes the per-instance form for the viewer Settings
-// panel (W4). See textreplace for the W3-canonicalization note.
+// ConfigSchema describes the per-instance form for the viewer Settings panel.
 func (p *Plugin) ConfigSchema() Schema {
 	return Schema{
 		Fields: []SchemaField{

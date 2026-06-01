@@ -11,8 +11,8 @@ import (
 	"github.com/2nd1st/api-log/internal/store/sqlite"
 )
 
-// exportHandler implements GET /api/export per
-// uiux-research/phase-i-export-contract.md.
+// exportHandler implements GET /api/export; see
+// docs/specs/phase-i-export-contract.md.
 //
 // Filters share the /api/traces vocabulary (status, model, key_hash,
 // session_root_id, since, until, path) — we parse them with the same

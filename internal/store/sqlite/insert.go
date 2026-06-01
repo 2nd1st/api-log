@@ -38,24 +38,22 @@ type Row struct {
 	TotalTokens      *int64
 	FinishReason     *string
 
-	// Extracted usage fields (T3). Deterministic copies of named protocol
-	// usage fields — PHILOSOPHY § 1 carve-out 1. Nil when the upstream
-	// response didn't carry the field; nil is distinct from a real zero.
+	// Extracted usage fields. Deterministic copies of named protocol usage
+	// fields. Nil when the upstream response did not carry the field; nil is
+	// distinct from a real zero.
 	CachedTokens        *int64 // sum of cache-hit tokens across protocols
 	CacheCreationTokens *int64 // Anthropic cache_creation_input_tokens (cache miss writes)
 	ReasoningTokens     *int64 // OpenAI Responses reasoning tokens from output
 
-	// Client-identity fields (R5a). Deterministic copies of named request-
-	// header fields routed through the taxonomy table in ExtractClient.
-	// PHILOSOPHY § 1 + § 7: no heuristic UA parsing — nil when the header
-	// doesn't match a known taxonomy row.
+	// Client-identity fields. Deterministic copies of named request-header
+	// fields routed through ExtractClient's taxonomy table; no heuristic UA
+	// parsing.
 	ClientKind    *string // taxonomy row key (e.g. "claude-code-desktop")
 	ClientVersion *string // version string from the matching header (if any)
 
-	// Project-context field (W4.1 Phase 2). Deterministic copy of the L2
-	// project name parsed out of the request body's system / instructions
-	// text by parser.ExtractProjectContext. PHILOSOPHY § 1: nil when the
-	// trace carried no project signal (distinct from a real empty string).
+	// Project-context field. Deterministic copy of the project name parsed from
+	// the request body's system/instructions text. Nil when the trace carried
+	// no project signal.
 	ClientProject *string // project name (e.g. "my-repo" from `# my-repo` heading)
 
 	// Identifiers.
@@ -73,10 +71,10 @@ type Row struct {
 	JSONLPath   string
 	JSONLOffset int64
 
-	// MediaCount is the number of extracted media files for this trace
-	// (Phase K). Filled by the writer after extraction runs; default 0
-	// when extraction is disabled or the trace has no extractable media.
-	// PHILOSOPHY § 1: deterministic count of named protocol fields only.
+	// MediaCount is the number of extracted media files for this trace. Filled
+	// by the writer after extraction runs; default 0 when extraction is disabled
+	// or the trace has no extractable media.
+	// Deterministic count of named protocol fields only.
 	MediaCount int
 }
 

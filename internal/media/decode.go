@@ -25,9 +25,8 @@ func decodePayload(payload, declaredMime string) (data []byte, mimeType string, 
 		return nil, "", false
 	}
 
-	// URL-only references: do not fetch. The viewer / exporter only carries
-	// what's actually present in the trace; remote fetch is a different
-	// product per PHILOSOPHY § 1 (no synthesis).
+	// URL-only references: do not fetch. The viewer/exporter only carries
+	// what's present in the trace; remote fetch is a different product.
 	switch {
 	case strings.HasPrefix(s, "http://"),
 		strings.HasPrefix(s, "https://"),

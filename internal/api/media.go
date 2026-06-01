@@ -1,13 +1,13 @@
 package api
 
-// mediaHandler implements GET /api/media/{trace_id}/{idx} per
-// uiux-research/phase-k-media-contract.md §5.1.
+// mediaHandler implements GET /api/media/{trace_id}/{idx}; see
+// docs/specs/phase-k-media-contract.md.
 //
-// Backend PHILOSOPHY §6: filesystem is truth. The extractor wrote files
-// at `<DataDir>/<date>/<keyhash8>/media/<trace_id>/<idx>.<ext>` at finalize
-// time; this handler is a pure read of that layout. No fallback to the
-// JSONL b64 — if the file isn't on disk (e.g. trace recorded with
-// save_attachments=false), 404 is the honest answer.
+// Filesystem is the source of truth. The extractor wrote files at
+// `<DataDir>/<date>/<keyhash8>/media/<trace_id>/<idx>.<ext>` at finalize time;
+// this handler is a pure read of that layout. No fallback to the JSONL b64 —
+// if the file isn't on disk (e.g. trace recorded with save_attachments=false),
+// 404 is the honest answer.
 //
 // Date and keyhash8 are derived from the row's JSONLPath, not from
 // TsStart, because JSONLPath is the literal bucket the extractor used;

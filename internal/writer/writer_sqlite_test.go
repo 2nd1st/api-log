@@ -125,13 +125,12 @@ func TestWriterSessionInferenceAcrossTraces(t *testing.T) {
 
 // chatTraceWithUsage builds a /v1/chat/completions trace whose Resp.Body
 // carries an OpenAI-shaped usage block + finish_reason. The Req.Headers
-// also carries a User-Agent so R5a's parser.ExtractClient finds a kind +
-// version at finalize. Used to verify both T3's usage wiring and R5a's
-// client wiring in a single fixture — both extractors run off the same
-// trace and feed the same Row, so co-locating keeps the writer test
-// surface tight. (Per PHILOSOPHY §1 the writer only copies named
-// protocol / header fields; this fixture matches the canonical OpenAI
-// shape on the body and a CLI-shape on the header.)
+// also carries a User-Agent so parser.ExtractClient finds a kind + version at
+// finalize. Used to verify both usage and client wiring in a single fixture —
+// both extractors run off the same trace and feed the same Row, so co-locating
+// keeps the writer test surface tight. The writer only copies named protocol /
+// header fields; this fixture matches the canonical OpenAI shape on the body
+// and a CLI-shape on the header.
 func chatTraceWithUsage(id string) trace.Trace {
 	reqBytes, _ := json.Marshal(map[string]any{
 		"model":    "test-model",

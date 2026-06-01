@@ -67,24 +67,16 @@ type ViewerConfig struct {
 // remains the source of truth (Backend §6); these files are a fast-read
 // cache + export-bundling target.
 //
-// Default is true (operator decision 2026-05-30). The runtime-overrides
-// layer (internal/runtime) can flip this without a restart via
-// PUT /api/config/media, and that override takes precedence over both
-// yaml and env per contract § 6.
+// Default is true. The runtime-overrides layer can flip this without a
+// restart via PUT /api/config/media, and that override takes precedence over
+// both yaml and env.
 type MediaConfig struct {
 	SaveAttachments bool `yaml:"save_attachments"`
 }
 
-// PluginsConfig holds per-plugin config subtrees for the Phase A
-// observe-class plugin pipeline. The zero value disables every plugin
-// (no plugins are constructed in main) — matching the documented
-// "empty plugins block = current behavior" contract in
-// uiux-research/plugin.md § 5.
-//
-// PHASE A SCAFFOLD ONLY: this struct is parsed but NOT yet read by
-// main.go to construct a plugin.Registry. The wiring lands in
-// Phase A.1 as its own commit. Until then, populating this block has
-// no runtime effect — the JSONL output is identical with or without it.
+// PluginsConfig holds observe-class plugin config. The zero value disables
+// every observe-class plugin, so an empty plugins block preserves default
+// recording behavior.
 type PluginsConfig struct {
 	PathFilter pathfilter.Config `yaml:"path_filter"`
 }

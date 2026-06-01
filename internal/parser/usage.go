@@ -1,28 +1,25 @@
-// Usage extraction (T3). Pulls token / model / finish-reason fields out
-// of a finalized trace.Trace and returns them as UsageInfo.
-//
-// This is PHILOSOPHY §1 carve-out 1: a deterministic copy of NAMED
-// protocol fields, no synthesis, no heuristic sniffing. The only
-// "computed" field is TotalTokens, which falls back to
+// Usage extraction pulls token, model, and finish-reason fields out of a
+// finalized trace.Trace. It deterministically copies named protocol fields;
+// no heuristic sniffing is used. The only "computed" field is TotalTokens,
+// which falls back to
 // PromptTokens+CompletionTokens when (and only when) the protocol
 // itself did not provide a total — the comment on the struct says
 // "provided or computed."
 //
-// PHILOSOPHY §2: this function MUST NOT panic and MUST NOT block. All
-// missing-field branches return nil pointers; all unmarshal errors are
-// swallowed; the writer logs WARN at the call site.
+// This function must not panic or block. All missing-field branches return nil
+// pointers; all unmarshal errors are swallowed; the writer logs WARN at the
+// call site.
 //
-// PHILOSOPHY §6: SQLite columns derived from this output are
-// rebuildable from JSONL by replaying ExtractUsage. That means the
-// implementation must read whichever named shape the on-disk trace
-// actually carries — for the OpenAI Responses protocol that is BOTH
-// streaming (resp.events[-1]) and non-streaming (resp.body) shapes;
-// otherwise a replay of a non-streaming /v1/responses trace would
-// silently drop real named usage fields.
+// SQLite columns derived from this output are rebuildable from JSONL by
+// replaying ExtractUsage. That means the implementation must read whichever
+// named shape the on-disk trace actually carries — for the OpenAI Responses
+// protocol that is BOTH streaming (resp.events[-1]) and non-streaming
+// (resp.body) shapes; otherwise a replay of a non-streaming /v1/responses trace
+// would silently drop real named usage fields.
 //
-// PHILOSOPHY §7: protocol surface is small and slow — only the four
-// protocols listed below. Unknown paths return zero UsageInfo. Adding
-// a new protocol is a separate piece of work.
+// The protocol surface is intentionally small: only the four protocols listed
+// below. Unknown paths return zero UsageInfo. Adding a new protocol is a
+// separate piece of work.
 //
 // Scope note (streaming chat / messages): the investigation contract
 // names BODY field paths for chat / messages / gemini. The Anthropic
@@ -129,8 +126,8 @@ func detectProtocol(path string) protocol {
 //   finish       : resp.body.choices[0].finish_reason
 //
 // Streaming chat completions usually do NOT carry usage in the events
-// (per the on-disk sample in deploy/dev-stack/data) — that's a body-
-// only shape per the contract, so no event scan is added here.
+// (per recorded reference samples) — that's a body-only shape per the
+// contract, so no event scan is added here.
 
 type chatUsage struct {
 	PromptTokens        *int64 `json:"prompt_tokens"`
@@ -197,9 +194,8 @@ func extractChat(t trace.Trace) UsageInfo {
 
 // --- Anthropic Messages ---------------------------------------------
 //
-// Two on-disk shapes, both covered (PHILOSOPHY §6 — same extractor must
-// rebuild SQLite from any recorded trace, regardless of streaming vs
-// non-streaming):
+// Two on-disk shapes, both covered so the same extractor can rebuild SQLite
+// from any recorded trace, regardless of streaming vs non-streaming:
 //
 //   NON-STREAMING (resp.body present):
 //     model      : resp.body.model
@@ -224,9 +220,8 @@ func extractChat(t trace.Trace) UsageInfo {
 //
 //     This is *not* synthesis — every field above is a named protocol
 //     field whose path is fixed by the Anthropic Messages spec.
-//     PHILOSOPHY §1 carve-out 1 covers it because the on-the-wire trace
-//     in SSE form has these names verbatim; the contract just chooses
-//     which event to read each named field from.
+//     The on-the-wire SSE trace has these names verbatim; the contract just
+//     chooses which event to read each named field from.
 //
 // total is not provided by protocol — computed from prompt + completion
 // when both are present. reasoning_tokens is not provided by protocol.
@@ -337,8 +332,8 @@ func extractMessages(t trace.Trace) UsageInfo {
 // --- OpenAI Responses -----------------------------------------------
 //
 // The /v1/responses protocol arrives in TWO shapes on disk and we read
-// BOTH (PHILOSOPHY §6 — same extractor must rebuild SQLite from any
-// recorded trace, regardless of streaming vs non-streaming):
+// BOTH (the same extractor must rebuild SQLite from any recorded trace,
+// regardless of streaming vs non-streaming):
 //
 //   STREAMING (resp.events present):
 //     The terminal `response.completed` SSE frame carries
@@ -478,7 +473,7 @@ func fillFromResponsesBody(out *UsageInfo, body *responsesBody) {
 //
 // Gemini SSE shape is left out: the contract names body fields only,
 // and no on-disk gemini sample exists in this repo to validate an
-// event variant — adding one would be synthesis (§1 violation).
+// event variant — adding one would be synthesis.
 
 type geminiUsageMetadata struct {
 	PromptTokenCount        *int64 `json:"promptTokenCount"`
@@ -532,10 +527,9 @@ func extractGemini(t trace.Trace) UsageInfo {
 // --- shared helpers -------------------------------------------------
 
 // computeTotal returns provided when non-nil; otherwise returns
-// prompt+completion when BOTH are non-nil; otherwise nil. Per PHILOSOPHY
-// §1 carve-out 1 the only synthesis we allow is the documented "provided
-// or computed" total — and only when both inputs are present so the
-// result is exact, not a guess.
+// prompt+completion when BOTH are non-nil; otherwise nil. The only computed
+// value is the documented "provided or computed" total, and only when exact
+// inputs are present.
 func computeTotal(provided, prompt, completion *int64) *int64 {
 	if provided != nil {
 		return provided

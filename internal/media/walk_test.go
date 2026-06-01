@@ -51,7 +51,7 @@ func TestExtract_EmptyBodies(t *testing.T) {
 func TestExtract_BodyB64IsIgnored(t *testing.T) {
 	// body_b64 lives in trace.Body.BodyB64, not in Body. We construct a
 	// trace whose Body is nil but BodyB64 is set — extractor must NOT
-	// peek at it (operator clarification 2026-05-30).
+	// peek at it.
 	tr := mkTrace("", "")
 	tr.Req.BodyB64 = helloB64
 	tr.Resp.BodyB64 = helloB64
@@ -328,8 +328,8 @@ func TestExtract_FilePathFormat(t *testing.T) {
 
 func TestExtract_IdempotentReextract(t *testing.T) {
 	// Running Extract twice on the same trace should write the same bytes
-	// to the same path and not error (PHILOSOPHY § 2: failure shouldn't
-	// block writer; rerun is the recovery path).
+	// to the same path and not error (failure should not block the writer;
+	// rerun is the recovery path).
 	req := `{"messages":[{"role":"user","content":[
 	  {"type":"image_url","image_url":{"url":"` + tinyPNGDataURL + `"}}
 	]}]}`

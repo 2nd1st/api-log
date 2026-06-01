@@ -447,8 +447,7 @@ func mustJSONString(s string) string {
 //     fires.
 //   - Per-block stops (ClassContentBlockStop) emit the buffered last
 //     delta with OnLastTextDelta applied, then the stop event itself.
-//     This is the structural fix for the R1 amendment: append-to-
-//     last-delta produces a wire-valid sequence ending with the
+//     Append-to-last-delta produces a wire-valid sequence ending with the
 //     protocol's terminator, not a synthesized block after it.
 //   - Per-event Process is the synchronous primitive. WrapStream is
 //     the channel wrapper that calls Process and FlushBeforeFinish on

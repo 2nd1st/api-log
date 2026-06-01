@@ -1,6 +1,6 @@
 // Package writer is the single-writer goroutine described in ARCHITECTURE
-// § 7 and § 8. M2 scope: JSONL append only. M3 will extend with SQLite
-// upsert + session inference inside this same goroutine.
+// § 7 and § 8. It appends JSONL and mirrors traces into SQLite with session
+// inference inside the same goroutine.
 //
 // Daily rotation per § 7.4: file date is decided by *write time*, not by
 // trace.TsStart. A trace whose ts_start is yesterday but whose finalize
@@ -77,7 +77,6 @@ type Writer struct {
 }
 
 // Stats are the cumulative drop / overflow counters this writer exposes.
-// Will be lifted into a shared Counters package in M4.
 type Stats struct {
 	DropWriterFull int64 // TrySend dropped because channel was full
 	DropJSONLFail  int64 // JSONL append failed (disk full, EIO, etc.)
@@ -100,7 +99,7 @@ type Stats struct {
 // on each finalize and, if true, invokes mediaExt.Extract on the trace
 // after the JSONL line is on disk. Extraction failures log WARN inside
 // the extractor and never block the writer or affect MediaCount past the
-// returned slice length (PHILOSOPHY §2: capture never interferes).
+// returned slice length (capture should never interfere).
 func New(dataDir string, chanCap int, store *sqlite.Store, ctrs *counters.Counters, mediaExt *media.Extractor, mediaEnabled *atomic.Bool, clock func() time.Time) *Writer {
 	if clock == nil {
 		clock = time.Now
@@ -223,16 +222,11 @@ func (w *Writer) appendOne(rec Record) {
 		w.counters.AddBytes(int64(len(line)))
 	}
 
-	// T3 — usage extraction. PHILOSOPHY §1 carve-out 1: deterministic copy
-	// of named protocol fields (no synthesis). PHILOSOPHY §2: runs AFTER
-	// JSONL is on disk; extractor failure surfaces inside the extractor
-	// (WARN log) and never blocks the writer — a returned zero-value
-	// UsageInfo just means "no fields populated" and all the nil-checks
-	// below skip the corresponding atomic add. PHILOSOPHY §6: the bumped
-	// counters and the Row fields below are derived caches; replaying
-	// parser.ExtractUsage over the JSONL on disk regenerates the same
-	// values. The single extractor call is reused below to populate the
-	// SQLite Row (one parse per finalize, not two).
+	// Usage extraction: deterministic copy of named protocol fields, with no
+	// synthesis. It runs after JSONL is on disk, so extraction misses never
+	// block the writer. The bumped counters and Row fields are derived caches;
+	// replaying parser.ExtractUsage over the JSONL regenerates the same values.
+	// The single extractor call is reused below to populate the SQLite Row.
 	usage := parser.ExtractUsage(rec.Trace)
 	if w.counters != nil {
 		if usage.PromptTokens != nil {
@@ -252,35 +246,28 @@ func (w *Writer) appendOne(rec Record) {
 		}
 	}
 
-	// R5a — client extraction. PHILOSOPHY §1 carve-out: deterministic copy
-	// of named protocol/header fields (User-Agent / x-stainless-* etc.); no
-	// general-purpose UA parsing, no body sniff. PHILOSOPHY §2: runs AFTER
-	// JSONL is on disk and never blocks the writer — the unknown path is
-	// non-allocating, so cost on miss is negligible. PHILOSOPHY §6: the
-	// derived Row.ClientKind / ClientVersion are rebuildable by replaying
-	// ExtractClient over req.headers from the JSONL. Per the design
-	// discipline note: NO per-kind counters in this commit; the SQLite
-	// columns alone are enough to drive viewer/group-by until a concrete
-	// need forces more surface area.
+	// Client extraction: deterministic copy of named protocol/header fields; no
+	// general-purpose UA parsing and no body sniffing. It runs after JSONL is on
+	// disk and never blocks the writer. The derived Row.ClientKind /
+	// ClientVersion are rebuildable by replaying ExtractClient over req.headers
+	// from the JSONL. No per-kind counters: the SQLite columns alone are enough
+	// to drive viewer/group-by until a concrete need forces more surface area.
 	client := parser.ExtractClient(rec.Trace.Req.Headers)
 
-	// W4.1 Phase 2 — project-context extraction. PHILOSOPHY §1 carve-out:
-	// deterministic copy of an operator-authored field (the L2 project
-	// name parsed out of req.body's system / instructions text). Same
-	// discipline as the client + usage extractors above: runs after JSONL
-	// is on disk, never blocks the writer, rebuildable from JSONL by
-	// replaying the same parser. PHILOSOPHY §7: no counter — the SQLite
-	// column alone is the surface, mirroring the R5a discipline.
+	// Project-context extraction: deterministic copy of the project name parsed
+	// from request-body system/instructions text. Same discipline as the client
+	// and usage extractors above: runs after JSONL is on disk, never blocks the
+	// writer, rebuildable from JSONL by replaying the same parser. No counter:
+	// the SQLite column alone is the surface.
 	project := parser.ExtractProjectContext(parser.ExtractSystemPrompt(rec.Trace))
 
-	// Phase K — media extraction. PHILOSOPHY §2: runs AFTER JSONL is on
-	// disk, so any failure here doesn't affect what was captured. The
-	// extractor itself logs WARN on per-file errors and returns whatever
-	// it managed to write; we never block on it.
+	// Media extraction runs after JSONL is on disk, so any failure here doesn't
+	// affect what was captured. The extractor itself logs WARN on per-file
+	// errors and returns whatever it managed to write; we never block on it.
 	//
-	// PHILOSOPHY §6: JSONL is truth; extracted media files are a derived
-	// copy + cache for fast read / export bundling. The base64 stays
-	// inline in the JSONL line that's already been flushed.
+	// JSONL is the source of truth; extracted media files are a derived copy +
+	// cache for fast read / export bundling. The base64 stays inline in the
+	// JSONL line that's already been flushed.
 	//
 	// Placed BEFORE the store == nil return so JSONL-only deployments
 	// (used in tests + plain-file recording mode) still extract media —
@@ -304,11 +291,10 @@ func (w *Writer) appendOne(rec Record) {
 	// already on disk and a startup rebuild will recover.
 	row := sqlite.FromTrace(rec.Trace, keyHash, of.path, offset)
 	row.MediaCount = mediaCount
-	// T3 — reuse the usage value extracted above so both the cumulative
-	// counters and the SQLite Row see exactly the same numbers from the
-	// same parse. Nil fields stay nil in the Row (distinct from a real
-	// zero) so downstream queries can tell "field absent" apart from
-	// "field present and zero" per PHILOSOPHY §1.
+	// Reuse the usage value extracted above so counters and the SQLite Row see
+	// exactly the same numbers from the same parse. Nil fields stay nil in the
+	// Row (distinct from a real zero) as required by the nullable column
+	// contract.
 	row.Model = usage.Model
 	row.FinishReason = usage.FinishReason
 	row.PromptTokens = usage.PromptTokens
@@ -317,12 +303,12 @@ func (w *Writer) appendOne(rec Record) {
 	row.CachedTokens = usage.CachedTokens
 	row.CacheCreationTokens = usage.CacheCreationTokens
 	row.ReasoningTokens = usage.ReasoningTokens
-	// R5a — client kind/version sourced from the same finalize-time parse
-	// as the usage block; nil stays nil so "field absent" remains distinct
-	// from "field present and empty" per PHILOSOPHY §1.
+	// Client kind/version are sourced from the same finalize-time parse as the
+	// usage block; nil stays nil so field absence remains distinct from a
+	// present empty value.
 	row.ClientKind = client.Kind
 	row.ClientVersion = client.Version
-	// W4.1 Phase 2 — project name from the same finalize-time parse.
+	// Project name from the same finalize-time parse.
 	// Empty Name (zero ProjectContext) leaves row.ClientProject nil so
 	// "no project signal" stays distinct from a real empty string.
 	if project.Name != "" {

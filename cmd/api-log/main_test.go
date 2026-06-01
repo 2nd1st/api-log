@@ -91,9 +91,8 @@ func TestClientAddrOf(t *testing.T) {
 			want:       "2.2.2.2",
 		},
 		{
-			// Empirical case from the sub2api probe 2026-05-30: real
-			// Cloudflare-fronted traffic carries X-Real-IP = CF edge POP
-			// (e.g. AMS 172.70.47.73) and Cf-Connecting-Ip = real client.
+			// Representative Cloudflare-fronted case: X-Real-IP can be a
+			// CF edge POP while Cf-Connecting-Ip is the real client.
 			// Cf-Connecting-Ip MUST win over a non-private X-Real-IP
 			// because the X-Real-IP value, while parseable as public, is
 			// the CDN's view of the client (CDN edge), not the real

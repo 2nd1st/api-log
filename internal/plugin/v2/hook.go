@@ -102,12 +102,10 @@ type AfterContext struct {
 	// OnLastTextDelta.
 	onLastTextDelta []func(blockIndex int, text string) string
 
-	// beforeFinish is preserved as a struct field for source
-	// compatibility with R0 plugins compiled against the synthesize-
-	// new-event design. The framework no longer calls these callbacks
-	// (the R1 amendment replaced the "emit a new content block after
-	// the terminator" model with "mutate the last delta of an existing
-	// block"). New code should use OnLastTextDelta.
+	// beforeFinish is preserved for source compatibility with plugins
+	// compiled against the deprecated synthesize-new-event design. The
+	// framework no longer calls these callbacks. New code should use
+	// OnLastTextDelta.
 	//
 	// Deprecated: register OnLastTextDelta instead. EmitBeforeFinish
 	// callbacks are accepted but never fired.
@@ -167,8 +165,8 @@ func (ac *AfterContext) OnLastTextDelta(fn func(blockIndex int, text string) str
 // compatibility with R0 plugins. Callbacks registered here are NEVER
 // fired by the framework; new code should use OnLastTextDelta.
 //
-// Deprecated: prefer OnLastTextDelta. See AfterContext.beforeFinish
-// docstring for the migration rationale (R1 amendment 2026-05-30).
+// Deprecated: prefer OnLastTextDelta. See AfterContext.beforeFinish for the
+// migration rationale.
 func (ac *AfterContext) EmitBeforeFinish(fn func(emit func(text string))) {
 	if ac == nil || fn == nil {
 		return

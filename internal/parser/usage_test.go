@@ -8,12 +8,8 @@ import (
 	"github.com/2nd1st/api-log/internal/trace"
 )
 
-// Fixtures below are mostly real shapes copied from sub2api dev-stack
-// captures (deploy/dev-stack/data/2026-05-29/*.jsonl) for the chat and
-// responses protocols. Messages and Gemini have no on-disk sample in
-// this repo; their fixtures come straight from the investigation
-// contract (PHILOSOPHY §1 carve-out 1 — these are the protocol-named
-// shapes, no synthesis).
+// Fixtures below are representative protocol shapes for chat and responses.
+// Messages and Gemini fixtures use documented protocol-named shapes.
 
 // ----- helpers ----------------------------------------------------------
 
@@ -65,7 +61,7 @@ func sp(s string) *string { return &s }
 // ----- OpenAI Chat -------------------------------------------------------
 
 func TestExtractUsage_Chat_HappyPath(t *testing.T) {
-	// Real shape from deploy/dev-stack/data/2026-05-29 chat trace.
+	// Representative chat completion response shape.
 	respBody := `{
 		"id":"chatcmpl-mock-1",
 		"object":"chat.completion",
@@ -180,7 +176,7 @@ func TestExtractUsage_Messages_MissingFields(t *testing.T) {
 }
 
 func TestExtractUsage_Messages_Streaming_HappyPath(t *testing.T) {
-	// Real shape sampled from sub2api 2026-05-30:
+	// Representative streaming Messages usage shape:
 	//   message_start.data.message.{model, usage.{input_tokens,
 	//     cache_read_input_tokens, cache_creation_input_tokens, output_tokens}}
 	//   (final) message_delta.data.{delta.stop_reason, usage.output_tokens}
@@ -482,7 +478,7 @@ func TestExtractUsage_InvalidJSONInBody_NoPanic(t *testing.T) {
 }
 
 func TestExtractUsage_ZeroVsAbsent(t *testing.T) {
-	// PHILOSOPHY: nil ≠ zero. A protocol that reports zero tokens must
+	// Nil is distinct from zero. A protocol that reports zero tokens must
 	// surface as *int64 = &0, not nil.
 	respBody := `{"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`
 	got := ExtractUsage(mkTrace("/v1/chat/completions", "", respBody, nil))
@@ -497,7 +493,7 @@ func TestExtractUsage_ZeroVsAbsent(t *testing.T) {
 func TestExtractUsage_ProvidedTotalNotOverwrittenByComputed(t *testing.T) {
 	// Synthetic: protocol reports a total that disagrees with
 	// prompt+completion. We must keep the PROVIDED total verbatim —
-	// PHILOSOPHY §1 forbids synthesizing over named fields.
+	// named protocol fields must not be overwritten by computed values.
 	respBody := `{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":99}}`
 	got := ExtractUsage(mkTrace("/v1/chat/completions", "", respBody, nil))
 	ptrEq(t, "TotalTokens (provided wins)", got.TotalTokens, p(99))

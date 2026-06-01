@@ -71,7 +71,7 @@ func TestExtractClient(t *testing.T) {
 			want: ClientInfo{Kind: strPtr("codex-cli"), Version: strPtr("0.42.0")},
 		},
 		{
-			// Real sub2api production trace UA shape, sampled 2026-05-30:
+			// Representative codex-tui UA shape:
 			// codex-tui/0.134.0 (Windows 10.0.26200; x86_64) WindowsTerminal (codex-tui; 0.134.0)
 			// The codex-tui rule MUST come before codex-cli so the more
 			// specific prefix wins.

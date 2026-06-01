@@ -33,8 +33,8 @@ type candidate struct {
 // findCandidates parses the body as JSON (best-effort), then walks it with
 // the protocol shape detectors and returns every media-bearing field it
 // finds, in document order. A nil / empty / non-JSON body yields zero
-// candidates with no error — body_b64 fallback is intentionally invisible
-// to extraction per operator clarification 2026-05-30.
+// candidates with no error; body_b64 fallback is intentionally invisible to
+// extraction.
 func findCandidates(rawBody json.RawMessage, side string) []candidate {
 	if len(rawBody) == 0 {
 		return nil

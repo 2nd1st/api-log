@@ -7,7 +7,7 @@
 //	GET /healthz                — liveness + in-memory counter snapshot
 //	GET /api/traces             — list, SQLite-backed, paginated
 //	GET /api/traces/:id         — detail, SQLite + JSONL seek
-//	GET /api/traces/:id/replay  — M5 (placeholder for now)
+//	GET /api/traces/:id/replay  — replay recorded SSE events
 package api
 
 import (

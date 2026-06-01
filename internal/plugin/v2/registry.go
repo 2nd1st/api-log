@@ -14,9 +14,8 @@ import (
 // config.yaml or runtime_overrides.json. The Registry consumes a
 // slice of these (in operator-declared order) and instantiates each.
 //
-// W3 wires this to internal/runtime.PluginsOverrides. v2 defines its
-// own type so the package builds independently of the overrides
-// extension (which lands in a later WP).
+// v2 defines its own type so the package remains independent of the runtime
+// override persistence type.
 type InstanceConfig struct {
 	Type    string
 	ID      string

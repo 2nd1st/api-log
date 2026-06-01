@@ -10,7 +10,7 @@ import (
 // TestExtractProjectContext ports the 8 viewer cases from
 // api-log-viewer/src/lib/promptSource.test.ts so backend extraction
 // stays bit-for-bit aligned with what the UI used to compute at render
-// time (W4.1 Phase 1).
+// time.
 func TestExtractProjectContext(t *testing.T) {
 	cases := []struct {
 		name  string

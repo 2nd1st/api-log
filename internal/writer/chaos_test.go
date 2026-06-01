@@ -45,7 +45,7 @@ func TestWriterChannelSaturationDoesNotBlockProducers(t *testing.T) {
 					accepted.Add(1)
 				}
 				// Any individual TrySend that takes >10ms here is a
-				// regression on principle 2 ("capture, never interfere").
+				// regression on the capture-never-interferes invariant.
 				// In practice it's a few microseconds.
 				if time.Since(start) > 100*time.Millisecond {
 					t.Errorf("TrySend blocked for %v — must be non-blocking", time.Since(start))

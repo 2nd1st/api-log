@@ -800,22 +800,12 @@ All edits go to `<DataDir>/runtime_overrides.json` via the extended `runtime.Sav
 
 ---
 
-## 9. Scope estimate
+## 9. Implementation scope
 
-This is the BUILD-phase work-package plan, not part of the frozen contract. ~ 2–3 days of work, likely 4–6 commits across two repos (api-log + api-log-viewer).
-
-| WP | Repo | Scope | Approx. effort |
-|---|---|---|---|
-| W1 | api-log | Hook framework: `ParsedRequest` / `ParsedResponse` builders (reusing parser shapes), `BeforePlugin` / `AfterPlugin` interfaces, registry with multi-instance support, `defer recover()` dispatcher, atomic.Pointer for live swap. | 0.75 day |
-| W2 | api-log | Builtin plugins: `watermark` (after) + `prompt_inject` (before). Each ships with config schema, unit tests, and a small fixture-based integration test that runs the plugin against a recorded trace fixture. | 0.5 day |
-| W3 | api-log | Runtime overrides extension: extend `Overrides` struct, GET/PUT `/api/config/plugins` + `/api/plugins/types` + per-instance PUT. Wire to atomic-rebuild. | 0.5 day |
-| W4 | api-log-viewer | Settings → Plugins section UI: list view, add/edit modal, config-schema form generator, API integration. | 0.75 day |
-| W5 | api-log | Phase A migration: rename `ObserveBeforeRecord` → `ObserveOnFinalize`, `ObserveAfterRecord` → `ObserveAfterWrite`. Update `pathfilter` to the new names. Add Observer-class call site to the finalize block. | 0.25 day |
-| W6 | api-log | Docs: recording-behavior rules from § 6 above, ARCHITECTURE update, README plugin section. | 0.25 day |
-
-W1 and W3 unblock W4; W2 depends on W1; W5 is independent and can run in parallel.
-
-Ratification gate: this spec (file you are reading) is the gate. BUILD-W1 does not start until operator confirms the checklist in § 11.
+Implementation spans the backend hook framework and builtin plugins,
+runtime override APIs, the viewer Settings plugin UI, the Observer-class
+migration, and docs updates. The hook framework and runtime APIs unblock
+the viewer UI; builtin plugins depend on the hook framework.
 
 ---
 
@@ -857,23 +847,16 @@ The remaining ambiguities the inventory surfaced. Each has a *recommended answer
 
 **Q:** Should v1 ship AFTER-hook mutation of streaming `tool_call` argument fragments?
 
-**Recommended (operator-ratified 2026-05-30 via 4-lens adversarial workflow):** **No — defer to Phase D**, not permanent cut. Rationale grounded in the 4-perspective analysis:
-
-| Lens | Verdict | Key finding |
-|---|---|---|
-| OSS adopter | cut | 7 enumerated realistic adopter personas; **zero** named a real AFTER tool_call arg mutation use case. Every "I want to control tools" maps to BEFORE-tools-array (whitelist), `ActionIntercept` (block whole response), or Observer-class JSONL scrub. |
-| Maintenance burden | phase-d | ~1400 LOC of bidirectional per-protocol SSE re-emitter (Anthropic / OpenAI Chat / OpenAI Responses / Gemini all differ) with zero named adopter = textbook vendor-wire-format trap. Defer until demand. |
-| Architectural elegance | phase-d | Frozen `ParsedResponse` already carries BOTH `Events` (raw streaming view) AND `ToolCalls` (post-stream buffered view). A future Tier-2 `OnToolCall(complete_args)` callback is purely **additive** — zero v1 plugin rework. |
-| Use-case substitution | cut | Every imagined use case has a strictly better home: tool whitelist → LiteLLM / Portkey YAML; skill injection → BEFORE-side JSON edit; arg sanitization → executor-side hooks (MCP perms, Claude Code allowlist) where it actually stops execution. |
-
-Synthesizer's call: ship-phase-d. The split was 2-2, but **defer and cut produce IDENTICAL v1 binaries** (since `ParsedResponse.Events` + `ToolCalls` are already in the frozen contract); defer preserves no-cost optionality without committing schema. Re-open Phase D only on a real adopter filing an issue with a concrete use case that BEFORE-tools-array / `ActionIntercept` / Observer-scrub genuinely can't serve.
+**Decision:** v1 does not mutate streaming `tool_call` argument fragments
+on the AFTER hook. The extension remains deferred until there is a
+concrete adopter use case.
 
 **v1 contract for AFTER hooks (carve-out enforced):**
 - `text-replace` AFTER half mutates ONLY text-content delta events (`content_block_delta` with `text_delta` type for Anthropic; `delta.content` for Chat; `response.output_text.delta` for Responses; `text` part for Gemini). `tool_use` `input_json_delta` events pass through untouched.
 - `text-append` AFTER half emits a synthesized final text delta. Tool_call events untouched.
 - `AfterResult.Mutated` MAY modify `ParsedResponse.Content` / `Reasoning`. Mutating `ParsedResponse.ToolCalls` in v1 is undefined behavior — the dispatcher won't re-emit changed tool_call args, the recorded JSONL line carries the pre-plugin args, and the client receives the upstream's original tool_calls. Document this clearly so plugin authors don't accidentally rely on it.
 
-**Phase D design when it ships:**
+**Future extension design if demand emerges:**
 
 Add a separate optional interface (Go stdlib `io.WriterTo` / `io.ReaderFrom` evolution pattern):
 
@@ -895,25 +878,22 @@ This pattern (additive optional interfaces detected by type-assertion at dispatc
 
 ---
 
-## 11. Operator ratification checklist
+## 11. Implemented contract
 
-Operator confirms each item before BUILD W1 launches. Yes/no per line.
-
-- [ ] Two hooks only (BEFORE / AFTER); both can `Continue` / `Mutate` / `Intercept`. — yes / no
-- [ ] Intercept response can be any HTTP status (200, 4xx, 5xx) and any body, plugin chooses. — yes / no
-- [ ] MVP plugins to ship: `text-replace` (both hooks, multi-direction) + `text-append` (both hooks, multi-direction) per §7.1 / §7.2 — these subsume the earlier `watermark` / `prompt_inject` placeholder names. `rate_limit_ip` is post-MVP. — yes / no
-- [ ] Multi-instance per type: yes (operator declares `(type, id, config)` tuples in a list). — yes / no
-- [ ] Pathfilter / Observer stays as a separate third class (not folded into before/after); rename Phase A's `ObserveBeforeRecord` to `ObserveOnFinalize`. — yes / no
-- [ ] Mutation recording: NO (record post-mutation only; trade audit for simplicity). — yes / no
-- [ ] Intercept marker on JSONL line as `plugin_intercepted: {type, id, hook}`. — yes / no
-- [ ] Plugin failure (error or panic) is fail-open: log WARN, continue with original; never block forwarding. — yes / no
-- [ ] Viewer Settings → Plugins section: list + add/edit/disable/remove via config-schema-driven form. — yes / no
-- [ ] Recording-behavior rules per § 6 above (opt-in plugins; post-mutation only; named-field discipline; plugin_intercepted marker; redaction-via-plugin only). — yes / no
-- [ ] Persistence: extend `runtime_overrides.json` with a `plugins` block; full-list replace on PUT (no merge-by-id). — yes / no
-- [ ] BUILD scope estimate (~ 2–3 days, 6 WPs as in § 9) is roughly right. — yes / no
-- [ ] **AFTER tool_call carve-out:** AFTER plugins may only mutate `ParsedResponse.Content` / `Reasoning` text in v1; tool_call argument mutation on the AFTER hook is **deferred to Phase D** per §10.6 and requires a named adopter use case to unlock. — yes / no
-- [ ] **text-replace AFTER pass-through:** the AFTER half of `text-replace` explicitly passes `tool_use` `input_json_delta` events through untouched (even if the match string appears in tool-call argument JSON); operators wanting that effect should use BEFORE-side stripping, full-response `ActionIntercept`, or Observer-class JSONL scrub. — yes / no
-- [ ] **Forward compatibility:** when Phase D arrives, tool_call mutation lands as a SEPARATE optional interface (`ToolCallMutator`) detected by type assertion (Go stdlib `io.WriterTo` / `io.ReaderFrom` pattern), so existing v1 `BeforePlugin` / `AfterPlugin` implementations are UNTOUCHED. The dispatcher gains buffer-then-expose machinery only when at least one registered plugin opts in via the new interface. — yes / no
+- Two hooks only (BEFORE / AFTER); both can `Continue`, `Mutate`, or `Intercept`.
+- Intercept response can be any HTTP status and any body; the plugin chooses.
+- Builtin MVP plugins are `text-replace` and `text-append`; `rate_limit_ip` is post-MVP.
+- Multi-instance per type: operators declare `(type, id, config)` tuples in a list.
+- Pathfilter / Observer stays as a separate third class, not folded into before/after.
+- Mutation recording is intentionally omitted; traces record the post-mutation state.
+- Intercept marker on the JSONL line is `plugin_intercepted: {type, id, hook}`.
+- Plugin failure is fail-open: log WARN, continue with the original payload, never block forwarding.
+- Viewer Settings exposes list, add, edit, disable, and remove through a config-schema-driven form.
+- Recording-behavior rules follow § 6 above: opt-in plugins, post-mutation recording, named-field discipline, plugin_intercepted marker, and redaction-via-plugin only.
+- Persistence extends `runtime_overrides.json` with a `plugins` block and full-list replace on PUT.
+- AFTER plugins may only mutate `ParsedResponse.Content` / `Reasoning` text in v1; tool_call argument mutation is deferred until a named adopter use case exists.
+- The AFTER half of `text-replace` explicitly passes `tool_use` `input_json_delta` events through untouched.
+- Future tool_call mutation, if added, should land as a separate optional interface (`ToolCallMutator`) detected by type assertion.
 
 ---
 
@@ -956,14 +936,14 @@ For each "out of scope" claim in the spec, the explicit reason:
 | Mutation diff audit | Out of scope per § 6.2 above. | dev profile / future plugin |
 | Cryptographic watermark | Out of MVP scope; later plugin. | future plugin |
 | Hot-reload of builtin types | Restart the process. (Plugins are in-tree Go code.) | n/a |
-| Streaming `tool_call` argument mutation on AFTER hook | No named OSS adopter; better-solved at BEFORE (strip tools from `ParsedRequest.Tools`), `ActionIntercept` (replace whole response), or Observer (scrub recording). See §10.6 for the full 4-lens analysis. | Phase D if demand emerges via a real GitHub issue |
+| Streaming `tool_call` argument mutation on AFTER hook | No named OSS adopter; better-solved at BEFORE (strip tools from `ParsedRequest.Tools`), `ActionIntercept` (replace whole response), or Observer (scrub recording). See §10.6. | future optional extension if demand emerges via a real GitHub issue |
 
 ### 12.4 What this spec does NOT freeze
 
-- The exact wire shape of the `ConfigSchema` descriptor (§ 8.6). Two implementers can disagree on field names; W3 picks a final shape and updates this spec.
-- The viewer UI's visual design. § 8 freezes the API surface and the information architecture; the actual layout / colors / etc. follow Phase L's design language.
-- The plugin-error breadcrumb max length / retention policy. § 5.3 says "small array"; W1 picks a numeric cap (recommendation: keep last 4 entries; trim oldest).
-- The exact set of routes the watermark plugin's default config matches. § 7.1 shows `/v1/*` as illustration; W2 picks a sensible default and documents it.
+- The exact wire shape of the `ConfigSchema` descriptor (§ 8.6). A future API revision may standardize field names across plugins.
+- The viewer UI's visual design. § 8 freezes the API surface and the information architecture; viewer implementation follows the viewer design system.
+- The plugin-error breadcrumb max length / retention policy. § 5.3 says "small array"; implementation chooses the numeric cap.
+- The exact set of routes the watermark plugin's default config matches. § 7.1 shows `/v1/*` as illustration; implementation chooses a sensible default and documents it.
 
 ### 12.5 Migration / deprecation
 

@@ -2,9 +2,8 @@ package api
 
 // Config handlers for runtime-mutable settings.
 //
-// Per uiux-research/phase-k-media-contract.md §5.2 / §5.3:
-//   GET  /api/config/media → current effective save_attachments + source
-//   PUT  /api/config/media → set save_attachments, persist as override
+// Media config API: GET returns the effective save_attachments value; PUT
+// persists a runtime override.
 //
 // Truth model:
 //   - The effective bool lives in deps.MediaEnabled (an *atomic.Bool
@@ -86,8 +85,8 @@ func putConfigMedia(deps Deps) http.Handler {
 // effective value is a runtime override or a config-layer value. We
 // report "yaml" for the non-override case — yaml/default/env all flow
 // through the same startup chain and are indistinguishable from here.
-// Integrate may replace this with a Deps-provided MediaSource string
-// captured at config-load time for a more precise answer.
+// A future Deps.MediaSource field could report the exact config layer if
+// needed.
 //
 // If LoadOverrides errors (malformed file, perms), we treat the override
 // as absent rather than surfacing a 500 — the effective flag in

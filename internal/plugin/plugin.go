@@ -49,12 +49,11 @@ type Plugin interface {
 // Returning shouldRecord=false drops the trace: no JSONL line is appended,
 // no SQLite row is inserted, no downstream observation fires. This is the
 // path-filter plugin's mechanism for honoring operator-configured noise
-// filters at capture time (the principled home for ROADMAP § 4
-// "capture-time skip"; see uiux-research/plugin.md § 7.1).
+// filters at capture time (the capture-time skip path).
 //
 // Returning a non-nil err is LOGGED and surfaced via /healthz counters
 // but does NOT block forwarding and does NOT change shouldRecord on its
-// own — fail-open per PHILOSOPHY principle 3 ("fail open on capture").
+// own — fail-open for capture.
 // A plugin that wants to drop on error returns shouldRecord=false
 // alongside its err; a plugin that wants to record on error returns
 // shouldRecord=true.
@@ -66,7 +65,7 @@ type Plugin interface {
 // Hook contract:
 //
 //   - Runs after the response has been fully delivered to the client.
-//     Cannot affect forwarding (principle 2 honored by construction).
+//     Cannot affect forwarding.
 //   - Runs synchronously on the finalize goroutine; the writer is not
 //     notified until every OnFinalize plugin has returned.
 //   - Runs in registration order. Returning shouldRecord=false from any
@@ -88,26 +87,20 @@ type ObserveOnFinalize interface {
 // SQLite row has been upserted — i.e. the trace is durable and queryable.
 //
 // AfterWrite is the natural home for side-effecting observation:
-// counter exports, downstream notification sinks, operator dashboards
-// (the doc's "alert" and "metrics" categories — see
-// uiux-research/plugin.md § 2.6, § 7.5). Per PHILOSOPHY principle 4
-// ("compose, don't absorb"), the in-tree project does NOT ship an
-// alerting plugin; operators who want webhooks write their own and
-// register it here.
+// counter exports, downstream notification sinks, and operator dashboards. The
+// in-tree project does not ship an alerting plugin; operators who want
+// webhooks can register one.
 //
 // Hook contract:
 //
-//   - Runs after the writer ack. (Phase A.1 caveat: TrySend is currently
-//     non-blocking; the trace is queued but may not be on disk when
-//     AfterWrite fires. See uiux-research/plugin.md § 10 "after_record
-//     durability semantics" — Phase A ships best-effort and explicitly
-//     documents it.)
+//   - Runs after writer enqueue; delivery is best-effort because TrySend is
+//     non-blocking.
 //   - Runs in registration order, sequentially per trace. Phase A does
 //     NOT fan out to a worker pool; that is Phase B territory if the
 //     observed plugins prove load-bearing.
 //   - Errors are logged. There is no way for an AfterWrite plugin to
-//     un-write an already-recorded trace (principle 6: filesystem is
-//     truth, append-only). Operators learn about plugin errors via
+//     un-write an already-recorded trace; the filesystem is the source
+//     of truth and append-only. Operators learn about plugin errors via
 //     /healthz counters.
 //
 // Renamed from ObserveAfterRecord per plugin-b-c-spec §7.3 (Phase A
@@ -209,11 +202,11 @@ func (r *Registry) Close() error {
 //     returns shouldRecord=true AND err != nil, the err is recorded
 //     and iteration continues to the next plugin.
 //
-// This mirrors PHILOSOPHY principle 3: a plugin failure does not by
-// itself drop a trace; the plugin must explicitly say "drop this."
+// A plugin failure does not by itself drop a trace; the plugin must explicitly
+// return shouldRecord=false.
 //
-// The caller (writer dispatch in Phase A.1) uses shouldRecord to gate
-// the TrySend call and logs errs for telemetry.
+// The caller (the writer dispatch path) uses shouldRecord to gate the TrySend
+// call and logs errs for telemetry.
 func (r *Registry) IterateOnFinalize(ctx context.Context, tr trace.Trace) (shouldRecord bool, errs []error) {
 	shouldRecord = true //nolint:ineffassign // implicit return value when no plugin says drop
 	for _, p := range r.plugins {

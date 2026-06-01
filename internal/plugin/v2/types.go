@@ -204,8 +204,8 @@ type ParsedRequest struct {
 // branch. Built once after the upstream response is fully read.
 //
 // For streaming responses the framework hands plugins an AfterContext
-// (see hook.go) with per-event semantic callbacks; ParsedResponse is
-// nil in that branch until W1+W3 wire the buffered-streaming path.
+// (see hook.go) with per-event semantic callbacks; ParsedResponse is nil in
+// that branch; streaming uses AfterContext with per-event callbacks instead.
 type ParsedResponse struct {
 	Protocol  Protocol
 	Status    int    // upstream HTTP status; 0 when intercepted before forward

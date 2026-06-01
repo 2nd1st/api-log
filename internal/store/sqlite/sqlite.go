@@ -3,7 +3,7 @@
 // The SQLite database mirrors JSONL columns and adds writer-computed
 // columns (model, tokens, key_hash, prefix_canonical_hash, parent_id,
 // session_root_id). Everything in here is fully rebuildable from
-// data/**/*.jsonl{,.gz} — see PHILOSOPHY § principle 6.
+// data/**/*.jsonl{,.gz}; SQLite is a rebuildable derived cache.
 //
 // v0 uses modernc.org/sqlite (pure Go, no cgo). Slightly slower than
 // mattn/go-sqlite3 but trivial to build / cross-compile.
@@ -75,9 +75,8 @@ func (s *Store) Close() error {
 // migrate creates the traces table + indexes if they don't exist.
 //
 // v0 ships exactly this schema; later versions add columns via additive
-// migrations (PHILOSOPHY principle 6: schema is append-only for the
-// lifetime). Breaking changes go through a new format key, not a column
-// rename / drop.
+// migrations (schema is append-only for the lifetime). Breaking changes go
+// through a new format key, not a column rename / drop.
 func migrate(db *sql.DB) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS traces (
@@ -130,9 +129,9 @@ CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonic
 		}
 	}
 
-	// Additive migration: media_count column (Phase K).
+	// Additive migration: media_count column.
 	//
-	// PHILOSOPHY § 6: schema is append-only — we never rename / drop, only add.
+	// Schema is append-only: never rename or drop, only add.
 	// ALTER TABLE ... ADD COLUMN has no IF NOT EXISTS in SQLite, so we run it
 	// unconditionally and swallow the specific "duplicate column" error that
 	// occurs on re-open. Any other error propagates.
@@ -143,10 +142,10 @@ CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonic
 		}
 	}
 
-	// Additive migration: usage-extraction columns (T3).
+	// Additive migration: usage-extraction columns.
 	//
-	// PHILOSOPHY § 1 (carve-out 1): deterministic copies of named protocol
-	// usage fields — cache hits / cache-creation / reasoning tokens. Nullable
+	// Deterministic copies of named protocol usage fields: cache hits, cache
+	// creation, and reasoning tokens. Nullable
 	// (no DEFAULT) so an absent field stays absent rather than being conflated
 	// with a real zero. Follows the same idempotent-ALTER pattern as media_count.
 	for _, alter := range []string{
@@ -162,13 +161,11 @@ CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonic
 		}
 	}
 
-	// Additive migration: client-identity columns (R5a).
+	// Additive migration: client-identity columns.
 	//
-	// PHILOSOPHY § 1 + § 7: deterministic copies of named request-header fields
-	// (e.g. user-agent → "claude-code-desktop" / "1.9659.2") emitted by the
-	// taxonomy-driven ExtractClient at finalize time. Nullable TEXT so absence
-	// stays absent — PHILOSOPHY § 1: no heuristic synthesis. Idempotent ALTER
-	// pattern matches media_count + the T3 usage columns above.
+	// Deterministic copies of named request-header fields emitted by
+	// ExtractClient at finalize time. Nullable TEXT so absence stays absent. The
+	// idempotent ALTER pattern matches media_count and the usage columns above.
 	for _, alter := range []string{
 		"ALTER TABLE traces ADD COLUMN client_kind TEXT",
 		"ALTER TABLE traces ADD COLUMN client_version TEXT",
@@ -181,15 +178,14 @@ CREATE INDEX IF NOT EXISTS idx_prefix_hash    ON traces(key_hash, prefix_canonic
 		}
 	}
 
-	// Additive migration: project-context column (W4.1 Phase 2).
+	// Additive migration: project-context column.
 	//
-	// PHILOSOPHY § 1 carve-out 1: deterministic copy of an operator-authored
-	// L2 system-prompt field — the project name parsed by
-	// parser.ExtractProjectContext from the request body's system / instructions
-	// text. Nullable TEXT so a trace with no project signal stays NULL (distinct
-	// from a real empty string). Mirror of the viewer's promptSource.ts so the
-	// derived column matches what the UI used to compute at render time.
-	// Idempotent ALTER pattern matches the R5a + T3 + media_count blocks above.
+	// Deterministic copy of the project name parsed from request-body
+	// system/instructions text. Nullable TEXT so a trace with no project signal
+	// stays NULL (distinct from a real empty string). Mirror of the viewer's
+	// promptSource.ts so the derived column matches what the UI used to compute
+	// at render time. Idempotent ALTER pattern matches the client, usage, and
+	// media_count blocks above.
 	if _, err := db.Exec("ALTER TABLE traces ADD COLUMN client_project TEXT"); err != nil {
 		msg := err.Error()
 		if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {

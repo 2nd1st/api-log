@@ -1,5 +1,5 @@
-// Package ids provides trace IDs and the deterministic hashes used as
-// derived encodings of named values (PHILOSOPHY § principle 1, carve-out 1).
+// Package ids provides trace IDs and deterministic hashes derived from named
+// request values.
 package ids
 
 import (

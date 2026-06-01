@@ -137,8 +137,8 @@ func detectAnthropicSource(obj map[string]any, path string) (bool, []candidate) 
 	default:
 		// Unknown type discriminator: don't claim — let the walker descend
 		// in case a future protocol revision adds new shapes we'd want to
-		// pick up generically. (Defensive; PHILOSOPHY § 1 says render
-		// what's there, so descending costs us nothing.)
+		// pick up generically. (Defensive: render what's present, so
+		// descending costs us nothing.)
 		return false, nil
 	}
 }

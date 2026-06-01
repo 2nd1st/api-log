@@ -1,11 +1,9 @@
-// Package exporter builds the /api/export zip per PHILOSOPHY § 4
-// (compose, don't absorb) — it ships JSONL bytes straight from disk into
-// a streaming zip, no transformation. The SQLite store is consulted only
-// to decide *which* JSONL lines to ship (filesystem is truth; SQLite is
-// the derived index, principle 6).
+// Package exporter builds the /api/export zip. It ships JSONL bytes straight
+// from disk into a streaming zip with no transformation; SQLite only selects
+// which JSONL lines to include.
 //
-// The zip layout matches uiux-research/phase-i-export-contract.md and
-// uiux-research/phase-k-media-contract.md § 9:
+// The zip layout follows docs/specs/phase-i-export-contract.md and
+// docs/specs/phase-k-media-contract.md:
 //
 //	data/<YYYY-MM-DD>/<keyhash8>.jsonl          (all rows on disk matched)
 //	data/<YYYY-MM-DD>/<keyhash8>.partial.jsonl  (subset matched)
@@ -132,10 +130,9 @@ func WriteZip(w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.L
 		}
 	}
 
-	// Bundle extracted media files alongside the JSONL (phase-k contract
-	// § 9). Per backend PHILOSOPHY § 1 the extractor runs at finalize time
-	// and the files on disk are the source of truth here — exporter only
-	// copies. Failure to read a media dir is silent on purpose: traces
+	// Bundle extracted media files alongside the JSONL. The extractor runs
+	// at finalize time, and files on disk are the source of truth here;
+	// exporter only copies. Read errors are silent on purpose: traces
 	// recorded with save_attachments=false legitimately have no dir, and a
 	// missing dir must not abort the export of the JSONL that *is* there.
 	// Iterate rows in deterministic order (sorted trace ID) so two
@@ -187,7 +184,7 @@ func writeMediaForTrace(zw *zip.Writer, dataDir string, r sqlite.Row) (int, erro
 	entries, err := os.ReadDir(mediaDir)
 	if err != nil {
 		// Directory missing (most traces) or unreadable — skip silently.
-		// PHILOSOPHY § 2: extraction is best-effort, not load-bearing.
+		// Extraction is best-effort, not load-bearing.
 		return 0, nil
 	}
 	// Deterministic order — os.ReadDir sorts by name on most platforms

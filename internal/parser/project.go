@@ -3,24 +3,20 @@
 // (api-log-viewer/src/lib/promptSource.ts) so the backend-derived column
 // stays in lockstep with what the UI computes at render time.
 //
-// PHILOSOPHY § 1 carve-out 1: deterministic copy of NAMED protocol body
-// fields (Chat messages[role=system], Messages system, Responses
-// instructions / input items[role=system]) followed by regex over the
-// resulting text. No header sniffing, no synthesized identifiers — the
-// regexes match against the operator-authored injection format Claude
-// Code / codex actually emit.
+// Deterministically copies named protocol body fields, then applies regexes
+// to the resulting system text. No header sniffing, no synthesized
+// identifiers.
 //
-// PHILOSOPHY § 2: ExtractProjectContext + ExtractSystemPrompt MUST NOT
-// panic and MUST NOT block. Empty / unknown inputs return the zero
-// ProjectContext (Name == "") — the caller treats that as "no project."
+// ExtractProjectContext and ExtractSystemPrompt must not panic or block.
+// Empty / unknown inputs return the zero ProjectContext (Name == "") — the
+// caller treats that as "no project."
 //
-// PHILOSOPHY § 6: SQLite columns derived from this output are
-// rebuildable from JSONL by replaying these extractors against the
-// recorded request body.
+// SQLite columns derived from this output are rebuildable from JSONL by
+// replaying these extractors against the recorded request body.
 //
-// PHILOSOPHY § 7: small, slow surface — only the three protocols listed
-// below (Chat / Messages / Responses). Gemini and unknown paths return
-// "" because the contract names no project-injection path for them.
+// The protocol surface is intentionally small: only the three protocols listed
+// below (Chat / Messages / Responses). Gemini and unknown paths return ""
+// because the contract names no project-injection path for them.
 package parser
 
 import (
@@ -175,9 +171,8 @@ func cleanHeadingText(raw string) string {
 // finalized Trace's REQUEST body, dispatched by protocol. Empty when
 // no system text is present or the body did not parse.
 //
-// Per PHILOSOPHY § 1 these are named protocol fields; per § 7 the
-// surface is small — only the three protocols whose contracts name a
-// dedicated system-prompt path:
+// These are named protocol fields; the supported surface is intentionally
+// small: only protocols with a dedicated system-prompt path.
 //
 //	Chat       /v1/chat/completions  : req.body.messages[role=system].content
 //	Messages   /v1/messages          : req.body.system  (string OR array of {type,text})

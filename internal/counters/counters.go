@@ -45,12 +45,12 @@ type Counters struct {
 	// walking the media tree.
 	totalMediaFiles atomic.Int64
 
-	// Cumulative token totals (T3). Bumped at JSONL append time from the
-	// usage block extracted by parser.ExtractUsage. Per PHILOSOPHY §1, these
-	// are a deterministic copy of named protocol fields — no synthesis. Per
-	// §6, they are a derived cache: rebuildable from JSONL by replaying the
-	// same extractor. n == 0 calls are a no-op so callers can blindly add
-	// whatever the extractor returned without branching.
+	// Cumulative token totals. Bumped at JSONL append time from the usage block
+	// extracted by parser.ExtractUsage. These are deterministic copies of named
+	// protocol fields; no synthesized usage is added. They are a derived cache:
+	// rebuildable from JSONL by replaying the same extractor. n == 0 calls are
+	// a no-op so callers can blindly add whatever the extractor returned without
+	// branching.
 	totalPromptTokens        atomic.Int64
 	totalCompletionTokens    atomic.Int64
 	totalCachedTokens        atomic.Int64
@@ -188,10 +188,9 @@ type Snapshot struct {
 	// Phase K. Zero when media extraction is disabled or has never run.
 	TotalMediaFiles int64 `json:"total_media_files"`
 
-	// Cumulative token totals (T3). Sum across all appended traces of the
-	// usage fields extracted by parser.ExtractUsage. Zero for protocols
-	// without a usage block or for traces where extraction failed (WARN-
-	// only per PHILOSOPHY §2).
+	// Cumulative token totals. Sum across all appended traces of the usage
+	// fields extracted by parser.ExtractUsage. Zero for protocols without usage
+	// or traces where extraction failed.
 	TotalPromptTokens        int64 `json:"total_prompt_tokens"`
 	TotalCompletionTokens    int64 `json:"total_completion_tokens"`
 	TotalCachedTokens        int64 `json:"total_cached_tokens"`

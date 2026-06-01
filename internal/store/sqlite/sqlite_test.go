@@ -284,7 +284,7 @@ func TestAppendTraceUsageFieldsRoundTrip(t *testing.T) {
 	}
 
 	// Nil-in / nil-out: a row with no usage columns set must come back with
-	// nil pointers (not zero-valued). PHILOSOPHY § 1: absence ≠ zero.
+	// nil pointers (not zero-valued). Absence must remain distinct from zero.
 	rEmpty := mkRow("01H_no_usage", ts.Add(time.Second))
 	if err := s.AppendTrace(rEmpty, nil); err != nil {
 		t.Fatalf("AppendTrace empty: %v", err)
@@ -308,9 +308,9 @@ func TestAppendTraceClientColumnsRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ts := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
 
-	// Populated branch: writer fills ClientKind + ClientVersion from the
-	// taxonomy-driven ExtractClient (PHILOSOPHY § 1 + § 7). Verifies the R5a
-	// columns added by the new migration round-trip through INSERT + SELECT.
+	// Populated branch: writer fills ClientKind + ClientVersion from
+	// taxonomy-driven ExtractClient. Verifies the client columns round-trip
+	// through INSERT + SELECT.
 	r := mkRow("01H_client", ts)
 	kind := "claude-code-desktop"
 	r.ClientKind = &kind
@@ -333,7 +333,8 @@ func TestAppendTraceClientColumnsRoundTrip(t *testing.T) {
 	}
 
 	// Absent branch: a row with no client fields set must come back with nil
-	// pointers (not zero-valued empty strings). PHILOSOPHY § 1: absence ≠ "".
+	// pointers (not zero-valued empty strings). Absence must remain distinct
+	// from an empty string.
 	rEmpty := mkRow("01H_no_client", ts.Add(time.Second))
 	if err := s.AppendTrace(rEmpty, nil); err != nil {
 		t.Fatalf("AppendTrace empty: %v", err)
@@ -354,10 +355,9 @@ func TestAppendTraceClientProjectRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ts := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
 
-	// Populated branch: writer fills ClientProject from the parser
-	// (W4.1 Phase 2). Verifies the new client_project column added by
-	// migration round-trips through INSERT + SELECT, AND that the
-	// ListFilters.Project filter selects only matching rows.
+	// Populated branch: writer fills ClientProject from the parser. Verifies
+	// the client_project column round-trips through INSERT + SELECT and
+	// ListFilters.Project selects only matching rows.
 	rA := mkRow("01H_proj_a", ts)
 	projA := "api-log"
 	rA.ClientProject = &projA
@@ -418,8 +418,8 @@ func TestAppendTraceClientProjectRoundTrip(t *testing.T) {
 
 func TestMigrateIdempotentOnReopen(t *testing.T) {
 	// Open + close + re-open the same file. The ALTER TABLE on the second
-	// migrate() pass must NOT error (PHILOSOPHY § 6: schema is append-only,
-	// migrations must be idempotent).
+	// migrate() pass must NOT error (schema is append-only, migrations must be
+	// idempotent).
 	path := filepath.Join(t.TempDir(), "reopen.sqlite")
 	s1, err := Open(path)
 	if err != nil {
