@@ -423,11 +423,15 @@ func (w *Writer) fileFor(date, hashShort string) (*openFile, error) {
 
 	// Open new handle. mkdir -p of `data/<date>/`.
 	dir := filepath.Join(w.dataDir, date)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 0o700 / 0o600 — the JSONL line contains the full request body
+	// including raw API keys (Authorization / x-api-key headers); the
+	// owning process is the only legitimate reader. Adopters who need
+	// broader read access (backup systems, ops tools) chmod themselves.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	path := filepath.Join(dir, hashShort+".jsonl")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -448,7 +452,7 @@ func compressInPlace(path string) error {
 	defer src.Close()
 
 	gzPath := path + ".gz"
-	dst, err := os.OpenFile(gzPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	dst, err := os.OpenFile(gzPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}

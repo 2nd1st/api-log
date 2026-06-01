@@ -129,14 +129,15 @@ func LoadOverrides(dataDir string) (Overrides, error) {
 //  3. Marshalling, writing to a .tmp sibling, then os.Rename — readers
 //     see either the old file or the new one, never a torn write.
 //
-// The directory is created with 0o755 if it does not exist; this matches
-// the writer's behavior for the data dir tree.
+// The directory is created with 0o700 if it does not exist; matches
+// the rest of the data dir tree (the writer + capture also use 0o700)
+// since the same tree carries raw API keys via JSONL siblings.
 func SaveOverride(dataDir string, mutate func(*Overrides)) error {
 	if mutate == nil {
 		return fmt.Errorf("SaveOverride: mutate fn is nil")
 	}
 
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dataDir, err)
 	}
 
@@ -159,8 +160,11 @@ func SaveOverride(dataDir string, mutate func(*Overrides)) error {
 	tmp := path + ".tmp"
 
 	// O_TRUNC so a leftover .tmp from a previous crash is overwritten,
-	// not appended to. 0o644 because the file contains no secrets.
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// not appended to. 0o600 — the file itself carries no secrets, but
+	// it shares the data dir with JSONL traces that do; keep the perm
+	// floor consistent so a forgotten chmod doesn't reset the dir to a
+	// permissive world-read state.
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

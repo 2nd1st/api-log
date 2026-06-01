@@ -20,7 +20,11 @@ func NewTmpDir(dataDir string) (*TmpDir, error) {
 	if err := os.RemoveAll(path); err != nil {
 		return nil, fmt.Errorf("wipe tmp dir: %w", err)
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	// 0o700: tmp/ carries in-flight bodies that include raw API keys
+	// (Authorization headers) before the finalize step writes them to
+	// the JSONL. Same-user readability is the threat model floor; the
+	// owning process is the only legitimate reader.
+	if err := os.MkdirAll(path, 0o700); err != nil {
 		return nil, fmt.Errorf("create tmp dir: %w", err)
 	}
 	return &TmpDir{Path: path}, nil
@@ -32,11 +36,14 @@ func (t *TmpDir) CreateTraceFiles(traceID string) (req, resp *os.File, err error
 	reqPath := filepath.Join(t.Path, traceID+".req.bin")
 	respPath := filepath.Join(t.Path, traceID+".resp.bin")
 
-	req, err = os.OpenFile(reqPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// 0o600 for the same reason the tmp dir is 0o700 — the body bytes
+	// here include raw API keys; only the owning process should be
+	// able to read them.
+	req, err = os.OpenFile(reqPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create req tmp: %w", err)
 	}
-	resp, err = os.OpenFile(respPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	resp, err = os.OpenFile(respPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		_ = req.Close()
 		_ = os.Remove(reqPath)

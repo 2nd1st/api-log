@@ -54,6 +54,13 @@ func decodeEncoding(raw []byte, headers trace.Headers) (decoded []byte, decodedH
 	return current, out, ""
 }
 
+// maxDecodedSize caps gzip-decompressed output regardless of how
+// compressed the input was. Without this, a small adversarial input
+// (a gzip bomb) could decompress into hundreds of MB and exhaust
+// memory. Adopters running api-log against larger-than-default bodies
+// already bump storage.max_body_bytes; that limit is reused here.
+const defaultMaxDecodedSize = 32 << 20 // 32 MiB — matches Config default
+
 func decodeOne(link string, in []byte) ([]byte, error) {
 	switch strings.ToLower(link) {
 	case "identity":
@@ -64,9 +71,16 @@ func decodeOne(link string, in []byte) ([]byte, error) {
 			return nil, fmt.Errorf("gzip: %w", err)
 		}
 		defer func() { _ = gz.Close() }()
-		out, err := io.ReadAll(gz)
+		// LimitReader + a sentinel read past the limit detects bomb
+		// inputs: if the decompressor still has more bytes after we
+		// drain MaxDecodedSize, the input is oversized and we refuse
+		// to materialize it.
+		out, err := io.ReadAll(io.LimitReader(gz, int64(defaultMaxDecodedSize)+1))
 		if err != nil {
 			return nil, fmt.Errorf("gzip read: %w", err)
+		}
+		if len(out) > defaultMaxDecodedSize {
+			return nil, fmt.Errorf("gzip output exceeds max %d bytes (suspected bomb / oversized body)", defaultMaxDecodedSize)
 		}
 		return out, nil
 	// br and zstd are intentionally NOT supported in v0 — the stdlib

@@ -155,24 +155,36 @@ func hasAnyV2Plugins(reg *pluginv2.Registry) bool {
 	return false
 }
 
-// readAndResetBody fully reads r.Body and replaces it with an
-// io.NopCloser around the buffered bytes so the downstream forwarder
-// gets the same payload. Returns the buffered bytes for the BEFORE-
-// chain parser.
+// readAndResetBody fully reads r.Body (capped at maxBytes) and
+// replaces it with an io.NopCloser around the buffered bytes so the
+// downstream forwarder gets the same payload. Returns the buffered
+// bytes for the BEFORE-chain parser.
 //
-// On read error returns nil; the caller falls back to "no plugins ran"
-// and forwards the original (now possibly-EOF) body — capture still
-// records what flowed.
-func readAndResetBody(r *http.Request) ([]byte, error) {
+// On read error or oversize returns (nil, err); the caller falls back
+// to "no plugins ran" and forwards the original (now possibly-EOF)
+// body — capture still records what flowed up to the limit. This is
+// the fail-open we promise: plugin failures never block forwarding.
+//
+// The cap is the same Storage.MaxBodyBytes the capture path uses —
+// adopters who legitimately handle larger bodies bump the config knob
+// in one place and both layers honor it. Without a cap a hostile
+// client could send an unbounded body and force the BEFORE-chain
+// buffer into OOM.
+func readAndResetBody(r *http.Request, maxBytes int64) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, nil
 	}
-	buf, err := io.ReadAll(r.Body)
+	// LimitReader to maxBytes+1 so we can detect "exactly at limit" vs
+	// "over the limit". An exact match passes; one extra byte fails.
+	buf, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
 	if err != nil {
 		_ = r.Body.Close()
 		return nil, fmt.Errorf("buffer request body: %w", err)
 	}
 	_ = r.Body.Close()
+	if int64(len(buf)) > maxBytes {
+		return nil, fmt.Errorf("request body exceeds max %d bytes; plugin chain skipped", maxBytes)
+	}
 	r.Body = io.NopCloser(bytes.NewReader(buf))
 	r.ContentLength = int64(len(buf))
 	r.Header.Set("Content-Length", strconv.Itoa(len(buf)))
@@ -358,7 +370,7 @@ func recordIntercept(ctx context.Context, info *pluginv2.InterceptInfo) {
 //     message_stop" semantics… actually the inverse: we hold the
 //     terminal event until after the flush so the suffix arrives first,
 //     then the terminator. See the goroutine for details.
-func makeModifyResponse(reg *pluginv2.Registry) func(*http.Response) error {
+func makeModifyResponse(reg *pluginv2.Registry, maxBytes int64) func(*http.Response) error {
 	return func(resp *http.Response) error {
 		if resp == nil || reg == nil {
 			return nil
@@ -375,7 +387,7 @@ func makeModifyResponse(reg *pluginv2.Registry) func(*http.Response) error {
 		if pluginv2.IsSSEContentType(resp.Header.Get("Content-Type")) {
 			return modifyStreamingResponse(ctx, reg, parsed, resp)
 		}
-		return modifyBufferedResponse(ctx, reg, parsed, resp)
+		return modifyBufferedResponse(ctx, reg, parsed, resp, maxBytes)
 	}
 }
 
@@ -395,9 +407,15 @@ func modifyBufferedResponse(
 	reg *pluginv2.Registry,
 	req *pluginv2.ParsedRequest,
 	resp *http.Response,
+	maxBytes int64,
 ) error {
 	capH := proxy.DetachResponseCapture(resp)
-	body, err := io.ReadAll(resp.Body)
+	// Cap the response body read at the same maxBytes (Storage.MaxBodyBytes)
+	// the request side uses. An upstream that streams a hostile / oversized
+	// response would otherwise force this buffer into OOM. Fail-open on
+	// oversize: replay empty body downstream, skip the AFTER chain, keep
+	// the trace observable.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	_ = resp.Body.Close()
 	if err != nil {
 		// Read failed; replay empty body downstream. The respSink will
@@ -405,6 +423,17 @@ func modifyBufferedResponse(
 		// client sees, so re-wrap unconditionally.
 		resp.Body = capH.RewrapBody(io.NopCloser(bytes.NewReader(nil)))
 		resp.ContentLength = 0
+		return nil
+	}
+	if int64(len(body)) > maxBytes {
+		// Oversize response: replay the truncated bytes downstream and
+		// skip the AFTER chain. We're past the point where forward-as-is
+		// would work (capH already detached); the client sees a body
+		// truncated at maxBytes, which matches what the capture pipeline
+		// would have recorded anyway.
+		body = body[:maxBytes]
+		resp.Body = capH.RewrapBody(io.NopCloser(bytes.NewReader(body)))
+		resp.ContentLength = int64(len(body))
 		return nil
 	}
 	parsedResp := pluginv2.ParsedResponseFromBody(req.Protocol, resp.StatusCode, resp.Header, body)

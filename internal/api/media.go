@@ -127,7 +127,12 @@ func mediaHandler(deps Deps) http.Handler {
 
 		w.Header().Set("Content-Type", ctype)
 		w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
-		w.Header().Set("Cache-Control", "public, immutable")
+		// Media files carry the same data the trace JSONL carries —
+		// raw recorded content from gateway traffic. Bearer-gated, but
+		// shared caches (proxy / CDN / browser disk) MUST NOT treat the
+		// response as shareable. `private, no-store` keeps the file
+		// out of any cache layer.
+		w.Header().Set("Cache-Control", "private, no-store")
 		// WriteHeader(200) implicit on first Write via io.Copy.
 		_, _ = io.Copy(w, f)
 	})

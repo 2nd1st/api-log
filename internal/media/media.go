@@ -132,7 +132,7 @@ func (e *Extractor) Extract(t trace.Trace) []MediaFile {
 	var parentDir string
 	if e.cfg.DataDir != "" {
 		parentDir = filepath.Join(e.cfg.DataDir, date, hashShort, "media", t.ID)
-		if err := os.MkdirAll(parentDir, 0o755); err != nil {
+		if err := os.MkdirAll(parentDir, 0o700); err != nil {
 			slog.Warn("media extractor: mkdir failed",
 				"trace_id", t.ID, "dir", parentDir, "err", err)
 			// Continue: we'll skip writes but still return decoded metadata
@@ -153,7 +153,7 @@ func (e *Extractor) Extract(t trace.Trace) []MediaFile {
 
 		if parentDir != "" {
 			fullPath := filepath.Join(parentDir, strconv.Itoa(idx)+"."+ext)
-			if err := os.WriteFile(fullPath, data, 0o644); err != nil {
+			if err := os.WriteFile(fullPath, data, 0o600); err != nil {
 				slog.Warn("media extractor: write failed",
 					"trace_id", t.ID, "path", fullPath, "err", err)
 				continue

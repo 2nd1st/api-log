@@ -86,8 +86,28 @@ func run() error {
 	)
 
 	// Ensure data/ + data/tmp/ exist (tmp/ is wiped clean).
-	if err := os.MkdirAll(cfg.Storage.DataDir, 0o755); err != nil {
+	// 0o700 — the tree under DataDir carries raw API keys (JSONL
+	// req.headers.Authorization etc.); the owning process should be
+	// the only legitimate reader.
+	if err := os.MkdirAll(cfg.Storage.DataDir, 0o700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
+	}
+	// Re-stat after MkdirAll because MkdirAll is a no-op when the
+	// directory already exists — a pre-existing data dir from an older
+	// install may still be 0o755. WARN so the operator notices, but
+	// don't hard-fail: adopters who deliberately want broader read
+	// access (backup systems with their own ACLs, ops tooling) chmod
+	// the directory themselves and the warning surfaces the choice.
+	if st, err := os.Stat(cfg.Storage.DataDir); err == nil {
+		mode := st.Mode().Perm()
+		if mode&0o077 != 0 {
+			slog.Warn("data dir is world / group readable",
+				"path", cfg.Storage.DataDir,
+				"mode", fmt.Sprintf("%#o", mode),
+				"recommended", "0o700",
+				"why", "JSONL traces contain raw Authorization / x-api-key headers; tighten with `chmod 700` unless you specifically need broader access.",
+			)
+		}
 	}
 	tmpDir, err := capture.NewTmpDir(cfg.Storage.DataDir)
 	if err != nil {
@@ -235,7 +255,7 @@ func run() error {
 	// the per-request ParsedRequest from the outbound context and
 	// either replaces the body buffer (non-streaming) or wraps it in
 	// an io.Pipe driven by a StreamDispatcher (streaming).
-	rp.ModifyResponse = makeModifyResponse(pluginV2Reg)
+	rp.ModifyResponse = makeModifyResponse(pluginV2Reg, cfg.Storage.MaxBodyBytes)
 
 	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		traceID := ids.NewTraceID()
@@ -283,7 +303,7 @@ func run() error {
 		ctx = withInterceptSlot(ctx, slot)
 		var postChainReq *pluginv2.ParsedRequest
 		if hasAnyV2Plugins(pluginV2Reg) {
-			body, berr := readAndResetBody(r)
+			body, berr := readAndResetBody(r, cfg.Storage.MaxBodyBytes)
 			if berr != nil {
 				slog.Warn("buffer request body for plugins failed; skipping plugin chain",
 					"trace_id", traceID, "err", berr)

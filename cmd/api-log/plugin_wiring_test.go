@@ -251,7 +251,7 @@ func TestStreamingAfterMutation_CaptureReflectsClientBytes(t *testing.T) {
 	sinks := newStreamCaptureSinks(traceID)
 	rt := &proxy.CaptureTransport{Inner: http.DefaultTransport, Sinks: sinks}
 	rp := proxy.NewReverseProxy(upstreamURL, rt)
-	rp.ModifyResponse = makeModifyResponse(reg)
+	rp.ModifyResponse = makeModifyResponse(reg, 32<<20)
 
 	// 4. Front handler attaches the trace ID + a post-BEFORE-chain
 	//    ParsedRequest (Chat protocol). makeModifyResponse short-
