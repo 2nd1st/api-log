@@ -61,9 +61,9 @@ docker compose up -d
 
 Three reference stacks live under [`deploy/`](./deploy/README.md) — `dev-stack/` (api-log + a mock LLM gateway, no real upstream needed), `demo/` (api-log in front of `sub2api`), and `bench/` (api-log alone, upstream URL via env). For a 5-minute try-it, run `deploy/dev-stack/`; that's what [`tests/integration/run.sh`](./tests/integration/run.sh) drives.
 
-### Without Docker
+### Native install
 
-For sub2api / CLIProxyAPI / new-api operators who run on a homelab box or a small VPS without Docker, install the binary directly:
+For sub2api / CLIProxyAPI / new-api operators running on a homelab box or a small VPS, install the binary directly:
 
 ```bash
 go install github.com/2nd1st/api-log/cmd/api-log@v0.1.0

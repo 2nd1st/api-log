@@ -1,9 +1,8 @@
 # systemd
 
 Reference unit for running api-log as a native binary under
-systemd. Use this when you don't want Docker — common for sub2api /
-CLIProxyAPI / new-api operators running on a homelab box, a small
-VPS, or anywhere `docker` would just add a moving part.
+systemd — common for sub2api / CLIProxyAPI / new-api operators
+running on a homelab box or a small VPS.
 
 ## One-time setup
 

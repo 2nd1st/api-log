@@ -16,10 +16,10 @@ data into a bind-mounted `./data/` directory inside the stack folder. The
 auto-generated admin bearer for the read API lands at `./data/admin_token` on
 first run.
 
-## Native (no Docker)
+## Native install
 
-For sub2api / CLIProxyAPI / new-api operators who run on a homelab
-box or a small VPS without Docker:
+For sub2api / CLIProxyAPI / new-api operators running on a homelab
+box or a small VPS:
 
 | dir | what it is |
 |---|---|
