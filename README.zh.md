@@ -61,6 +61,17 @@ docker compose up -d
 
 [`deploy/`](./deploy/README.md) 下有三套参考栈——`dev-stack/`（api-log + mock LLM 网关，无需真实上游）、`demo/`（api-log 挡在 `sub2api` 前面）、`bench/`（api-log 单跑，上游 URL 通过 env 传入）。想 5 分钟跑通就用 `deploy/dev-stack/`；[`tests/integration/run.sh`](./tests/integration/run.sh) 也是跑这套。
 
+### 不用 Docker
+
+跑 sub2api / CLIProxyAPI / new-api 的运维如果是 homelab 机器或小 VPS，不想引入 Docker，可以直接装 binary：
+
+```bash
+go install github.com/2nd1st/api-log/cmd/api-log@v0.1.0
+api-log -version
+```
+
+完整流程——service 用户、env 文件、data 目录、带 hardening 默认值的 systemd unit——见 [`deploy/systemd/`](./deploy/systemd/)。Caddy + nginx 把 TLS 套在 read API + viewer SPA 同一个域名上的示例见 [`deploy/reverse-proxy/`](./deploy/reverse-proxy/)。
+
 ### Point clients at api-log
 
 把客户端的 `base_url` 从网关端口（`:7860`）改到 api-log 的 proxy listener（`:7861`）。客户端其他配置都不动。

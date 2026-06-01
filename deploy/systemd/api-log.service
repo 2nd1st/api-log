@@ -1,0 +1,33 @@
+[Unit]
+Description=api-log — transparent recording proxy for LLM gateway traffic
+Documentation=https://github.com/2nd1st/api-log
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=api-log
+Group=api-log
+
+# Override defaults via /etc/api-log/env (env-var lines, see README).
+# Common knobs:
+#   APILOG_PROXY_LISTEN=0.0.0.0:7861
+#   APILOG_PROXY_UPSTREAM=http://127.0.0.1:7860
+#   APILOG_API_LISTEN=127.0.0.1:7862
+#   APILOG_STORAGE_DATA_DIR=/var/lib/api-log/data
+EnvironmentFile=-/etc/api-log/env
+
+ExecStart=/usr/local/bin/api-log
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+# Hardening — every adopter should keep these on.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/api-log
+
+[Install]
+WantedBy=multi-user.target

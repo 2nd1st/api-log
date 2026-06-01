@@ -1,7 +1,9 @@
 # deploy/
 
-Three reference Docker Compose stacks, scoped to different deployment shapes.
-Pick the one that matches what you want to do today.
+Reference configs for running api-log under Docker Compose **or**
+natively. Pick the one that matches what you want to do today.
+
+## Docker Compose stacks
 
 | dir | what it is | when to use |
 |---|---|---|
@@ -13,6 +15,19 @@ All three publish the proxy on `:7861` and the read API on `:7862`, and write
 data into a bind-mounted `./data/` directory inside the stack folder. The
 auto-generated admin bearer for the read API lands at `./data/admin_token` on
 first run.
+
+## Native (no Docker)
+
+For sub2api / CLIProxyAPI / new-api operators who run on a homelab
+box or a small VPS without Docker:
+
+| dir | what it is |
+|---|---|
+| [`systemd/`](./systemd/) | `api-log.service` unit + setup steps for running api-log as a native binary under systemd (user, env file, data dir, hardening defaults). |
+| [`reverse-proxy/`](./reverse-proxy/) | Single-domain Caddy + nginx samples putting TLS in front of the read API and the api-log-viewer SPA on the same origin. The proxy listener (`:7861`) is intentionally kept off TLS — clients hit it on the internal network. |
+
+`go install github.com/2nd1st/api-log/cmd/api-log@v0.1.0` gets you the
+binary; the systemd README walks the setup from there.
 
 If none of these match your topology, the canonical install is six lines of
 YAML — see the "Deploy concept" section of the top-level [README](../README.md).

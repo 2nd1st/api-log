@@ -61,6 +61,17 @@ docker compose up -d
 
 Three reference stacks live under [`deploy/`](./deploy/README.md) — `dev-stack/` (api-log + a mock LLM gateway, no real upstream needed), `demo/` (api-log in front of `sub2api`), and `bench/` (api-log alone, upstream URL via env). For a 5-minute try-it, run `deploy/dev-stack/`; that's what [`tests/integration/run.sh`](./tests/integration/run.sh) drives.
 
+### Without Docker
+
+For sub2api / CLIProxyAPI / new-api operators who run on a homelab box or a small VPS without Docker, install the binary directly:
+
+```bash
+go install github.com/2nd1st/api-log/cmd/api-log@v0.1.0
+api-log -version
+```
+
+The full setup — service user, env file, data directory, systemd unit with sensible hardening defaults — lives at [`deploy/systemd/`](./deploy/systemd/). Caddy + nginx samples for putting TLS in front of the read API and the viewer SPA on the same origin live at [`deploy/reverse-proxy/`](./deploy/reverse-proxy/).
+
 ### Point clients at api-log
 
 Change the client `base_url` from the gateway port (`:7860`) to the api-log proxy listener (`:7861`). No other client changes.

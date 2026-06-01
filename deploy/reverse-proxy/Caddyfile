@@ -1,0 +1,31 @@
+# Caddyfile — reverse-proxy api-log + api-log-viewer behind one TLS domain.
+# Adapt the domain + the upstream addresses to your environment.
+#
+# Layout this assumes:
+#   * api-log running natively (or in docker) on localhost
+#     - proxy listener  :7861   (LLM clients connect here)
+#     - read API        :7862   (viewer + healthz)
+#   * api-log-viewer dist/ unpacked to /opt/api-log-viewer/dist
+#     (or skipped if you use the backend's hosted-viewer feature at /viewer/)
+
+apilog.example.com {
+	# Serve the viewer SPA as static files
+	root * /opt/api-log-viewer/dist
+	file_server
+
+	# Forward read-API + healthz to the api-log backend on the same origin
+	handle /api/* {
+		reverse_proxy 127.0.0.1:7862
+	}
+	handle /healthz {
+		reverse_proxy 127.0.0.1:7862
+	}
+
+	# SPA fallback — every other route renders index.html
+	try_files {path} /index.html
+}
+
+# The proxy listener (:7861) is intentionally NOT exposed via TLS here.
+# Your LLM clients hit api-log's :7861 directly on the internal network;
+# api-log forwards to the upstream gateway as-is. Exposing :7861 to the
+# public internet is rarely what you want — clients carry raw API keys.
