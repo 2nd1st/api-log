@@ -65,6 +65,12 @@ type Counters struct {
 	evictedTraces atomic.Int64
 	evictedBytes  atomic.Int64
 
+	// Capture-filter drop counter (v0.1.2). Bumped by the proxy
+	// handler when capture_filter matches and the request is
+	// forwarded without starting a trace. Lets operators confirm the
+	// filter is doing real work without scraping logs.
+	tracesDroppedCaptureFilter atomic.Int64
+
 	// Per-stage timing histograms. Drain = sink-close → drainer-join.
 	// Parse = JSON unmarshal + SSE event walk + decompression. SQLite =
 	// AppendTrace (one tx covering JSONL append + UPSERT + session-
@@ -167,6 +173,12 @@ func (c *Counters) AddEvictedTraces(n int64) { c.evictedTraces.Add(n) }
 // /healthz.storage reports.
 func (c *Counters) AddEvictedBytes(n int64) { c.evictedBytes.Add(n) }
 
+// IncTracesDroppedCaptureFilter is bumped by the proxy handler when
+// the capture_filter rejects a request path before a trace is
+// started. Counterpart to the existing drop_* counters but pre-trace
+// — the request still forwards upstream, just without recording.
+func (c *Counters) IncTracesDroppedCaptureFilter() { c.tracesDroppedCaptureFilter.Add(1) }
+
 // ObserveWriterChanLen records the current writer channel length;
 // keeps the running max in writerChanHighWater.
 func (c *Counters) ObserveWriterChanLen(n int) {
@@ -220,6 +232,11 @@ type Snapshot struct {
 	EvictedTraces int64 `json:"evicted_traces"`
 	EvictedBytes  int64 `json:"evicted_bytes"`
 
+	// Capture-filter drop counter (v0.1.2). Cumulative count of
+	// requests skipped by the pre-trace capture_filter; zero when
+	// no capture_filter is configured.
+	TracesDroppedCaptureFilter int64 `json:"traces_dropped_capture_filter"`
+
 	Timings struct {
 		DrainMs  HistogramSnapshot `json:"drain_ms"`
 		ParseMs  HistogramSnapshot `json:"parse_ms"`
@@ -254,6 +271,8 @@ func (c *Counters) Snapshot() Snapshot {
 
 		EvictedTraces: c.evictedTraces.Load(),
 		EvictedBytes:  c.evictedBytes.Load(),
+
+		TracesDroppedCaptureFilter: c.tracesDroppedCaptureFilter.Load(),
 	}
 	s.Timings.DrainMs = c.DrainHist.Snapshot()
 	s.Timings.ParseMs = c.ParseHist.Snapshot()

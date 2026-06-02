@@ -35,6 +35,7 @@ import (
 	"github.com/2nd1st/api-log/internal/media"
 	"github.com/2nd1st/api-log/internal/parser"
 	"github.com/2nd1st/api-log/internal/plugin"
+	"github.com/2nd1st/api-log/internal/plugin/builtin/capturefilter"
 	"github.com/2nd1st/api-log/internal/plugin/builtin/pathfilter"
 	pluginv2 "github.com/2nd1st/api-log/internal/plugin/v2"
 	"github.com/2nd1st/api-log/internal/proxy"
@@ -229,6 +230,20 @@ func run() error {
 		slog.Info("plugin enabled", "name", pf.Name(), "patterns", patterns)
 	}
 
+	// capture_filter (v0.1.2). Standalone — NOT through pluginReg
+	// because pluginReg's OnFinalize hook runs after capture already
+	// consumed the body. capture_filter runs in proxyHandler BEFORE
+	// startTrace, so a matched path skips JSONL + SQLite + media
+	// entirely. nil filter (zero/empty patterns) is a no-op via
+	// ShouldDrop's nil-safe check.
+	captureFilter, err := capturefilter.New(cfg.Plugins.CaptureFilter)
+	if err != nil {
+		return fmt.Errorf("capture_filter: %w", err)
+	}
+	if captureFilter != nil {
+		slog.Info("plugin enabled", "name", "capture-filter", "patterns", captureFilter.Patterns())
+	}
+
 	// v2 hook-class registry — plugin-b-c-spec §2 / §3. Hot-path BEFORE
 	// + AFTER plugins that can mutate or intercept requests/responses.
 	// In v1 the YAML side has no instance-list yet (cfg.Plugins is the
@@ -310,6 +325,19 @@ func run() error {
 	rp.ModifyResponse = makeModifyResponse(pluginV2Reg, cfg.Storage.MaxBodyBytes)
 
 	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// v0.1.2 capture_filter (pre-trace path gate). When the operator
+		// configured plugins.capture_filter and the request path
+		// matches, forward upstream WITHOUT starting a trace —
+		// no JSONL line, no SQLite row, no body tee. The CaptureTransport
+		// reads ctx.TraceID = "" → SinksFor returns nil → bytes pass
+		// through unwrapped. Counter bumped so /healthz reports the
+		// drop rate.
+		if captureFilter.ShouldDrop(r.URL.Path) {
+			ctrs.IncTracesDroppedCaptureFilter()
+			rp.ServeHTTP(w, r)
+			return
+		}
+
 		traceID := ids.NewTraceID()
 		state, err := startTrace(traceID, tmpDir, cfg.Storage.CaptureChanSize, cfg.Storage.MaxBodyBytes)
 		if err != nil {

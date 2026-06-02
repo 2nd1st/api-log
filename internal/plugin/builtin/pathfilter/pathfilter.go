@@ -42,25 +42,87 @@ type Config struct {
 	Patterns []string `yaml:"patterns"`
 }
 
-// pattern is a parsed Config.Patterns entry.
-type pattern struct {
+// Pattern is a parsed Config.Patterns entry. Exported so sibling
+// plugins (e.g. internal/plugin/builtin/capturefilter) can reuse the
+// compile + match logic without owning a duplicate copy of the parser.
+//
+// Fields are package-private — callers use Matches.
+type Pattern struct {
 	raw      string // operator-facing form, kept for log/error context
 	prefix   string // body of the pattern when isPrefix=true
 	isPrefix bool   // true when the operator pattern ended in "*"
 }
 
-func (p pattern) matches(path string) bool {
+// Matches returns true when path satisfies the pattern.
+//
+//   - Exact form: path equality.
+//   - Trailing-"*" form: strings.HasPrefix on the body.
+func (p Pattern) Matches(path string) bool {
 	if p.isPrefix {
 		return strings.HasPrefix(path, p.prefix)
 	}
 	return path == p.raw
 }
 
+// Raw returns the operator-facing pattern string (e.g. "/api/v1/*"),
+// useful for log + telemetry. The empty string indicates a zero Pattern.
+func (p Pattern) Raw() string { return p.raw }
+
+// Compile parses operator-supplied pattern strings into Patterns,
+// enforcing the same validation pathfilter.Plugin.Init enforces:
+//
+//   - Empty strings are rejected.
+//   - The lone "*" pattern is rejected (would match everything).
+//   - Trailing "*" → prefix match on the leading body.
+//   - No "*" → exact match.
+//
+// patterns is the operator-facing []string. The slice may be nil or
+// empty; either yields a nil result + nil error so callers can use
+// the same code path for "no patterns configured" as for "operator
+// listed patterns".
+func Compile(patterns []string) ([]Pattern, error) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	out := make([]Pattern, 0, len(patterns))
+	for i, raw := range patterns {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			return nil, fmt.Errorf("patterns[%d] is empty", i)
+		}
+		if s == "*" {
+			return nil, fmt.Errorf("patterns[%d] = %q would match every path; refusing to compile", i, s)
+		}
+		if strings.HasSuffix(s, "*") {
+			out = append(out, Pattern{
+				raw:      s,
+				prefix:   strings.TrimSuffix(s, "*"),
+				isPrefix: true,
+			})
+		} else {
+			out = append(out, Pattern{raw: s})
+		}
+	}
+	return out, nil
+}
+
+// MatchAny is the common multi-pattern check sibling plugins want.
+// Returns true on the first matching pattern; false when none match
+// or when patterns is empty.
+func MatchAny(patterns []Pattern, path string) bool {
+	for _, p := range patterns {
+		if p.Matches(path) {
+			return true
+		}
+	}
+	return false
+}
+
 // Plugin is the path-filter implementation. It satisfies
 // plugin.Plugin and plugin.ObserveOnFinalize. Construction is
 // trivial; the patterns are compiled in Init.
 type Plugin struct {
-	patterns []pattern
+	patterns []Pattern
 }
 
 // New returns an uninitialized Plugin. The caller (Registry) MUST call
@@ -100,28 +162,17 @@ func (p *Plugin) Init(cfg map[string]any) error {
 	if !ok {
 		return fmt.Errorf("path-filter: patterns must be a list, got %T", rawPatterns)
 	}
-	compiled := make([]pattern, 0, len(list))
+	strs := make([]string, 0, len(list))
 	for i, entry := range list {
 		s, ok := entry.(string)
 		if !ok {
 			return fmt.Errorf("path-filter: patterns[%d] must be a string, got %T", i, entry)
 		}
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return fmt.Errorf("path-filter: patterns[%d] is empty", i)
-		}
-		if s == "*" {
-			return fmt.Errorf("path-filter: patterns[%d] = \"*\" would drop every trace; refusing to start", i)
-		}
-		if strings.HasSuffix(s, "*") {
-			compiled = append(compiled, pattern{
-				raw:      s,
-				prefix:   strings.TrimSuffix(s, "*"),
-				isPrefix: true,
-			})
-		} else {
-			compiled = append(compiled, pattern{raw: s})
-		}
+		strs = append(strs, s)
+	}
+	compiled, err := Compile(strs)
+	if err != nil {
+		return fmt.Errorf("path-filter: %w", err)
 	}
 	p.patterns = compiled
 	return nil
@@ -140,10 +191,8 @@ func (p *Plugin) Close() error { return nil }
 //
 // Renamed from BeforeRecord per plugin-b-c-spec §7.3 (Phase A migration).
 func (p *Plugin) OnFinalize(_ context.Context, tr trace.Trace) (bool, error) {
-	for _, pat := range p.patterns {
-		if pat.matches(tr.Path) {
-			return false, nil
-		}
+	if MatchAny(p.patterns, tr.Path) {
+		return false, nil
 	}
 	return true, nil
 }

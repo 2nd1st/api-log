@@ -11,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/2nd1st/api-log/internal/plugin/builtin/capturefilter"
 	"github.com/2nd1st/api-log/internal/plugin/builtin/pathfilter"
 )
 
@@ -91,8 +92,19 @@ type MediaConfig struct {
 // PluginsConfig holds observe-class plugin config. The zero value disables
 // every observe-class plugin, so an empty plugins block preserves default
 // recording behavior.
+//
+// path_filter (existing): observer-class drop at finalize. Trace IS
+// captured to the data dir; only the SQLite mirror is suppressed.
+// Operators who configured this pre-v0.1.2 keep their semantics.
+//
+// capture_filter (v0.1.2+): pre-write drop. Matches BEFORE the proxy
+// handler starts a trace; no JSONL line + no SQLite row + no media
+// extraction + no body tee. Use for high-volume polling endpoints
+// that shouldn't consume disk at all. Opt-in; identical pattern
+// syntax so operators can copy a string between the two blocks.
 type PluginsConfig struct {
-	PathFilter pathfilter.Config `yaml:"path_filter"`
+	PathFilter    pathfilter.Config    `yaml:"path_filter"`
+	CaptureFilter capturefilter.Config `yaml:"capture_filter"`
 }
 
 type ProxyConfig struct {
