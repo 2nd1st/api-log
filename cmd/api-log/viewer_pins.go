@@ -15,7 +15,7 @@ package main
 // viewerVersion to the matching tag, commit, then cut the api-log
 // release.
 const (
-	viewerVersion = "v0.1.0"
-	viewerSha256  = "d5aac963f5a6648f4251330faeb4cc062d8d5644241dca4cf19c179d6b1f672d"
+	viewerVersion = "v0.1.1"
+	viewerSha256  = "03065bf988eb78c9b467be1effd5b6e6a1026e18d3c1e52799a04b3c20cfe2e9"
 	viewerRepo    = "2nd1st/api-log-viewer"
 )

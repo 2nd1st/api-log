@@ -10,6 +10,16 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [0.1.1] - 2026-06-02
+
+### Added
 - **B1 / B2 — storage coordinator + lease arbitration** (commit
   `ce31ac2`): new `internal/storage/` package owns file identity
   (`FileID`), refcount leases, on-disk inventory, status, and
@@ -74,6 +84,22 @@ append-only / new-format-key migration discipline documented in
   the first monitor tick so PUT-then-GET sees the new thresholds
   instead of `pending`. `EngineRunning` stays false until the
   monitor goroutine actually starts.
+
+### Added (late-cycle)
+- **Pluggable viewer releases endpoint** (commit `20b2275`): new
+  `APILOG_VIEWER_RELEASES_API_BASE` + `APILOG_VIEWER_RELEASES_AUTH_TOKEN`
+  config / env knobs route the dist.zip fetch at non-GitHub stores
+  (Gitea, Forgejo, GHE). Useful for staging viewer changes against an
+  internal artifact mirror before cutting a public release; tested live
+  on sub2gpt pulling from `gitea.homelab.lan` (Gitea release shape is
+  GitHub-compatible). Default empty keeps v0.1.0 behavior.
+
+### Fixed
+- `exporter.summarizeFilters` (`internal/exporter/exporter.go`) now
+  emits a line for the `Project` filter in the in-zip `README.md`. The
+  filter was wired through SQLite correctly since v0.1.1's streaming
+  rewrite; only the human-readable summary line was missing. Caught by
+  the v0.1.1 pre-tag deploy audit (commit `ae5a97d`).
 
 ## [0.1.0] - 2026-05-31
 
