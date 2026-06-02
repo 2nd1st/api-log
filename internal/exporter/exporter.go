@@ -66,18 +66,18 @@ type mediaRef struct {
 //
 // Two-phase pipeline (v0.1.1):
 //
-//   1. Cursor (one SQLite conn borrowed via StreamMatching) walks rows,
-//      builds the per-file groups (jsonl_offset → trace ID) and the
-//      slim mediaRef slice. Incremental minTs / maxTs / matched count.
-//      No zip bytes are written here — if the SQLite query errors, the
-//      caller can still return a clean HTTP status.
-//   2. After the cursor closes (conn released back to the pool), the
-//      zip is built. zip.NewWriter is registered with a level-1 Deflate
-//      compressor — adopters trade ~5% size for ~3× wall-clock on 100k+
-//      row exports (the workload that motivated streaming in the first
-//      place). Each (date, keyhash) group acquires a storage lease in
-//      an inner-func scope, writes its entry, and releases on iteration
-//      exit; the naive top-of-loop defer would pin every bucket.
+//  1. Cursor (one SQLite conn borrowed via StreamMatching) walks rows,
+//     builds the per-file groups (jsonl_offset → trace ID) and the
+//     slim mediaRef slice. Incremental minTs / maxTs / matched count.
+//     No zip bytes are written here — if the SQLite query errors, the
+//     caller can still return a clean HTTP status.
+//  2. After the cursor closes (conn released back to the pool), the
+//     zip is built. zip.NewWriter is registered with a level-1 Deflate
+//     compressor — adopters trade ~5% size for ~3× wall-clock on 100k+
+//     row exports (the workload that motivated streaming in the first
+//     place). Each (date, keyhash) group acquires a storage lease in
+//     an inner-func scope, writes its entry, and releases on iteration
+//     exit; the naive top-of-loop defer would pin every bucket.
 //
 // dataDir is the storage root that JSONL paths in the SQLite rows are
 // relative to (or absolute; we accept either — the row's JSONLPath is

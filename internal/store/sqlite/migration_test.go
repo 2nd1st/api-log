@@ -111,4 +111,3 @@ func TestDSNPragmasApplied(t *testing.T) {
 		t.Errorf("foreign_keys = %d, want 1", foreignKeys)
 	}
 }
-

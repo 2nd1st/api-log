@@ -24,16 +24,16 @@ type evictResult struct {
 // atomically deletes them, and returns aggregate stats.
 //
 // Selection rules (oldest-first by ModTime):
-//   1. Files modified within idleEvictionLag (default 5m) are
-//      EXCLUDED — gives just-rotated / just-released files a
-//      breathing window before they become eviction candidates.
-//      Files with zero ModTime (media-only orphans) bypass this
-//      check (treated as "infinitely old").
-//   2. Age eligibility: ModTime < now - MaxAgeDays. Only fires when
-//      MaxAgeDays > 0.
-//   3. Byte eligibility: while currentBytes > MaxBytes, the oldest
-//      remaining file is eligible. Only fires when MaxBytes > 0.
-//   4. A file matching EITHER rule gets evicted.
+//  1. Files modified within idleEvictionLag (default 5m) are
+//     EXCLUDED — gives just-rotated / just-released files a
+//     breathing window before they become eviction candidates.
+//     Files with zero ModTime (media-only orphans) bypass this
+//     check (treated as "infinitely old").
+//  2. Age eligibility: ModTime < now - MaxAgeDays. Only fires when
+//     MaxAgeDays > 0.
+//  3. Byte eligibility: while currentBytes > MaxBytes, the oldest
+//     remaining file is eligible. Only fires when MaxBytes > 0.
+//  4. A file matching EITHER rule gets evicted.
 //
 // Per-tick cap (default 1000) caps work per tick. capHit=true when
 // MORE eligible files remain after the cap is reached — this is the

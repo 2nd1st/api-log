@@ -34,9 +34,9 @@ const overridesFilename = "runtime_overrides.json"
 // through to the layer below"); a present false value is meaningful and
 // MUST not collapse into "unset".
 type Overrides struct {
-	Media     MediaOverrides       `json:"media"`
-	Plugins   *PluginsOverride     `json:"plugins,omitempty"`
-	Retention *RetentionOverrides  `json:"retention,omitempty"`
+	Media     MediaOverrides      `json:"media"`
+	Plugins   *PluginsOverride    `json:"plugins,omitempty"`
+	Retention *RetentionOverrides `json:"retention,omitempty"`
 }
 
 // RetentionOverrides toggles the storage-coordinator retention loop at
