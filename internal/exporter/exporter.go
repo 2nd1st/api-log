@@ -519,6 +519,9 @@ func summarizeFilters(f sqlite.ListFilters) string {
 	if f.SessionRootID != "" {
 		lines = append(lines, "- session_root_id: "+f.SessionRootID)
 	}
+	if f.Project != "" {
+		lines = append(lines, "- project: "+f.Project)
+	}
 	if len(lines) == 0 {
 		return "(none — all traces)"
 	}
