@@ -128,3 +128,185 @@ func toHex4(n int) string {
 	const hex = "0123456789abcdef"
 	return string([]byte{hex[(n>>12)&0xf], hex[(n>>8)&0xf], hex[(n>>4)&0xf], hex[n&0xf]})
 }
+
+// TestExport413WhenOverBytesCap drops the byte cap to 1 and seeds
+// one trace — any non-empty source JSONL trips a 1-byte cap — and
+// asserts the handler returns 413 with the documented JSON shape AND
+// the `limit:"bytes"` discriminator that separates it from the
+// row-cap 413.
+func TestExport413WhenOverBytesCap(t *testing.T) {
+	saved := defaultExportByteHardCap
+	defaultExportByteHardCap = 1
+	t.Cleanup(func() { defaultExportByteHardCap = saved })
+
+	srv, store, w, _ := newTestServer(t, "tok-test")
+	// One trace is enough: any marshaled trace line is hundreds of
+	// bytes, way above the 1-byte cap.
+	enqueueTrace(t, w, "01H_BC1", "aaaa1111aaaa1111", nil)
+	waitForRows(t, store, 1)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/export", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s; want 413", resp.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("non-JSON 413 body %q: %v", body, err)
+	}
+	if got["error"] != "export_too_large" {
+		t.Errorf("error code = %v, want export_too_large", got["error"])
+	}
+	if got["limit"] != "bytes" {
+		t.Errorf("limit discriminator = %v, want \"bytes\"", got["limit"])
+	}
+	if got["cap_bytes"] != "1" {
+		t.Errorf("cap_bytes = %v, want \"1\"", got["cap_bytes"])
+	}
+	if _, ok := got["matched_bytes"]; !ok {
+		t.Errorf("missing matched_bytes field; got %v", got)
+	}
+	if _, ok := got["hint"]; !ok {
+		t.Errorf("missing hint field; got %v", got)
+	}
+	if _, ok := got["note"]; !ok {
+		t.Errorf("missing note field; got %v", got)
+	}
+}
+
+// TestExportBytesAll1BypassesByteCap confirms `?bytes_all=1`
+// short-circuits the byte safety net so adopters can opt out of the
+// byte cap independent of the row cap.
+func TestExportBytesAll1BypassesByteCap(t *testing.T) {
+	saved := defaultExportByteHardCap
+	defaultExportByteHardCap = 1
+	t.Cleanup(func() { defaultExportByteHardCap = saved })
+
+	srv, store, w, _ := newTestServer(t, "tok-test")
+	enqueueTrace(t, w, "01H_BB1", "aaaa1111aaaa1111", nil)
+	waitForRows(t, store, 1)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/export?bytes_all=1", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s; want 200 with ?bytes_all=1", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/zip" {
+		t.Errorf("Content-Type = %q, want application/zip", got)
+	}
+}
+
+// TestExportAll1DoesNotBypassByteCap is the independence guard: the
+// row-cap bypass `?all=1` must NOT silently bypass the byte cap. If
+// this assertion ever flips to 200 it means the two bypasses got
+// collapsed — covered by the design's explicit independence
+// decision.
+func TestExportAll1DoesNotBypassByteCap(t *testing.T) {
+	savedRow := defaultExportHardCap
+	savedBytes := defaultExportByteHardCap
+	defaultExportHardCap = 2
+	defaultExportByteHardCap = 1
+	t.Cleanup(func() {
+		defaultExportHardCap = savedRow
+		defaultExportByteHardCap = savedBytes
+	})
+
+	srv, store, w, _ := newTestServer(t, "tok-test")
+	enqueueTrace(t, w, "01H_IG1", "aaaa1111aaaa1111", nil)
+	waitForRows(t, store, 1)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/export?all=1", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s; want 413 (?all=1 must NOT bypass byte cap)",
+			resp.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("non-JSON 413 body %q: %v", body, err)
+	}
+	if got["limit"] != "bytes" {
+		t.Errorf("limit discriminator = %v, want \"bytes\" (the byte cap should have fired, not the row cap)",
+			got["limit"])
+	}
+}
+
+// TestExportBothCapsBypassed asserts the two bypass flags compose
+// cleanly — `?all=1&bytes_all=1` with both caps tiny returns 200.
+func TestExportBothCapsBypassed(t *testing.T) {
+	savedRow := defaultExportHardCap
+	savedBytes := defaultExportByteHardCap
+	defaultExportHardCap = 2
+	defaultExportByteHardCap = 1
+	t.Cleanup(func() {
+		defaultExportHardCap = savedRow
+		defaultExportByteHardCap = savedBytes
+	})
+
+	srv, store, w, _ := newTestServer(t, "tok-test")
+	for i, id := range []string{"01H_BX1", "01H_BX2", "01H_BX3"} {
+		enqueueTrace(t, w, id, "abcd1234abcd"+toHex4(i)+"abcd", nil)
+	}
+	waitForRows(t, store, 3)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/export?all=1&bytes_all=1", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s; want 200 with both bypasses", resp.StatusCode, body)
+	}
+}
+
+// TestExportNormalUnderBothCaps is a signature-wiring smoke check:
+// production defaults, a handful of traces, expect a successful
+// non-trivial zip. Catches the case where the new byteHardCap
+// argument got dropped on the floor or the typed-error mapping
+// regressed.
+func TestExportNormalUnderBothCaps(t *testing.T) {
+	srv, store, w, _ := newTestServer(t, "tok-test")
+	for i, id := range []string{"01H_NS1", "01H_NS2", "01H_NS3"} {
+		enqueueTrace(t, w, id, "abcd1234abcd"+toHex4(i)+"abcd", nil)
+	}
+	waitForRows(t, store, 3)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/export", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s; want 200", resp.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if len(body) < 256 {
+		t.Errorf("zip body suspiciously small (%d B); expected agent/README + data entries", len(body))
+	}
+}

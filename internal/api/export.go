@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -22,10 +23,30 @@ import (
 // Production callers never mutate it.
 var defaultExportHardCap = 50000
 
+// defaultExportByteHardCap bounds an un-`?bytes_all=1` export by the
+// sum of source JSONL file sizes for the matched groups, measured
+// after Phase 1 (one os.Stat per group, not per row) and before any
+// zip bytes are written. 2 GiB matches the conservative posture of
+// the 50k-row default — fits in working memory, survives default
+// upload limits on most reverse proxies, and keeps the failure mode
+// loud-and-early rather than swap-thrashing the operator's laptop
+// mid-download.
+//
+// Independent of the row cap: `?all=1` does NOT bypass this; pass
+// `?bytes_all=1` to opt out of the byte cap specifically. Each cap
+// names what it bypasses — see /api/export contract.
+//
+// var (not const) so tests can save / restore the cap without
+// seeding 2 GiB of JSONL just to exercise the 413 path. Production
+// callers never mutate it. Wiring to YAML / env (precedent:
+// Storage.MaxBodyBytes, `APILOG_API_EXPORT_BYTE_HARDCAP`) is a
+// post-v0.1.2 follow-up.
+var defaultExportByteHardCap int64 = 2 << 30
+
 // exportHandler implements GET /api/export; see
 // docs/specs/phase-i-export-contract.md.
 //
-// Pipeline (v0.1.1, streaming):
+// Pipeline (v0.1.2, streaming):
 //
 //  1. Parse filters (status/model/path/key_hash/session_root_id/
 //     since/until/project).
@@ -37,7 +58,12 @@ var defaultExportHardCap = 50000
 //     keep WriteHeader(200) lazy until the first actual zip byte.
 //     Pre-flight or query errors before any byte → clean JSON 500.
 //  4. exporter.WriteZip streams the zip; r.Context() flows through so
-//     a closed connection aborts the cursor + stops the zip.
+//     a closed connection aborts the cursor + stops the zip. The byte
+//     cap (2 GiB default, `?bytes_all=1` disables) is enforced INSIDE
+//     WriteZip after Phase 1 (cursor) but before any zip byte —
+//     *exporter.ByteCapExceededError comes back as a typed error and
+//     this handler maps it to 413 `export_too_large` with
+//     `limit:"bytes"`. The byte cap is independent of `?all=1`.
 func exportHandler(deps Deps) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		filters, errCode, errField := parseExportFilters(r)
@@ -49,6 +75,14 @@ func exportHandler(deps Deps) http.Handler {
 		hardCap := defaultExportHardCap
 		if r.URL.Query().Get("all") == "1" {
 			hardCap = 0 // unlimited
+		}
+
+		// Byte cap (v0.1.2). Independent of the row cap and its
+		// `?all=1` bypass — opting out of the row safety net does
+		// NOT opt out of the byte safety net, and vice versa.
+		byteCap := defaultExportByteHardCap
+		if r.URL.Query().Get("bytes_all") == "1" {
+			byteCap = 0 // unlimited
 		}
 
 		// Pre-flight count. CountMatching with hardCap > 0 stops at
@@ -88,8 +122,25 @@ func exportHandler(deps Deps) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 
 		lw := &lazyHeaderWriter{w: w}
-		if err := exporter.WriteZip(ctx, lw, deps.Store, deps.DataDir, filters, deps.StorageCoord); err != nil {
+		if err := exporter.WriteZip(ctx, lw, deps.Store, deps.DataDir, filters, byteCap, deps.StorageCoord); err != nil {
 			if !lw.wrote {
+				// Byte-cap pre-flight failed BEFORE any zip bytes — map
+				// to 413 with the same `export_too_large` code as the
+				// row cap, discriminated by limit:"bytes". Must precede
+				// the generic 500 mapping below so the typed error is
+				// not swallowed by `export_failed`.
+				var bcErr *exporter.ByteCapExceededError
+				if errors.As(err, &bcErr) {
+					writeError(w, http.StatusRequestEntityTooLarge, "export_too_large",
+						map[string]string{
+							"limit":         "bytes",
+							"matched_bytes": strconv.FormatInt(bcErr.Total, 10),
+							"cap_bytes":     strconv.FormatInt(bcErr.Cap, 10),
+							"hint":          "narrow filters to exclude whole days/keys, or pass ?bytes_all=1",
+							"note":          "estimate is sum of source JSONL sizes; actual zip is smaller due to Deflate, and gzipped days are counted at compressed size",
+						})
+					return
+				}
 				// Nothing on the wire yet — clean 500.
 				writeError(w, http.StatusInternalServerError, "export_failed",
 					map[string]string{"detail": err.Error()})

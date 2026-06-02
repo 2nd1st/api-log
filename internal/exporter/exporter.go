@@ -48,6 +48,32 @@ type fileGroup struct {
 	earliestTs time.Time
 	date       string // YYYY-MM-DD parsed from JSONLPath dir name
 	keyhash    string // keyhash8 parsed from JSONLPath base
+	// sizeBytes is the on-disk source-file size captured once per
+	// group in Phase 1 (plain or .gz, whichever exists). Used by
+	// the byte-cap safety net before any zip bytes are written and
+	// kept around even when the cap is bypassed for future README /
+	// observability lines. Best-effort: 0 if the file vanished or
+	// could not be stat'd — counts as 0 toward the cap rather than
+	// blocking the export on a phantom byte.
+	sizeBytes int64
+}
+
+// ByteCapExceededError is returned by WriteZip BEFORE any zip bytes are
+// written when the sum of source JSONL file sizes for the matched
+// groups exceeds the byte cap. The handler maps this to a 413
+// response with the documented `export_too_large` shape and a
+// `limit:"bytes"` discriminator.
+//
+// Total is the summed source-JSONL size (plain bytes or compressed
+// bytes for `.jsonl.gz` days — we deliberately do not decompress to
+// estimate). Cap is the configured cap that was exceeded.
+type ByteCapExceededError struct {
+	Total int64
+	Cap   int64
+}
+
+func (e *ByteCapExceededError) Error() string {
+	return fmt.Sprintf("export byte cap exceeded: estimated %d bytes > cap %d bytes", e.Total, e.Cap)
 }
 
 // mediaRef is the slim per-row record the streaming exporter carries
@@ -94,16 +120,30 @@ type mediaRef struct {
 // the zip well-formed up to the cancel point — adopters see a
 // truncated body, never a corrupted central directory.
 //
-// No internal hardCap: callers gate oversize exports via
-// CountMatching BEFORE calling WriteZip. The cursor walks every
-// matching row; pre-flight is the contract.
+// Row cap: callers gate oversize exports via CountMatching BEFORE
+// calling WriteZip. The cursor walks every matching row; pre-flight
+// is the contract.
+//
+// byteHardCap (v0.1.2) is a post-Phase-1 safety net measured against
+// the sum of source JSONL file sizes for matched groups (one os.Stat
+// per group, not per row). Zero disables the check (`?bytes_all=1`
+// bypass). The cap is independent of the row cap and its `?all=1`
+// bypass — opting out of one does not opt out of the other.
+//
+// When the cap is exceeded, WriteZip returns *ByteCapExceededError
+// BEFORE constructing the zip writer, so the handler can emit a 413
+// without any zip bytes hitting the wire. The estimate is an
+// over-count by design (it sums entire source files even when the
+// matched subset is small, and counts gzipped days at compressed
+// size — see the 413 hint / note copy).
 //
 // The returned error means either the SQLite read failed (zip not yet
-// started) or a disk / zip write failed mid-stream (zip may be
-// partial — zw.Close() is still called via defer to write the central
-// directory of whatever was emitted, but downstream callers should
-// treat the archive as suspect).
-func WriteZip(ctx context.Context, w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.ListFilters, coord *storage.Coordinator) error {
+// started), the byte cap was exceeded (also pre-zip), or a disk / zip
+// write failed mid-stream (zip may be partial — zw.Close() is still
+// called via defer to write the central directory of whatever was
+// emitted, but downstream callers should treat the archive as
+// suspect).
+func WriteZip(ctx context.Context, w io.Writer, store *sqlite.Store, dataDir string, filters sqlite.ListFilters, byteHardCap int64, coord *storage.Coordinator) error {
 	// Phase 1 — cursor. Build groups + media refs without materializing
 	// the full result set in memory.
 	groups := make(map[string]*fileGroup)
@@ -124,6 +164,16 @@ func WriteZip(ctx context.Context, w io.Writer, store *sqlite.Store, dataDir str
 				earliestTs: r.TsStart,
 				date:       date,
 				keyhash:    keyhash,
+			}
+			// One stat per group (NOT per row) — captures the
+			// source-file size for the byte-cap pre-flight and
+			// future README / log observability. Errors are
+			// swallowed: a vanished file between the cursor row
+			// and the stat call counts as 0 bytes, consistent
+			// with Phase 2 where the lease check / openJSONL
+			// will skip or surface the same eviction.
+			if sz, _ := statJSONL(g.path); sz > 0 {
+				g.sizeBytes = sz
 			}
 			groups[r.JSONLPath] = g
 		}
@@ -151,6 +201,25 @@ func WriteZip(ctx context.Context, w io.Writer, store *sqlite.Store, dataDir str
 	})
 	if streamErr != nil {
 		return fmt.Errorf("query matching rows: %w", streamErr)
+	}
+
+	// Byte-cap safety net (v0.1.2). Fires AFTER the cursor closes
+	// (the SQLite conn is released) but BEFORE any zip bytes are
+	// written, so the handler can map a *ByteCapExceededError to a
+	// clean 413 without touching the response body.
+	//
+	// The estimate sums each group's source-file size; it deliberately
+	// over-counts partial groups (whole file size for a small matched
+	// subset) and under-counts gzipped days (compressed size, not
+	// expanded). The 413 hint / note copy in the handler reflects this.
+	if byteHardCap > 0 {
+		var total int64
+		for _, g := range groups {
+			total += g.sizeBytes
+		}
+		if total > byteHardCap {
+			return &ByteCapExceededError{Total: total, Cap: byteHardCap}
+		}
 	}
 
 	// Phase 2 — zip. The cursor + its conn are now released; the zip
@@ -397,6 +466,31 @@ func writeGroupEntry(zw *zip.Writer, g *fileGroup) error {
 	}
 	_, err = zf.Write(matched.Bytes())
 	return err
+}
+
+// statJSONL returns the on-disk size of path, falling back to
+// path+".gz" on the same plain-then-gz order openJSONL uses. Best
+// effort: returns (0, nil) when neither exists so a callsite that
+// races eviction between cursor row and stat does not block the
+// export over a phantom byte. Mirrors openJSONL's gz-suffix
+// short-circuit deliberately — diverging would risk counting `.gz`
+// files twice.
+func statJSONL(path string) (int64, error) {
+	if strings.HasSuffix(path, ".gz") {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return 0, nil //nolint:nilerr // missing file → 0 bytes, see godoc above
+		}
+		return fi.Size(), nil
+	}
+	if fi, err := os.Stat(path); err == nil {
+		return fi.Size(), nil
+	}
+	fi, err := os.Stat(path + ".gz")
+	if err != nil {
+		return 0, nil //nolint:nilerr // missing file → 0 bytes, see godoc above
+	}
+	return fi.Size(), nil
 }
 
 // openJSONL opens path if it exists, else tries path+".gz". Returns the

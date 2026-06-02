@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -102,7 +103,7 @@ func TestWriteZipNoFilters(t *testing.T) {
 	stop()
 
 	var buf bytes.Buffer
-	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, nil); err != nil {
+	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
 		t.Fatalf("WriteZip: %v", err)
 	}
 
@@ -269,7 +270,7 @@ func TestWriteZipBundlesMedia(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, nil); err != nil {
+	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
 		t.Fatalf("WriteZip: %v", err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
@@ -340,6 +341,80 @@ func TestWriteZipBundlesMedia(t *testing.T) {
 	}
 }
 
+// TestWriteZipReturnsByteCapErrorType locks the typed-error contract
+// the api handler depends on: WriteZip with a tiny byteHardCap must
+// return *ByteCapExceededError (matchable via errors.As) carrying a
+// positive Total and the Cap that was exceeded, BEFORE any zip bytes
+// are written to the writer.
+func TestWriteZipReturnsByteCapErrorType(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(filepath.Join(dir, "index.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctrs := counters.New()
+	fixedNow := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	w := writer.New(dir, 16, store, ctrs, nil, nil, nil, func() time.Time { return fixedNow })
+	stop := w.Start()
+	defer stop()
+
+	// One trace is enough — the source JSONL will be well above 1
+	// byte and the cap (1) will trip on the first group.
+	tr := trace.Trace{
+		ID:       "01H_BC1",
+		TsStart:  fixedNow,
+		TsEnd:    fixedNow.Add(time.Second),
+		Client:   "127.0.0.1:1",
+		Method:   "POST",
+		Path:     "/v1/chat/completions",
+		Upstream: "http://gw",
+		Status:   200,
+		Req: trace.Body{
+			Headers: trace.Headers{"Content-Type": {"application/json"}},
+			Body:    json.RawMessage(`{"model":"m","messages":[]}`),
+		},
+		Resp: trace.Body{
+			Headers: trace.Headers{"Content-Type": {"application/json"}},
+			Body:    json.RawMessage(`{"ok":true}`),
+		},
+	}
+	if !w.TrySend(writer.Record{Trace: tr, KeyHash: "aaaa1111aaaa1111"}) {
+		t.Fatal("writer dropped trace")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if n, _ := store.CountRows(); n == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n, _ := store.CountRows(); n != 1 {
+		t.Fatalf("expected 1 row, got %d", n)
+	}
+	stop()
+
+	var buf bytes.Buffer
+	err = WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, 1, nil)
+	if err == nil {
+		t.Fatal("WriteZip with byteHardCap=1 returned nil; expected ByteCapExceededError")
+	}
+	var bcErr *ByteCapExceededError
+	if !errors.As(err, &bcErr) {
+		t.Fatalf("error type %T not *ByteCapExceededError; err = %v", err, err)
+	}
+	if bcErr.Cap != 1 {
+		t.Errorf("Cap = %d, want 1", bcErr.Cap)
+	}
+	if bcErr.Total <= 0 {
+		t.Errorf("Total = %d, want > 0", bcErr.Total)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("WriteZip wrote %d bytes before returning byte-cap error; want 0", buf.Len())
+	}
+}
+
 // TestWriteZipEmpty asserts the zip still carries the agent/ docs and a
 // README when zero rows match (contract § Empty Export).
 func TestWriteZipEmpty(t *testing.T) {
@@ -351,7 +426,7 @@ func TestWriteZipEmpty(t *testing.T) {
 	defer store.Close()
 
 	var buf bytes.Buffer
-	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, nil); err != nil {
+	if err := WriteZip(context.Background(), &buf, store, dir, sqlite.ListFilters{}, 0, nil); err != nil {
 		t.Fatalf("WriteZip empty: %v", err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
