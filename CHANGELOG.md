@@ -10,6 +10,15 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+- **`/api/export` byte-cap pre-flight** (commit `ff0c42f`):
+  complementary safety net to the v0.1.1 row cap. Default 2 GiB;
+  `?bytes_all=1` bypass is independent of `?all=1` (each cap names
+  what it lets through). Measured in source JSONL bytes (sum of
+  `os.Stat` file sizes for matched groups; one syscall per group, not
+  per row). Over-cap returns 413 with `limit:"bytes"` discriminator
+  before any zip bytes hit the wire. Audit-driven: sub2api's 9 GB /
+  ~6.9 GB+ zip didn't trip the 50000-row cap because media-heavy
+  rows are bytes-per-row dominant, not row-dominant.
 - **`capture_filter` plugin** (commit `d64863c`): pre-write path
   drop, sister to the existing observer-class `path_filter`. Where
   `path_filter` drops at finalize (after bytes ran through the
