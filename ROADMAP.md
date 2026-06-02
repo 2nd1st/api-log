@@ -325,3 +325,23 @@ These are restraints, not omissions. They keep the project small.
 - **No bundled "smart" middlebox behavior.** No prompt collision
   detection, no fake-cache injection, no content classification on
   the wire.
+- **No matching on credential-carrying header VALUES, even via
+  off-by-default plugin or YAML "extra rules" hatch.** The named
+  header taxonomy in `internal/parser/client.go` reads headers
+  designed to be public (`User-Agent`, `x-stainless-*`,
+  `Anthropic-Beta`, etc); the project does not extend this surface
+  to `Authorization` / `X-Api-Key` / equivalent VALUES, even when
+  the operator's own infra has a known key-prefix convention. If
+  client identity is unrecoverable from the named-header layer,
+  the honest answer is the parser's existing zero-value (the trace
+  stays tagged by whatever generic UA it carries —
+  `go-http-client`, `curl`, `browser`). Per-deployment segmentation
+  has a non-credential answer: `key_hash` is on every trace row
+  and the operator's downstream tooling can maintain a
+  `key_hash → label` map without ever touching a raw credential.
+  Decided 2026-06-02 after an adversarial three-lens design pass
+  (oss-fit / surface restraint / privacy) unanimously rejected the
+  proposed slot. The slot's *existence* — off-by-default included —
+  regresses the byte-faithful-but-doesn't-inspect-credentials
+  posture that this README, SECURITY.md, and the parser package
+  docstring all stand on.
