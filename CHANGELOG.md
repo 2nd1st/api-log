@@ -10,6 +10,16 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [0.1.2] - 2026-06-02
+
+### Added
 - **`/api/export` byte-cap pre-flight** (commit `ff0c42f`):
   complementary safety net to the v0.1.1 row cap. Default 2 GiB;
   `?bytes_all=1` bypass is independent of `?all=1` (each cap names
