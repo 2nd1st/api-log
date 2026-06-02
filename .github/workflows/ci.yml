@@ -114,10 +114,32 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Build the release body from CHANGELOG.md so the GitHub release page
+      # carries the same content as the file readers/CI have always read.
+      # If no matching section exists, fall back to the tag annotation so the
+      # release body is never empty (was the v0.1.1/v0.1.2 retro-fix trigger).
+      - name: Build release notes from CHANGELOG
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            BEGIN { hit = 0 }
+            /^## \[/ {
+              if (hit) { exit }
+              if ($0 ~ "^## \\[" v "\\]") { hit = 1; next }
+            }
+            hit { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "WARNING: no [$version] CHANGELOG section; using tag annotation as body" >&2
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > /tmp/release-notes.md
+          fi
+          echo "----- /tmp/release-notes.md preview -----"
+          head -30 /tmp/release-notes.md
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: latest
-          args: release --clean
+          args: release --clean --release-notes /tmp/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

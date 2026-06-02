@@ -141,6 +141,29 @@ The backend CI release job watches `v*` tags and publishes
 in `.github/workflows/ci.yml`. Watch the Action run; the publish
 typically completes in 3-5 minutes.
 
+### Release notes are auto-extracted from CHANGELOG.md
+
+Both repos' release CI now extracts the `## [VERSION]` section
+of `CHANGELOG.md` and uses it verbatim as the GitHub release body
+(backend via `goreleaser --release-notes`; viewer via softprops
+`body_path`). The fallback when the matching section is absent is
+the tag annotation (`git tag -m "..."`), so the release body is
+never empty.
+
+What this means for the operator:
+
+- **Update CHANGELOG.md BEFORE pushing the tag.** The version
+  section that lives at the top under `## [Unreleased]` should be
+  promoted to `## [X.Y.Z] - YYYY-MM-DD` in the same commit as the
+  pin bump or release-prep work. After the tag fires, CI reads the
+  CHANGELOG state at that commit.
+- **You can still post-edit the release body** with `gh release
+  edit X --notes "..."` if the CHANGELOG entry needs polish.
+  GoReleaser is configured with `mode: keep-existing`, so a re-run
+  of the CI release job does not clobber a manually-edited body.
+- **No more "release page is blank" surprise** — that was the
+  v0.1.1 / v0.1.2 retro-fix trigger.
+
 ## Post-tag verification
 
 ```bash
