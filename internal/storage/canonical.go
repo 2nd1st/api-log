@@ -161,7 +161,7 @@ func FileIDFromPath(dataDir, path string) (FileID, error) {
 		return FileID{}, fmt.Errorf("FileIDFromPath: date segment %q does not match YYYY-MM-DD", date)
 	}
 	// Strip the suffix. Order matters: .jsonl.gz first, then .jsonl.
-	keyHash := base
+	var keyHash string
 	switch {
 	case len(base) > len(".jsonl.gz") && base[len(base)-len(".jsonl.gz"):] == ".jsonl.gz":
 		keyHash = base[:len(base)-len(".jsonl.gz")]
