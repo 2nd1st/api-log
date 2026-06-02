@@ -110,14 +110,37 @@ func TestExtractClient(t *testing.T) {
 			want: ClientInfo{Kind: strPtr("go-http-client"), Version: strPtr("2.0")},
 		},
 		{
+			// Exact UA observed in sub2gpt traffic (clean curl smoke test
+			// / health probe). Documents the provenance of the curl rule.
+			name: "curl",
+			headers: http.Header{
+				"User-Agent": {"curl/8.7.1"},
+			},
+			want: ClientInfo{Kind: strPtr("curl"), Version: strPtr("8.7.1")},
+		},
+		{
+			// Mirrors the existing claude-cli empty-suffix contract: a
+			// bare "curl/" UA still classifies as curl (Version nil). Locks
+			// in the uaSuffix convention so a future refactor can't regress.
+			name: "curl-bare",
+			headers: http.Header{
+				"User-Agent": {"curl/"},
+			},
+			want: ClientInfo{Kind: strPtr("curl")},
+		},
+		{
 			name:    "none-empty",
 			headers: http.Header{},
 			want:    ClientInfo{},
 		},
 		{
+			// Was previously curl/8.5.0; replaced after curl moved out of
+			// the null bucket into its own rule. python-requests is a
+			// genuine unknown UA that keeps the null-bucket assertion
+			// meaningful.
 			name: "none-unknown-ua",
 			headers: http.Header{
-				"User-Agent": {"curl/8.5.0"},
+				"User-Agent": {"python-requests/2.31.0"},
 			},
 			want: ClientInfo{},
 		},

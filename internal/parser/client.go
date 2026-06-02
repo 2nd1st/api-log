@@ -97,6 +97,14 @@ func ExtractClient(h trace.Headers) ClientInfo {
 		return clientInfo("go-http-client", ver)
 	}
 
+	// 11. curl: UA ^curl/  (generic HTTP-client baseline; covers smoke
+	//     tests and health probes. Placed after go-http-client so the
+	//     "specific clients first, generic fallbacks last" invariant is
+	//     preserved.)
+	if ver, ok := uaSuffix(ua, "curl/"); ok {
+		return clientInfo("curl", ver)
+	}
+
 	return ClientInfo{}
 }
 
