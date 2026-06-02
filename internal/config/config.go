@@ -114,6 +114,17 @@ type ProxyConfig struct {
 
 type APIConfig struct {
 	Listen string `yaml:"listen"`
+
+	// ExportByteHardCap is the byte ceiling on /api/export before
+	// `?bytes_all=1` is required to bypass. Measured in source JSONL
+	// bytes (sum of file sizes for matched groups, one os.Stat per
+	// group). 0 = unlimited; default 2 GiB.
+	//
+	// Independent of the row cap. See internal/api/export.go's
+	// defaultExportByteHardCap docstring for the rationale; this YAML
+	// field overrides that default. Env var:
+	// APILOG_API_EXPORT_BYTE_HARDCAP.
+	ExportByteHardCap int64 `yaml:"export_byte_hardcap"`
 }
 
 type StorageConfig struct {
@@ -252,6 +263,14 @@ func applyEnv(cfg *Config) error {
 		{"APILOG_PROXY_LISTEN", func(c *Config, v string) error { c.Proxy.Listen = v; return nil }},
 		{"APILOG_PROXY_UPSTREAM", func(c *Config, v string) error { c.Proxy.Upstream = v; return nil }},
 		{"APILOG_API_LISTEN", func(c *Config, v string) error { c.API.Listen = v; return nil }},
+		{"APILOG_API_EXPORT_BYTE_HARDCAP", func(c *Config, v string) error {
+			n, err := envInt64(v)
+			if err != nil {
+				return err
+			}
+			c.API.ExportByteHardCap = n
+			return nil
+		}},
 		{"APILOG_STORAGE_DATA_DIR", func(c *Config, v string) error { c.Storage.DataDir = v; return nil }},
 		{"APILOG_STORAGE_MAX_BODY_BYTES", func(c *Config, v string) error {
 			n, err := envInt64(v)

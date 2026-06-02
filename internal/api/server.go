@@ -38,6 +38,14 @@ type Deps struct {
 	// zip; other handlers seek by absolute JSONLPath and don't need it.
 	DataDir string
 
+	// ExportByteHardCap overrides the default 2 GiB byte cap on
+	// /api/export (v0.1.2). Set via APILOG_API_EXPORT_BYTE_HARDCAP
+	// env or `api.export_byte_hardcap` YAML. 0 (zero value) keeps the
+	// package default; a positive value replaces it; explicit -1 (or
+	// any negative) disables the cap entirely (equivalent to
+	// `?bytes_all=1` being the permanent state).
+	ExportByteHardCap int64
+
 	// StorageCoord (v0.1.1) is the storage coordinator. Nil-safe: the
 	// export handler skips lease arbitration when coord is nil — fine
 	// for tests / no-retention deployments. When non-nil, exporter

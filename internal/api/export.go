@@ -80,7 +80,19 @@ func exportHandler(deps Deps) http.Handler {
 		// Byte cap (v0.1.2). Independent of the row cap and its
 		// `?all=1` bypass — opting out of the row safety net does
 		// NOT opt out of the byte safety net, and vice versa.
+		//
+		// Resolution order (highest priority first):
+		//   1. `?bytes_all=1` query → unlimited (per-request opt-out).
+		//   2. deps.ExportByteHardCap (operator YAML / env). >0
+		//      replaces the default; <0 disables; 0 = no override.
+		//   3. defaultExportByteHardCap package var (test-mutable).
 		byteCap := defaultExportByteHardCap
+		switch {
+		case deps.ExportByteHardCap < 0:
+			byteCap = 0
+		case deps.ExportByteHardCap > 0:
+			byteCap = deps.ExportByteHardCap
+		}
 		if r.URL.Query().Get("bytes_all") == "1" {
 			byteCap = 0 // unlimited
 		}

@@ -4,7 +4,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/2nd1st/api-log/internal/counters"
+	"github.com/2nd1st/api-log/internal/store/sqlite"
+	"github.com/2nd1st/api-log/internal/writer"
 )
 
 // TestExport413WhenOverHardCap saves the package-level cap, drops it
@@ -308,5 +314,114 @@ func TestExportNormalUnderBothCaps(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if len(body) < 256 {
 		t.Errorf("zip body suspiciously small (%d B); expected agent/README + data entries", len(body))
+	}
+}
+
+// TestExportDepsByteHardCap_PositiveOverride exercises the
+// deps.ExportByteHardCap > 0 branch — operator YAML/env override
+// replaces the package var without mutating it. Mirrors the audit
+// pattern: leave the package var at its production default and verify
+// the per-mount Deps value is what fires the 413.
+func TestExportDepsByteHardCap_PositiveOverride(t *testing.T) {
+	// Tiny isolated mux with ExportByteHardCap=1 — every non-empty
+	// JSONL trips the cap. Doesn't touch the package var.
+	dir := t.TempDir()
+	store, err := sqlite.Open(dir + "/index.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctrs := counters.New()
+	wrtr := writer.New(dir, 16, store, ctrs, nil, nil, nil, func() time.Time {
+		return time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	})
+	stop := wrtr.Start()
+	t.Cleanup(stop)
+
+	mux := NewMux(Deps{
+		Store:             store,
+		Counters:          ctrs,
+		AdminToken:        "tok-test",
+		Version:           "test",
+		StartedAt:         time.Date(2026, 5, 27, 11, 0, 0, 0, time.UTC),
+		DataDir:           dir,
+		ExportByteHardCap: 1, // operator override; way under any real trace size
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	enqueueTrace(t, wrtr, "01H_DO1", "aaaa1111aaaa1111", nil)
+	waitForRows(t, store, 1)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/export", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s; want 413 (Deps override fires)", resp.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("non-JSON 413 body %q: %v", body, err)
+	}
+	if got["cap_bytes"] != "1" {
+		t.Errorf("cap_bytes = %v, want \"1\" (Deps value, not package default)", got["cap_bytes"])
+	}
+}
+
+// TestExportDepsByteHardCap_NegativeDisables exercises the
+// deps.ExportByteHardCap < 0 branch — operator wants the byte cap
+// off entirely (permanent ?bytes_all=1). Sets the package var TINY
+// to prove the negative Deps overrides it, not just defers to it.
+func TestExportDepsByteHardCap_NegativeDisables(t *testing.T) {
+	saved := defaultExportByteHardCap
+	defaultExportByteHardCap = 1
+	t.Cleanup(func() { defaultExportByteHardCap = saved })
+
+	dir := t.TempDir()
+	store, err := sqlite.Open(dir + "/index.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctrs := counters.New()
+	wrtr := writer.New(dir, 16, store, ctrs, nil, nil, nil, func() time.Time {
+		return time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	})
+	stop := wrtr.Start()
+	t.Cleanup(stop)
+
+	mux := NewMux(Deps{
+		Store:             store,
+		Counters:          ctrs,
+		AdminToken:        "tok-test",
+		Version:           "test",
+		StartedAt:         time.Date(2026, 5, 27, 11, 0, 0, 0, time.UTC),
+		DataDir:           dir,
+		ExportByteHardCap: -1, // operator says: never enforce
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	enqueueTrace(t, wrtr, "01H_DN1", "aaaa1111aaaa1111", nil)
+	waitForRows(t, store, 1)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/export", nil)
+	req.Header.Set("Authorization", "Bearer tok-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s; want 200 (negative Deps disables cap)", resp.StatusCode, body)
 	}
 }

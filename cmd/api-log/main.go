@@ -574,15 +574,16 @@ func run() error {
 	// API server (port from cfg.API.Listen). Same process; separate
 	// listener so a slow read API can't impact proxy traffic.
 	apiHandler := api.NewMux(api.Deps{
-		Store:        store,
-		Counters:     ctrs,
-		AdminToken:   adminToken,
-		Version:      version,
-		StartedAt:    time.Now().UTC(),
-		DataDir:      cfg.Storage.DataDir,
-		StorageCoord: storageCoord,
-		MediaEnabled: mediaEnabled,
-		PluginTypes:  pluginTypeCatalogue,
+		Store:             store,
+		Counters:          ctrs,
+		AdminToken:        adminToken,
+		Version:           version,
+		StartedAt:         time.Now().UTC(),
+		DataDir:           cfg.Storage.DataDir,
+		ExportByteHardCap: cfg.API.ExportByteHardCap,
+		StorageCoord:      storageCoord,
+		MediaEnabled:      mediaEnabled,
+		PluginTypes:       pluginTypeCatalogue,
 		// Hot-reload uses the same *Registry captured by the proxy and API
 		// closures. Reload mutates the snapshot pointer inside the struct,
 		// so all of those callers pick up the new instance list on their
