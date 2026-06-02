@@ -1,0 +1,241 @@
+# api-log.example.yaml — annotated reference configuration.
+#
+# Every key documented below maps 1:1 to a field in internal/config/config.go
+# (the canonical structure). Values shown in the commented-out lines are the
+# built-in defaults; uncomment a line only to override.
+#
+# Precedence (highest priority last): defaults < this YAML < APILOG_* env vars.
+#
+# Usage:
+#   api-log -config /etc/api-log/api-log.yaml
+# Or omit -config and rely on env overrides plus built-in defaults.
+
+# ---------------------------------------------------------------------------
+# proxy — the transparent recording listener that clients hit and the upstream
+# gateway URL that api-log forwards to. The forwarding goroutine does not
+# inspect bodies; see ARCHITECTURE § 7.
+# ---------------------------------------------------------------------------
+proxy:
+  # The address:port the proxy listens on. Plain HTTP only; terminate TLS
+  # upstream of api-log if you need it.
+  # Env: APILOG_PROXY_LISTEN
+  # listen: ":7861"
+
+  # Upstream gateway URL. The Host header is rewritten to the upstream's host
+  # before forwarding.
+  # Env: APILOG_PROXY_UPSTREAM
+  # upstream: "http://localhost:7860"
+
+# ---------------------------------------------------------------------------
+# api — the read API listener (separate port from the proxy). Auth uses the
+# bearer token at <data_dir>/admin_token, auto-generated on first run.
+# ---------------------------------------------------------------------------
+api:
+  # The address:port the read API listens on.
+  # Env: APILOG_API_LISTEN
+  # listen: ":7862"
+
+  # Byte ceiling on GET /api/export, measured in source JSONL bytes (sum of
+  # file sizes for matched groups). Independent of the 50000-row hard cap.
+  # 0 (or unset) falls back to the built-in default (2 GiB); a positive value
+  # overrides that default; a negative value disables the byte cap entirely.
+  # Per-request opt-out: append ?bytes_all=1 to the export URL.
+  # Env: APILOG_API_EXPORT_BYTE_HARDCAP
+  # export_byte_hardcap: 0
+
+# ---------------------------------------------------------------------------
+# storage — on-disk JSONL + SQLite layout, body-size guards, and the in-memory
+# fan-out channel sizes between capture and the writer goroutine.
+# ---------------------------------------------------------------------------
+storage:
+  # Root directory for JSONL files, the SQLite index, admin_token,
+  # runtime_overrides.json, and tmp/. The tmp/ subdir is wiped on startup.
+  # Env: APILOG_STORAGE_DATA_DIR
+  # data_dir: "./data"
+
+  # Per-direction body capture ceiling in bytes. Bodies exceeding this are
+  # truncated and the trace is flagged truncated_req / truncated_resp.
+  # Default is 32 MiB (33554432).
+  # Env: APILOG_STORAGE_MAX_BODY_BYTES
+  # max_body_bytes: 33554432
+
+  # Per-trace, per-direction capture channel buffer. Backpressure here drops
+  # body bytes (not the trace); surfaced in /healthz counters.
+  # Env: APILOG_STORAGE_CAPTURE_CHAN_SIZE
+  # capture_chan_size: 64
+
+  # Buffer between finalize and the SQLite writer goroutine. Overflow here
+  # drops the SQLite mirror row (JSONL still wins; rebuildable).
+  # Env: APILOG_STORAGE_WRITER_CHAN_SIZE
+  # writer_chan_size: 1024
+
+# ---------------------------------------------------------------------------
+# timeouts — HTTP server + capture pipeline timeouts. All values in seconds.
+# ---------------------------------------------------------------------------
+timeouts:
+  # http.Server.ReadHeaderTimeout on the proxy listener.
+  # Env: APILOG_TIMEOUTS_READ_HEADER_SECONDS
+  # read_header_seconds: 10
+
+  # http.Server.IdleTimeout on both listeners.
+  # Env: APILOG_TIMEOUTS_IDLE_SECONDS
+  # idle_seconds: 120
+
+  # Cancel the request context if an SSE chunk gap exceeds this. Prevents a
+  # stalled upstream from holding the goroutine and capture buffers open
+  # forever.
+  # Env: APILOG_TIMEOUTS_STREAM_IDLE_SECONDS
+  # stream_idle_seconds: 600
+
+  # Finalize waits at most this long for the request-body EOF before giving
+  # up and flagging truncated_req.
+  # Env: APILOG_TIMEOUTS_REQ_BODY_CAPTURE_SECONDS
+  # req_body_capture_seconds: 60
+
+  # End-to-end trace duration that triggers a WARN log + increments
+  # slow_traces in /healthz. 0 disables the WARN entirely.
+  # Env: APILOG_TIMEOUTS_SLOW_TRACE_SECONDS
+  # slow_trace_seconds: 30
+
+# ---------------------------------------------------------------------------
+# shutdown — graceful-stop window for SIGINT / SIGTERM.
+# ---------------------------------------------------------------------------
+shutdown:
+  # Seconds the server waits for in-flight traces to finalize before forcing
+  # exit. Shorter = faster restarts; longer = fewer truncated_resp on rolling
+  # deploys.
+  # Env: APILOG_SHUTDOWN_GRACE_SECONDS
+  # grace_seconds: 30
+
+# ---------------------------------------------------------------------------
+# diagnostics — periodic background bookkeeping; never touches the trace path.
+# ---------------------------------------------------------------------------
+diagnostics:
+  # Cadence of the INFO-level counter-snapshot log line. Tight enough for
+  # post-incident timelines, loose enough not to spam. 0 disables.
+  # Env: APILOG_DIAGNOSTICS_SNAPSHOT_INTERVAL_SECONDS
+  # snapshot_interval_seconds: 60
+
+# ---------------------------------------------------------------------------
+# logging — slog level. Validation rejects anything else.
+# ---------------------------------------------------------------------------
+logging:
+  # One of: debug | info | warn | error.
+  # Env: APILOG_LOGGING_LEVEL
+  # level: "info"
+
+# ---------------------------------------------------------------------------
+# media — per-trace media extraction (Phase K). Walks request / response
+# bodies for known base64 carriers (image_url.url, source.data, inlineData,
+# b64_json) and persists each as a derived file under
+# <data_dir>/<YYYY-MM-DD>/<keyhash>/media/<trace_id>/<idx>.<ext>. The JSONL
+# remains the source of truth; these files are a fast-read cache and the
+# export-bundling target.
+#
+# Runtime override: PUT /api/config/media takes precedence over both YAML
+# and env at runtime (persisted to runtime_overrides.json).
+# ---------------------------------------------------------------------------
+media:
+  # Default on. Set to false to skip the writer-side extractor entirely.
+  # Env: APILOG_MEDIA_SAVE_ATTACHMENTS
+  # save_attachments: true
+
+# ---------------------------------------------------------------------------
+# plugins — observe-class plugins. Zero value = every plugin disabled, so an
+# absent block preserves default recording behavior.
+#
+# Mutator plugins (text-replace, text-append) are NOT configured here; they
+# live in runtime_overrides.json and are managed via PUT /api/config/plugins.
+# See ARCHITECTURE for the runtime contract.
+# ---------------------------------------------------------------------------
+plugins:
+
+  # path_filter — observer-class drop at finalize. The trace IS captured to
+  # the data dir (JSONL line, media files); only the SQLite mirror row is
+  # suppressed, so the trace stays queryable via jq + jsonl_path but vanishes
+  # from /api/traces and the viewer. Use this when you want a recoverable
+  # audit trail of noise endpoints but don't want them in the index.
+  #
+  # Pattern syntax: exact match, or trailing "*" for prefix match. The lone
+  # "*" is rejected at startup (would drop everything).
+  #
+  # No env override; YAML only.
+  # path_filter:
+  #   patterns:
+  #     - "/api/v1/auth/me"
+  #     - "/api/v1/admin/*"
+  #     - "/healthz"
+
+  # capture_filter — pre-write drop (v0.1.2+). Matches BEFORE the proxy
+  # handler starts a trace: no JSONL line, no SQLite row, no media
+  # extraction, no body tee. Use this for high-volume polling endpoints
+  # that should not consume disk at all.
+  #
+  # Pattern syntax is identical to path_filter; operators can copy a string
+  # between the two blocks. The two blocks coexist — pre-v0.1.2 operators
+  # who configured path_filter keep observer semantics; capture_filter is
+  # strictly opt-in.
+  #
+  # No env override; YAML only.
+  # capture_filter:
+  #   patterns:
+  #     - "/api/v1/subscriptions/active"
+  #     - "/api/v1/heartbeat"
+
+# ---------------------------------------------------------------------------
+# viewer — hosted Svelte SPA served under /viewer/. The backend fetches
+# dist.zip from a pinned release of api-log-viewer at first request,
+# verifies the asset SHA-256 against a constant baked into the backend
+# binary, and caches it under <data_dir>/viewer-cache/. A SHA-256 mismatch
+# is fatal to the route (503); the binary never serves an unverified asset.
+# ---------------------------------------------------------------------------
+viewer:
+  # Master switch. False = /viewer/ returns 503 disabled.
+  # Env: APILOG_VIEWER_ENABLED
+  # enabled: true
+
+  # Source repo for dist.zip. Default is build-pinned to api-log-viewer at
+  # the version matching this backend release; leave unset to use that pin.
+  # Overriding repo or version REQUIRES co-setting sha256.
+  # Env: APILOG_VIEWER_REPO
+  # repo: ""
+
+  # Tag to fetch. Build-pinned when unset.
+  # Env: APILOG_VIEWER_VERSION
+  # version: ""
+
+  # SHA-256 of dist.zip, hex-encoded. Build-pinned when unset. Mandatory
+  # when overriding repo or version (and not using local_path); a mismatch
+  # at startup leaves the binary up but /viewer/ returns 503.
+  # Env: APILOG_VIEWER_SHA256
+  # sha256: ""
+
+  # Absolute path to a pre-extracted dist/ directory. Skips the fetch +
+  # verify pipeline entirely. Use for offline / air-gapped deployments and
+  # for local viewer development.
+  # Env: APILOG_VIEWER_LOCAL_PATH
+  # local_path: ""
+
+  # Cache root for the extracted bundle. Empty resolves to
+  # <data_dir>/viewer-cache at startup.
+  # Env: APILOG_VIEWER_CACHE_DIR
+  # cache_dir: ""
+
+  # URL prefix under which the viewer is served.
+  # Env: APILOG_VIEWER_PUBLIC_PATH
+  # public_path: "/viewer"
+
+  # Override the dist.zip fetch endpoint. Empty = https://api.github.com
+  # (the default). Internal artifact stores (Gitea, Forgejo) speak the same
+  # release-API shape and slot in via this field — e.g. set this to
+  # "http://gitea.example/api/v1" and point `repo` at "<owner>/<repo>" on
+  # that instance to reroute the fetch.
+  # Env: APILOG_VIEWER_RELEASES_API_BASE
+  # releases_api_base: ""
+
+  # Sent on metadata + asset requests as `Authorization: token <value>`.
+  # Required for private Gitea / Forgejo repos. SENSITIVE — source from
+  # env (APILOG_VIEWER_RELEASES_AUTH_TOKEN) or a secrets file; do not
+  # commit it to repo-tracked YAML.
+  # Env: APILOG_VIEWER_RELEASES_AUTH_TOKEN
+  # releases_auth_token: ""

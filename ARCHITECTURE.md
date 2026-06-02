@@ -1205,3 +1205,70 @@ buffer-then-expose machinery only when at least one registered plugin
 opts in via the new interface. Re-open Phase D when a real adopter
 files an issue with a concrete use case that BEFORE-tools-array,
 `ActionIntercept`, or Observer-scrub genuinely cannot serve.
+
+---
+
+## 14. What this is not
+
+The shape of the project is as much defined by what it refuses to
+do as by what it does. The points below are architectural, not
+roadmap items — they will not change without a §1-level
+amendment.
+
+### 14.1 Single-node only
+
+One binary, one `<data_dir>`. There is no clustering layer, no
+shared-storage replication, no leader election, no cross-node
+trace ID coordination. Two binaries pointed at the same data
+directory will collide at the ULID-generation and SQLite-writer
+layers; see [docs/operations.md](./docs/operations.md)
+"Multi-instance" for the failure modes.
+
+Horizontal capture scale is solved by running independent
+instances — one per LLM gateway upstream, each with its own data
+directory — and aggregating downstream from the JSONL trees. The
+project is shaped for the "tcpdump in front of one gateway"
+deployment; a multi-tenant control plane is out of scope.
+
+### 14.2 JSONL is truth; SQLite is rebuildable cache
+
+§1 states the invariant; this section restates it as a posture.
+Adopters can delete `index.sqlite` at any time and the binary will
+rebuild it from the JSONL tree on next startup. Backup strategies
+treat the JSONL tree as the only artifact that matters; the SQLite
+index is a query-acceleration convenience, not a second source of
+record.
+
+The forward-referenced `api-log rebuild` subcommand (ROADMAP
+"Day-2 operations") will surface this as an explicit operator
+command rather than the implicit startup-on-empty-data-dir
+behavior, but the underlying invariant is unchanged.
+
+### 14.3 WAL means concurrent readers, single writer
+
+The SQLite WAL mode documented in §4 buys us many concurrent
+readers (the read API, plus any external `sqlite3` session a human
+or a tool opens against the file) coexisting with the
+writer goroutine. It does **not** buy us multiple writers. The
+write path is one goroutine, full stop; the channel in front of it
+absorbs bursts and drops with a counter when it saturates (§7.3).
+Adopters writing custom tooling against `index.sqlite` should open
+read-only connections.
+
+### 14.4 No gateway behavior in the capture path
+
+A consolidated restatement of the ROADMAP "What we will not do"
+list as it intersects this document: the proxy does not
+authenticate, route, retry, rate-limit, cache, rewrite, or
+redact in the capture path. The `req.headers` and `resp.headers`
+captured in the JSONL line are what the proxy actually forwarded
+(modulo the §10.4 `X-Forwarded-*` suppression and the standard
+hop-by-hop strip ReverseProxy already performs). Plugins
+(§6.7 / ROADMAP §11) are the only sanctioned mechanism for
+operator-side mutation, and they are off by default.
+
+---
+
+Operator-facing material — backup procedure, manual WAL checkpoint
+one-liner, retention cross-reference, multi-instance behavior — is
+not in this document. See [docs/operations.md](./docs/operations.md).

@@ -110,6 +110,24 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 The admin bearer is generated on first run and written to `data/admin_token`. Delete the file and restart to rotate.
 
+## Configuration
+
+api-log resolves config in three layers, highest priority last: built-in defaults, then the YAML file passed via `-config`, then `APILOG_*` environment variables. Env vars always win.
+
+The full annotated reference — every YAML key, its default, and its env-var override — lives in [`api-log.example.yaml`](./api-log.example.yaml) at the repo root. Copy that file, uncomment only the keys you want to change, and pass it with `api-log -config /etc/api-log/api-log.yaml`. The canonical struct is [`internal/config/config.go`](./internal/config/config.go).
+
+The env vars adopters most often override:
+
+| Env var | One-line semantics |
+|---|---|
+| `APILOG_PROXY_LISTEN` | `address:port` for the recording proxy listener clients connect to. Default `:7861`. |
+| `APILOG_PROXY_UPSTREAM` | URL of the upstream gateway api-log forwards to. Default `http://localhost:7860`. |
+| `APILOG_STORAGE_DATA_DIR` | Root for JSONL files, the SQLite index, `admin_token`, and `runtime_overrides.json`. Default `./data`. |
+| `APILOG_LOGGING_LEVEL` | slog level (`debug` \| `info` \| `warn` \| `error`). Default `info`. |
+| `APILOG_API_EXPORT_BYTE_HARDCAP` | Byte ceiling on `/api/export` before `?bytes_all=1` is required. `0` (or unset) keeps the built-in 2 GiB default; positive overrides; negative disables the cap. |
+
+Plugin pattern lists (`plugins.path_filter.patterns`, `plugins.capture_filter.patterns`) and the mutator plugin instances (`text-replace`, `text-append`) have no env override — the first pair is YAML-only and the mutators live in `runtime_overrides.json`, managed via `PUT /api/config/plugins`.
+
 ## How recording works
 
 ### Traffic path

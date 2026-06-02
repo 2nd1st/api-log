@@ -110,6 +110,24 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 admin bearer 在首次启动时生成，写入 `data/admin_token`。删掉该文件并重启即可轮换。
 
+## Configuration
+
+api-log 的配置按三层解析，优先级从低到高：内建默认值、`-config` 传入的 YAML 文件、`APILOG_*` 环境变量。环境变量总是最终胜出。
+
+完整的参考——每个 YAML key、默认值、对应的 env 覆盖——见仓库根目录的 [`api-log.example.yaml`](./api-log.example.yaml)。把这个文件复制一份，只反注释你要改的 key，然后用 `api-log -config /etc/api-log/api-log.yaml` 启动。canonical 结构在 [`internal/config/config.go`](./internal/config/config.go)。
+
+运维最常覆盖的几个 env：
+
+| Env var | 含义 |
+|---|---|
+| `APILOG_PROXY_LISTEN` | 客户端连接的 proxy listener 的 `地址:端口`。默认 `:7861`。 |
+| `APILOG_PROXY_UPSTREAM` | api-log 转发的上游网关 URL。默认 `http://localhost:7860`。 |
+| `APILOG_STORAGE_DATA_DIR` | JSONL 文件、SQLite 索引、`admin_token`、`runtime_overrides.json` 的根目录。默认 `./data`。 |
+| `APILOG_LOGGING_LEVEL` | slog 级别（`debug` \| `info` \| `warn` \| `error`）。默认 `info`。 |
+| `APILOG_API_EXPORT_BYTE_HARDCAP` | `/api/export` 的字节上限，超过则需要 `?bytes_all=1`。`0`（或未设置）使用内建默认 2 GiB；正值覆盖；负值禁用该上限。 |
+
+插件的 pattern 列表（`plugins.path_filter.patterns`、`plugins.capture_filter.patterns`）和 mutator 插件实例（`text-replace`、`text-append`）没有 env 覆盖——前两者只能在 YAML 里配，mutator 走 `runtime_overrides.json`，通过 `PUT /api/config/plugins` 管理。
+
 ## How recording works
 
 ### Traffic path
