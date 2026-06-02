@@ -10,8 +10,31 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+- **`capture_filter` plugin** (commit `d64863c`): pre-write path
+  drop, sister to the existing observer-class `path_filter`. Where
+  `path_filter` drops at finalize (after bytes ran through the
+  capture sinks), `capture_filter` is checked in the proxy handler
+  BEFORE `startTrace` — a matched path skips JSONL + SQLite + media
+  + body tee entirely; the request still forwards upstream unchanged.
+  Audit-driven (v0.1.1 deploy workflow showed sub2api stores 86%
+  control-plane polling that's not LLM-observability material).
+  Opt-in via `plugins.capture_filter.patterns`; existing
+  `plugins.path_filter` deployments are not silently re-interpreted.
+  Pattern syntax mirrors `path_filter`. Counter
+  `traces_dropped_capture_filter` surfaces drop activity on
+  `/healthz.counters`. Live-verified on sub2gpt with
+  `/api/v1/auth/*` + `/api/v1/subscriptions/*` patterns.
+- **`curl` UA in client taxonomy** (commit `f60c66d`): rule 11 in
+  `parser/client.go`, placed after `go-http-client`. Generalises
+  smoke-test + healthprobe traffic across every adopter. Justified
+  by a Workflow audit (`we0wvgjhv`) that sampled 80 of 197 null
+  client_kind rows on sub2gpt and found 7 clean `curl/8.7.1` UAs.
 
 ### Changed
+- `pathfilter.Pattern` + `pathfilter.Compile` + `pathfilter.MatchAny`
+  are now exported so sibling plugins (initially `capturefilter`)
+  reuse one validated parse + match implementation. Behavior of
+  `pathfilter.Plugin.Init` is unchanged.
 
 ### Fixed
 
