@@ -13,6 +13,17 @@ append-only / new-format-key migration discipline documented in
 - Exported `storage.DefaultMaxBytes` (5 GiB), `storage.DefaultMaxAgeDays`
   (30), `storage.DefaultWarnAtPercent` (80) constants documenting the
   v0.1.3 retention defaults a fresh deployment carries.
+- **`api-log package` subcommand**: build an offline zip of recorded
+  traces — same shape as `POST /api/export` (JSONL + media +
+  `agent/CLAUDE.md` + `jq-cheatsheet.md` + `README.md`) — without
+  requiring the proxy / API listeners to be running. Flags: `-config`,
+  `-out` (file path or `-` for stdout), `-from` / `-to` (RFC3339 or
+  YYYY-MM-DD), `-path` / `-path-prefix`, `-model`, `-key-prefix`,
+  `-limit`. Reads the same SQLite + JSONL the proxy writes; safe to
+  run alongside a live proxy (WAL mode handles concurrent readers).
+  Intended for two jobs: handing a window of traces to an offline
+  analysis agent, and piping cold-storage offloads through stdout
+  into the operator's sink of choice (S3 / R2 / NAS).
 
 ### Changed
 - **Fresh deployments now ship with retention ON by default**: 5 GiB

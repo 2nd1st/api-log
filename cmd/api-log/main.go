@@ -53,6 +53,18 @@ import (
 var version = "0.0.0-dev"
 
 func main() {
+	// Subcommand dispatch before flag.Parse — keeps the proxy-mode flag
+	// surface unchanged (`api-log -config foo.yaml`) while letting the
+	// new `api-log package` subcommand own its own FlagSet. Add new
+	// subcommands here, not as global flags, so the help surface
+	// matches what the operator can actually invoke.
+	if len(os.Args) >= 2 && os.Args[1] == "package" {
+		if err := runPackage(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "api-log package: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "api-log: %v\n", err)
 		os.Exit(1)
