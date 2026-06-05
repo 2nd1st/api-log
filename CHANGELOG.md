@@ -10,8 +10,26 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+- Exported `storage.DefaultMaxBytes` (5 GiB), `storage.DefaultMaxAgeDays`
+  (30), `storage.DefaultWarnAtPercent` (80) constants documenting the
+  v0.1.3 retention defaults a fresh deployment carries.
 
 ### Changed
+- **Fresh deployments now ship with retention ON by default**: 5 GiB
+  byte cap, 30-day age cap, warn at 80% (storage.Default* constants
+  above). v0.1.0–v0.1.2 deployments with a persisted
+  `runtime_overrides.json` keep their existing values — the override
+  block in main.go runs `UpdateConfig` AFTER construction and wins.
+  Operators who want retention OFF can PUT both knobs to 0 via
+  `/api/config/retention`. Motivation: the prior "engine running,
+  never delete" default was surprising for OSS adopters on small
+  VPS / bounded PVC; left to itself the data dir grew unbounded.
+- **Day-cross gzip rotation now runs at level 6 (default)** instead
+  of the prior level-1 BestSpeed. Rotation is a background goroutine
+  off the writer hot path, so the modest extra CPU cost buys 20–30%
+  smaller files on JSONL (highly redundant text). The choice is now
+  a single named constant (`writer.rotateCompressionLevel`) so future
+  tuning has one place to look.
 
 ### Fixed
 

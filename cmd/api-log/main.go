@@ -161,13 +161,18 @@ func run() error {
 	// (which it consumes) but BEFORE writer + exporter + API (which all
 	// take it as a dependency).
 	//
-	// Retention thresholds default to disabled (max_bytes=0 + max_age_days=0
-	// → retention.Load() returns nil → no eviction). The monitor still runs
-	// to maintain inventory + status; B4 wires PUT /api/config/retention so
-	// operators can flip retention on at runtime without a restart.
+	// v0.1.3 — Fresh deployments carry storage.DefaultMaxBytes (5 GiB) +
+	// storage.DefaultMaxAgeDays (30) so the data dir doesn't grow
+	// unbounded on a small VPS / bounded PVC. Operators with a persisted
+	// runtime_overrides.json from a v0.1.0–v0.1.2 deployment keep their
+	// existing values: the override block below runs UpdateConfig
+	// AFTER construction and wins. Adopters who want retention OFF can
+	// PUT both knobs to 0 via /api/config/retention.
 	storageCoord, err := storage.New(storage.Config{
 		DataDir:       cfg.Storage.DataDir,
-		WarnAtPercent: 80,
+		MaxBytes:      storage.DefaultMaxBytes,
+		MaxAgeDays:    storage.DefaultMaxAgeDays,
+		WarnAtPercent: storage.DefaultWarnAtPercent,
 	}, store, ctrs)
 	if err != nil {
 		return fmt.Errorf("storage coordinator: %w", err)

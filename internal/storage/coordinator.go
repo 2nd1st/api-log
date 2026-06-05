@@ -6,6 +6,38 @@ import (
 	"time"
 )
 
+// Default retention thresholds applied at construction when the caller
+// passes no explicit values. v0.1.3 introduces these defaults so a
+// fresh deployment does not grow unbounded — the v0.1.0–v0.1.2
+// behavior of "engine running, never delete" was surprising to OSS
+// adopters running on small VPS / bounded PVC.
+//
+// Adopter overrides still flow normally:
+//   - YAML / env / runtime_overrides.json values WIN over defaults
+//     (main.go applies overrides after construction via UpdateConfig).
+//   - PUT /api/config/retention with both knobs set to 0 explicitly
+//     disables retention; the defaults below are the constructor's
+//     starting point, not a floor.
+const (
+	// DefaultMaxBytes is the byte cap a fresh Coordinator carries
+	// when the caller passes 0. 5 GiB fits comfortably on a small
+	// VPS and survives most homelab dogfood without immediate
+	// pressure. Operators with more disk raise it via PUT.
+	DefaultMaxBytes int64 = 5 << 30 // 5 GiB
+
+	// DefaultMaxAgeDays is the age cap a fresh Coordinator carries
+	// when the caller passes 0. 30 days covers the recent-trace
+	// debugging window plus a comfortable margin.
+	DefaultMaxAgeDays = 30
+
+	// DefaultWarnAtPercent is the usage threshold at which
+	// /healthz.storage.state flips to "warning". The audit pass
+	// surfaced 80% as a reasonable balance — far enough below
+	// "critical" (100%) that the operator has runway, but not so
+	// loose that the warning is meaningless.
+	DefaultWarnAtPercent = 80
+)
+
 // Config is the static configuration for a Coordinator. Set once at
 // construction by New(); immutable after Start.
 //
