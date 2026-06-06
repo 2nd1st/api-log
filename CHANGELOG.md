@@ -10,9 +10,19 @@ append-only / new-format-key migration discipline documented in
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [0.1.3] - 2026-06-06
+
+### Added
 - Exported `storage.DefaultMaxBytes` (5 GiB), `storage.DefaultMaxAgeDays`
   (30), `storage.DefaultWarnAtPercent` (80) constants documenting the
-  v0.1.3 retention defaults a fresh deployment carries.
+  retention defaults a fresh deployment carries.
 - **`api-log package` subcommand**: build an offline zip of recorded
   traces — same shape as `POST /api/export` (JSONL + media +
   `agent/CLAUDE.md` + `jq-cheatsheet.md` + `README.md`) — without
@@ -41,10 +51,6 @@ append-only / new-format-key migration discipline documented in
   smaller files on JSONL (highly redundant text). The choice is now
   a single named constant (`writer.rotateCompressionLevel`) so future
   tuning has one place to look.
-
-### Fixed
-
-### Removed
 
 ## [0.1.2] - 2026-06-02
 
